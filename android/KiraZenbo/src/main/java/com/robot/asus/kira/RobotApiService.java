@@ -4,8 +4,11 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.content.Intent;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -40,6 +43,7 @@ public class RobotApiService extends Service {
     private RobotAPI robotAPI;
     private AndroidAsyncEventServer asyncEventServer;
     private AsyncRobotApiServer asyncRobotApiServer;
+    private BroadcastReceiver screenEventReceiver;
 
     /**
      * Bring the GeckoView UI (MainActivity) to the foreground.
@@ -82,6 +86,7 @@ public class RobotApiService extends Service {
         super.onCreate();
 
         createNotificationChannel();
+        registerScreenEventReceiver();
 
         // Build a high-priority foreground notification with a full-screen intent
         // to bring MainActivity (GeckoView UI) to the foreground when the service starts.
@@ -266,6 +271,38 @@ public class RobotApiService extends Service {
         robotAPI.robot.setVoiceTrigger(false);
     }
 
+    /**
+     * Listen for system screen and shutdown events and forward them into the
+     * WebSocket event pipeline so the web UI can pause/resume listening.
+     */
+    private void registerScreenEventReceiver() {
+        if (screenEventReceiver != null) {
+            return;
+        }
+
+        screenEventReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+                Log.i(TAG, "Screen/power event received: " + action);
+
+                if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    sendEvent("ScreenOff", new JSONObject());
+                } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                    sendEvent("ScreenOn", new JSONObject());
+                } else if (Intent.ACTION_SHUTDOWN.equals(action)) {
+                    sendEvent("DeviceShutdown", new JSONObject());
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SHUTDOWN);
+        registerReceiver(screenEventReceiver, filter);
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel serviceChannel = new NotificationChannel(
@@ -286,6 +323,14 @@ public class RobotApiService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (screenEventReceiver != null) {
+            try {
+                unregisterReceiver(screenEventReceiver);
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "Screen receiver already unregistered", e);
+            }
+            screenEventReceiver = null;
+        }
         if (asyncEventServer != null) {
             asyncEventServer.stop();
             asyncEventServer = null;

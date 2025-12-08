@@ -16,7 +16,6 @@ export function useSleepMode() {
     sleeping.value = false;
     useRobotAPI().unlockExpression();
     useRobotAPI().setExpression('DEFAULT');
-    useTTS().speak('Hi, ich bin wieder wach. Wie kann ich dir helfen?');
   };
 
   return {

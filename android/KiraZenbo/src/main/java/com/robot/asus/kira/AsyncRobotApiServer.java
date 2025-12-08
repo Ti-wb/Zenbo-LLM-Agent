@@ -404,7 +404,7 @@ public class AsyncRobotApiServer {
         });
 
         server.post("/api/utility/stop_following", (req, res) -> {
-            mainHandler.post(() -> robotAPI.cancelCommand(RobotCommand.FOLLOW_USER));
+            mainHandler.post(robotAPI::cancelCommandAll); //cancelCommand(RobotCommand.FOLLOW_USER));
             addCorsHeaders(req, res);
             sendQueued(res);
         });
