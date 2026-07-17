@@ -1,0 +1,1198 @@
+package com.robot.asus.kira;
+
+import android.content.Context;
+import android.util.Base64;
+import android.util.Log;
+
+import com.koushikdutta.async.AsyncNetworkSocket;
+import com.koushikdutta.async.ByteBufferList;
+import com.koushikdutta.async.http.Multimap;
+import com.koushikdutta.async.http.WebSocket;
+import com.koushikdutta.async.http.body.AsyncHttpRequestBody;
+import com.koushikdutta.async.http.body.MultipartFormDataBody;
+import com.koushikdutta.async.http.body.JSONObjectBody;
+import com.koushikdutta.async.http.body.Part;
+import com.koushikdutta.async.http.server.AsyncHttpServerRequest;
+import com.koushikdutta.async.http.server.AsyncHttpServerResponse;
+import com.koushikdutta.async.http.server.LoopbackAsyncHttpServer;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.TimeZone;
+import java.util.UUID;
+
+/** One process-local HTTP/WebSocket relay for GeckoView and the native runtime. */
+public final class LocalRuntimeServer {
+    private static final String TAG = "LocalRuntimeServer";
+    private static final long BOOTSTRAP_TTL_MILLIS = 60_000L;
+    private static final long SESSION_TTL_MILLIS = 24L * 60L * 60L * 1000L;
+    private static final int SESSION_MAX_AGE_SECONDS = 24 * 60 * 60;
+    private static final String SESSION_COOKIE = "zenbo_local_session";
+    private static final String RENDERER_ORIGIN = "http://127.0.0.1:8787";
+
+    private final Context context;
+    private final GatewaySettings settings;
+    private final DeviceCredentialStore credentialStore;
+    private final AdminPinStore adminPinStore;
+    private final RemoteSessionCoordinator coordinator;
+    private final RobotGateway robotGateway;
+    private final LoopbackAsyncHttpServer server = new LoopbackAsyncHttpServer();
+    private final Set<WebSocket> clients = Collections.synchronizedSet(new HashSet<>());
+    private final LinkedHashMap<String, JSONObject> completedOperations = new LinkedHashMap<>();
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    private volatile boolean started;
+    private volatile String rendererToken;
+    private volatile long rendererTokenExpiresAt;
+    private volatile String bootstrapSecret;
+    private volatile long bootstrapSecretExpiresAt;
+    private volatile long unlockExpiresAt;
+    private int failedPinAttempts;
+    private long nextPinAttemptAt;
+    private int failedBootstrapAttempts;
+    private long nextBootstrapAttemptAt;
+
+    public LocalRuntimeServer(
+            Context context,
+            GatewaySettings settings,
+            DeviceCredentialStore credentialStore,
+            RemoteSessionCoordinator coordinator,
+            RobotGateway robotGateway
+    ) {
+        this.context = context.getApplicationContext();
+        this.settings = settings;
+        this.credentialStore = credentialStore;
+        this.adminPinStore = new AdminPinStore(context.getApplicationContext());
+        this.coordinator = coordinator;
+        this.robotGateway = robotGateway;
+    }
+
+    public synchronized void start(int port) throws java.io.IOException {
+        if (started) return;
+        registerRoutes();
+        server.listenLoopback(port);
+        started = true;
+        Log.i(TAG, "Local runtime started on http://127.0.0.1:" + port);
+    }
+
+    public synchronized void stop() {
+        if (!started) return;
+        server.stop();
+        synchronized (clients) {
+            for (WebSocket client : clients) client.close();
+            clients.clear();
+        }
+        rendererToken = null;
+        rendererTokenExpiresAt = 0L;
+        bootstrapSecret = null;
+        bootstrapSecretExpiresAt = 0L;
+        unlockExpiresAt = 0L;
+        started = false;
+    }
+
+    public boolean isStarted() {
+        return started;
+    }
+
+    public synchronized String issueBootstrapSecret() {
+        byte[] bytes = new byte[32];
+        secureRandom.nextBytes(bytes);
+        bootstrapSecret = Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+        bootstrapSecretExpiresAt = System.currentTimeMillis() + BOOTSTRAP_TTL_MILLIS;
+        return bootstrapSecret;
+    }
+
+    public void publish(JSONObject event) {
+        String text = event.toString();
+        synchronized (clients) {
+            for (WebSocket client : clients) {
+                try {
+                    client.send(text);
+                } catch (Exception error) {
+                    Log.w(TAG, "Could not publish local runtime event", error);
+                }
+            }
+        }
+    }
+
+    private void registerRoutes() {
+        server.get("/$", (request, response) -> {
+            if (!requireLoopback(request, response)) return;
+            try (InputStream input = context.getAssets().open("app/index.html")) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                secureHeaders(response);
+                response.code(200);
+                response.getHeaders().set("Content-Type", "text/html; charset=utf-8");
+                response.send(output.toString("UTF-8"));
+            } catch (Exception error) {
+                sendError(response, 503, "INTERNAL_ERROR", "Web assets are not installed");
+            }
+        });
+
+        server.get("/health$", (request, response) -> {
+            if (!requireLoopback(request, response)) return;
+            sendJson(response, 200, json(
+                    "status", "ok",
+                    "runtimeReady", started,
+                    "robotReady", robotGateway.isReady()
+            ));
+        });
+
+        registerSessionRoute("/api/v1/bootstrap$");
+        registerStatusRoute("/api/v1/status$");
+        registerConversationRoute("/api/v1/conversation$");
+        registerMultipartTurnRoute("/api/v1/conversation/turns$");
+
+        server.get("/api/v1/settings$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            sendJson(response, 200, settingsJson());
+        });
+        server.addAction("PUT", "/api/v1/settings$", this::updateSettings, headers -> new JSONObjectBody());
+        server.post("/api/v1/settings/setup$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            JSONObject body = readJson(request);
+            if (adminPinStore.isConfigured()) {
+                sendError(response, 409, "CONFLICT", "Admin PIN is already configured");
+                return;
+            }
+            JSONObject settingsSnapshot = null;
+            String previousCredential = null;
+            try {
+                requireOnlyKeys(body, "pin", "confirmPin", "gatewayUrl", "deviceToken",
+                        "trustMode", "certificatePin", "confirmedFingerprint",
+                        "agentProfile", "context");
+                requirePairedFields(body, "certificatePin", "confirmedFingerprint");
+                String setupPin = body.optString("pin", "");
+                AdminPinStore.validatePin(setupPin);
+                if (!setupPin.equals(body.optString("confirmPin", ""))) throw new IllegalArgumentException("PIN confirmation does not match");
+                String deviceToken = body.optString("deviceToken", "").trim();
+                if (deviceToken.length() < 16 || deviceToken.length() > 4096) {
+                    throw new IllegalArgumentException("A device token containing 16 to 4096 characters is required");
+                }
+                JSONObject context = body.optJSONObject("context");
+                if (context == null) throw new IllegalArgumentException("Initial robot context is required");
+                requireOnlyKeys(context, "robotName", "language");
+                JSONObject initialSettings = new JSONObject()
+                        .put("gatewayUrl", body.optString("gatewayUrl", ""))
+                        .put("trustMode", body.optString("trustMode", ""))
+                        .put("agentProfile", body.optString("agentProfile", ""))
+                        .put("context", context)
+                        .put("enabled", true);
+                if (body.has("certificatePin")) initialSettings.put("certificatePin", body.optString("certificatePin", ""));
+                if (body.has("confirmedFingerprint")) initialSettings.put("confirmedFingerprint", body.optString("confirmedFingerprint", ""));
+
+                settingsSnapshot = settings.snapshotForRollback();
+                previousCredential = credentialStore.load();
+                settings.update(initialSettings);
+                credentialStore.save(deviceToken);
+                adminPinStore.setup(setupPin);
+                failedPinAttempts = 0;
+                nextPinAttemptAt = 0L;
+                unlockExpiresAt = System.currentTimeMillis() + 15L * 60L * 1000L;
+                coordinator.reloadGateway();
+                sendJson(response, 200, settingsJson());
+            } catch (Exception error) {
+                adminPinStore.clear();
+                if (settingsSnapshot != null) {
+                    try {
+                        settings.restore(settingsSnapshot);
+                        if (previousCredential == null) credentialStore.clear(); else credentialStore.save(previousCredential);
+                    } catch (Exception rollbackError) {
+                        Log.e(TAG, "Could not fully roll back failed initial setup", rollbackError);
+                    }
+                }
+                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+            }
+        });
+
+        server.post("/api/v1/settings/unlock$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            long now = System.currentTimeMillis();
+            if (!adminPinStore.isConfigured()) {
+                sendError(response, 409, "SETUP_REQUIRED", "Set up the admin PIN first");
+                return;
+            }
+            if (now < nextPinAttemptAt) {
+                response.getHeaders().set("Retry-After", String.valueOf(Math.max(1L, (nextPinAttemptAt - now + 999L) / 1000L)));
+                sendError(response, 429, "RATE_LIMITED", "Try again later");
+                return;
+            }
+            JSONObject body = readJson(request);
+            try {
+                requireOnlyKeys(body, "pin");
+                AdminPinStore.validatePin(body.optString("pin", ""));
+                if (!adminPinStore.verify(body.optString("pin", ""))) {
+                    failedPinAttempts++;
+                    nextPinAttemptAt = now + Math.min(30_000L, 1000L << Math.min(failedPinAttempts - 1, 5));
+                    sendError(response, 401, "UNAUTHORIZED", "Admin PIN is incorrect");
+                    return;
+                }
+                failedPinAttempts = 0;
+                nextPinAttemptAt = 0L;
+                unlockExpiresAt = now + 15L * 60L * 1000L;
+                sendJson(response, 200, json("unlocked", true, "unlockExpiresAt", isoTime(unlockExpiresAt)));
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_PIN", error.getMessage());
+            }
+        });
+
+        server.post("/api/v1/settings/test$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            if (adminPinStore.isConfigured() && !isUnlocked()) {
+                sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
+                return;
+            }
+            JSONObject body = readJson(request);
+            String gatewayUrl = body.optString("gatewayUrl", "").trim();
+            String trustMode = body.optString("trustMode", "");
+            String agentProfile = body.optString("agentProfile", "").trim();
+            try {
+                requireOnlyKeys(body, "gatewayUrl", "trustMode", "agentProfile", "deviceToken");
+                GatewaySettings.validateGatewayUrl(gatewayUrl);
+                if (!(GatewaySettings.SYSTEM_TRUST.equals(trustMode)
+                        || GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode))) {
+                    throw new IllegalArgumentException("trustMode is invalid");
+                }
+                if (!agentProfile.matches("[A-Za-z0-9._-]{1,64}")) {
+                    throw new IllegalArgumentException("agentProfile is invalid");
+                }
+                if (body.has("deviceToken")) {
+                    String suppliedToken = body.optString("deviceToken", "");
+                    if (suppliedToken.length() < 16 || suppliedToken.length() > 4096) {
+                        throw new IllegalArgumentException("deviceToken must contain 16 to 4096 characters");
+                    }
+                }
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                return;
+            }
+
+            boolean savedPinConfirmed = GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode)
+                    && GatewaySettings.CONFIRMED_SPKI_PIN.equals(settings.getTrustMode())
+                    && gatewayUrl.equals(settings.getGatewayUrl())
+                    && !settings.getCertificatePin().isEmpty();
+            if (GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode) && !savedPinConfirmed) {
+                TlsTrust.probe(gatewayUrl, settings.getDeviceId(), new TlsTrust.ProbeCallback() {
+                    @Override public void onSuccess(JSONObject certificate) {
+                        sendJson(response, 200, json(
+                                "reachable", true,
+                                "tlsTrusted", false,
+                                "latencyMs", JSONObject.NULL,
+                                "protocolVersion", JSONObject.NULL,
+                                "confirmationRequired", true,
+                                "fingerprint", certificate.optString("certificatePin", ""),
+                                "authenticated", false,
+                                "capabilitiesReceived", false
+                        ));
+                    }
+
+                    @Override public void onError(String code, String message) {
+                        sendError(response, 502, code, message);
+                    }
+                });
+                return;
+            }
+
+            String transientToken = GatewaySettings.SYSTEM_TRUST.equals(trustMode)
+                    ? body.optString("deviceToken", "")
+                    : body.optString("deviceToken", "").isEmpty()
+                    ? credentialStore.load()
+                    : body.optString("deviceToken", "");
+            if (GatewaySettings.SYSTEM_TRUST.equals(trustMode) && transientToken.isEmpty()) {
+                long probeStartedAt = System.currentTimeMillis();
+                TlsTrust.probeSystemTrust(gatewayUrl, settings.getDeviceId(), new TlsTrust.ProbeCallback() {
+                    @Override public void onSuccess(JSONObject certificate) {
+                        sendJson(response, 200, json(
+                                "reachable", true,
+                                "tlsTrusted", true,
+                                "latencyMs", Math.max(0L, System.currentTimeMillis() - probeStartedAt),
+                                "protocolVersion", JSONObject.NULL,
+                                "confirmationRequired", false,
+                                "fingerprint", certificate.optString("certificatePin", ""),
+                                "authenticated", false,
+                                "capabilitiesReceived", false
+                        ));
+                    }
+
+                    @Override public void onError(String code, String message) {
+                        sendError(response, 502, code, message);
+                    }
+                });
+                return;
+            }
+            TlsTrust.testCapabilities(
+                    gatewayUrl,
+                    trustMode,
+                    savedPinConfirmed ? settings.getCertificatePin() : "",
+                    settings.getDeviceId(),
+                    transientToken,
+                    agentProfile,
+                    new TlsTrust.CapabilityCallback() {
+                        @Override public void onSuccess(JSONObject result) { sendJson(response, 200, result); }
+                        @Override public void onError(String code, String message) { sendError(response, 502, code, message); }
+                    }
+            );
+        });
+
+        server.post("/api/v1/conversation/cancel$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String operationKey = requireIdempotencyKey(request, response, "cancel");
+            if (operationKey == null || sendCachedOperation(operationKey, response, 202)) return;
+            JSONObject body = readJson(request);
+            String turnId;
+            String reason;
+            try {
+                requireOnlyKeys(body, "turnId", "reason");
+                turnId = body.optString("turnId", "");
+                reason = body.optString("reason", "");
+                if (!turnId.isEmpty()) UUID.fromString(turnId);
+                if (!("barge_in".equals(reason)
+                        || "user_interaction".equals(reason)
+                        || "screen_off".equals(reason)
+                        || "sleep".equals(reason))) {
+                    throw new IllegalArgumentException("A supported cancellation reason is required");
+                }
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                return;
+            }
+            coordinator.cancelActiveTurn(turnId, reason, idempotentJsonResponse(response, 202, operationKey));
+        });
+
+        server.get("/api/v1/conversation/audio/([^/]+)$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String artifactId = request.getMatcher().group(1);
+            coordinator.downloadAudio(artifactId, new AgentGatewayClient.BinaryCallback() {
+                @Override public void onSuccess(byte[] bytes, String contentType, String digest, String expiresAt) {
+                    response.code(200);
+                    response.getHeaders().set("Cache-Control", "no-store");
+                    response.getHeaders().set("Digest", digest);
+                    response.getHeaders().set("Content-Length", String.valueOf(bytes.length));
+                    response.getHeaders().set("Expires", httpDate(expiresAt));
+                    response.send(contentType, bytes);
+                }
+                @Override public void onError(String code, String message) {
+                    int status = "AUDIO_NOT_AVAILABLE".equals(code) ? 404
+                            : "AUDIO_EXPIRED".equals(code) ? 410
+                            : 502;
+                    sendError(response, status, code, message);
+                }
+            });
+        });
+
+        server.addAction("PUT", "/api/v1/conversation/tool-calls/([^/]+)$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String callId = request.getMatcher().group(1);
+            JSONObject body = readJson(request);
+            try {
+                UUID parsedCallId = UUID.fromString(callId);
+                if (!parsedCallId.toString().equalsIgnoreCase(callId)) {
+                    throw new IllegalArgumentException("callId must be a canonical UUID");
+                }
+                validateToolCallUpdate(body);
+            } catch (Exception error) {
+                boolean tooLarge = error instanceof ToolOutputTooLargeException;
+                sendError(response, tooLarge ? 413 : 400,
+                        tooLarge ? "PAYLOAD_TOO_LARGE" : "INVALID_REQUEST", error.getMessage());
+                return;
+            }
+            coordinator.reportToolResult(callId, body, jsonResponse(response));
+        }, headers -> new JSONObjectBody());
+
+        server.post("/api/v1/conversation/playback$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String operationKey = requireIdempotencyKey(request, response, "playback");
+            if (operationKey == null || sendCachedOperation(operationKey, response, 202)) return;
+            JSONObject body = readJson(request);
+            try {
+                requireOnlyKeys(body, "turnId", "artifactId", "status", "timestamp", "positionMs", "reason");
+                UUID.fromString(body.optString("turnId", ""));
+                UUID.fromString(body.optString("artifactId", ""));
+                String status = body.optString("status", "");
+                if (!("started".equals(status) || "completed".equals(status) || "interrupted".equals(status))) {
+                    throw new IllegalArgumentException("Playback status is invalid");
+                }
+                if ("interrupted".equals(status)) {
+                    String reason = body.optString("reason", "");
+                    if (!("barge_in".equals(reason) || "screen_off".equals(reason)
+                            || "playback_error".equals(reason) || "client_cancelled".equals(reason))) {
+                        throw new IllegalArgumentException("Interrupted playback requires a supported reason");
+                    }
+                } else if (body.has("reason")) {
+                    throw new IllegalArgumentException("Playback reason is allowed only when interrupted");
+                }
+                Object timestamp = body.opt("timestamp");
+                if (!(timestamp instanceof String) || ((String) timestamp).isEmpty()) {
+                    throw new IllegalArgumentException("Playback timestamp is required");
+                }
+                parseIsoTime((String) timestamp);
+                if (body.has("positionMs")) {
+                    Object position = body.opt("positionMs");
+                    if (!(position instanceof Number)) {
+                        throw new IllegalArgumentException("positionMs must be a non-negative integer");
+                    }
+                    double numericPosition = ((Number) position).doubleValue();
+                    if (Double.isNaN(numericPosition)
+                            || Double.isInfinite(numericPosition)
+                            || numericPosition < 0
+                            || numericPosition != Math.rint(numericPosition)) {
+                        throw new IllegalArgumentException("positionMs must be a non-negative integer");
+                    }
+                }
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                return;
+            }
+            coordinator.reportPlayback(body, idempotentJsonResponse(response, 202, operationKey));
+        });
+
+        registerWebSocket("/api/v1/events");
+        server.get("/(.+)$", (request, response) -> serveAppAsset(request, response));
+    }
+
+    private void registerSessionRoute(String path) {
+        server.post(path, (request, response) -> {
+            if (!requireLoopback(request, response)) return;
+            if (!requireRendererOrigin(request, response)) return;
+            long now = System.currentTimeMillis();
+            if (now < nextBootstrapAttemptAt) {
+                response.getHeaders().set("Retry-After", String.valueOf(Math.max(1L, (nextBootstrapAttemptAt - now + 999L) / 1000L)));
+                sendError(response, 429, "RATE_LIMITED", "Request a fresh renderer bootstrap token and try again later");
+                return;
+            }
+            JSONObject requestBody = readJson(request);
+            String suppliedSecret = requestBody.optString("bootstrapToken", "");
+            String clientVersion = requestBody.optString("clientVersion", "").trim();
+            String expectedSecret = bootstrapSecret;
+            long expectedExpiry = bootstrapSecretExpiresAt;
+            bootstrapSecret = null;
+            bootstrapSecretExpiresAt = 0L;
+            boolean requestShapeValid;
+            try {
+                requireOnlyKeys(requestBody, "clientVersion", "bootstrapToken");
+                requestShapeValid = requestBody.opt("clientVersion") instanceof String
+                        && requestBody.opt("bootstrapToken") instanceof String
+                        && suppliedSecret.length() >= 43
+                        && suppliedSecret.length() <= 128
+                        && suppliedSecret.matches("[A-Za-z0-9_-]+");
+            } catch (JSONException error) {
+                requestShapeValid = false;
+            }
+            if (expectedSecret == null
+                    || !requestShapeValid
+                    || clientVersion.isEmpty()
+                    || clientVersion.length() > 64
+                    || now > expectedExpiry
+                    || !constantTimeEquals(expectedSecret, suppliedSecret)) {
+                failedBootstrapAttempts++;
+                nextBootstrapAttemptAt = now + Math.min(30_000L, 1000L << Math.min(failedBootstrapAttempts - 1, 5));
+                sendError(response, 400, "INVALID_BOOTSTRAP_TOKEN", "Bootstrap token is invalid, expired, or already used");
+                return;
+            }
+            failedBootstrapAttempts = 0;
+            nextBootstrapAttemptAt = 0L;
+            byte[] bytes = new byte[32];
+            secureRandom.nextBytes(bytes);
+            rendererToken = Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+            rendererTokenExpiresAt = now + SESSION_TTL_MILLIS;
+            unlockExpiresAt = 0L;
+            response.getHeaders().set(
+                    "Set-Cookie",
+                    SESSION_COOKIE + "=" + rendererToken + "; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=" + SESSION_MAX_AGE_SECONDS
+            );
+            sendJson(response, 200, json(
+                    "protocolVersion", "1.0",
+                    "expiresAt", isoTime(rendererTokenExpiresAt)
+            ));
+        });
+    }
+
+    private void serveAppAsset(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireLoopback(request, response)) return;
+        String path = request.getPath();
+        if (path == null || !path.startsWith("/") || path.contains("..") || path.contains("\\") || path.indexOf('\0') >= 0) {
+            sendError(response, 400, "INVALID_ASSET_PATH", "Asset path is invalid");
+            return;
+        }
+        String assetPath = "app" + path;
+        try (InputStream input = context.getAssets().open(assetPath)) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            secureHeaders(response);
+            response.code(200);
+            response.send(contentType(path), output.toByteArray());
+        } catch (Exception error) {
+            sendError(response, 404, "ASSET_NOT_FOUND", "Asset was not found");
+        }
+    }
+
+    private void registerStatusRoute(String path) {
+        server.get(path, (request, response) -> {
+            if (!requireSession(request, response)) return;
+            JSONObject coordinatorStatus = coordinator.getStatus();
+            Object activeSessionId = coordinatorStatus.isNull("remoteSessionId")
+                    ? JSONObject.NULL
+                    : coordinatorStatus.optString("remoteSessionId", "");
+            String activeTurnId = coordinator.getActiveTurnId();
+            sendJson(response, 200, json(
+                    "runtimeReady", started,
+                    "setupRequired", !adminPinStore.isConfigured()
+                            || !credentialStore.hasCredential()
+                            || settings.getGatewayUrl().isEmpty(),
+                    "settingsUnlocked", isUnlocked(),
+                    "gatewayState", coordinator.getGatewayState(),
+                    "robotReady", robotGateway.isReady(),
+                    "activeSessionId", activeSessionId,
+                    "activeTurnId", activeTurnId == null || activeTurnId.isEmpty() ? JSONObject.NULL : activeTurnId
+            ));
+        });
+    }
+
+    private void registerConversationRoute(String path) {
+        server.get(path, (request, response) -> {
+            if (!requireSession(request, response)) return;
+            sendJson(response, 200, coordinator.getConversationSnapshot(settings.getCursor()));
+        });
+    }
+
+    private void registerMultipartTurnRoute(String path) {
+        server.addAction("POST", path, (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String operationKey = requireIdempotencyKey(request, response, "turn");
+            if (operationKey == null || sendCachedOperation(operationKey, response, 202)) return;
+            JSONObject input;
+            if (request.getBody() instanceof CapturingMultipartBody) {
+                CapturingMultipartBody multipart = (CapturingMultipartBody) request.getBody();
+                if (multipart.isTooLarge()) {
+                    sendError(response, 413, "PAYLOAD_TOO_LARGE", "WAV audio must not exceed 2 MiB");
+                    return;
+                }
+                byte[] audio = multipart.bytes("audio");
+                String audioType = multipart.contentType("audio");
+                if (audioType == null || !"audio/wav".equalsIgnoreCase(audioType.split(";", 2)[0].trim())) {
+                    sendError(response, 415, "UNSUPPORTED_MEDIA_TYPE", "The audio part must use audio/wav");
+                    return;
+                }
+                int declaredDurationMs = parseInt(multipart.string("durationMs"), 0);
+                try {
+                    WavValidator.validate(audio, declaredDurationMs);
+                } catch (IllegalArgumentException error) {
+                    sendError(response, 422, "INVALID_AUDIO", error.getMessage());
+                    return;
+                }
+                input = json(
+                        "clientTurnId", multipart.string("clientTurnId"),
+                        "durationMs", declaredDurationMs,
+                        "language", multipart.string("language"),
+                        "audioBase64", Base64.encodeToString(audio, Base64.NO_WRAP),
+                        "mimeType", "audio/wav"
+                );
+            } else {
+                input = readJson(request);
+                try {
+                    requireOnlyKeys(input, "clientTurnId", "text", "language");
+                } catch (JSONException error) {
+                    sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                    return;
+                }
+            }
+            String clientTurnId = input.optString("clientTurnId", "");
+            String text = input.optString("text", "");
+            String language = input.optString("language", "");
+            try {
+                UUID.fromString(clientTurnId);
+                if (text.isEmpty() && input.optString("audioBase64", "").isEmpty()) {
+                    throw new IllegalArgumentException("WAV audio or text is required");
+                }
+                if (text.length() > 16_000) throw new IllegalArgumentException("Text turn exceeds 16000 characters");
+                if (!language.matches("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")) {
+                    throw new IllegalArgumentException("language is invalid");
+                }
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                return;
+            }
+            try {
+                JSONObject accepted = coordinator.submitTurn(input);
+                cacheOperation(operationKey, accepted);
+                sendJson(response, 202, accepted);
+            } catch (JSONException error) {
+                sendError(response, 400, "invalid_turn", error.getMessage());
+            }
+        }, headers -> {
+            String contentType = headers.get("Content-Type");
+            if (contentType != null && contentType.toLowerCase().startsWith("multipart/form-data")) {
+                return new CapturingMultipartBody(contentType);
+            }
+            return new JSONObjectBody();
+        });
+    }
+
+    private void registerWebSocket(String path) {
+        server.websocket(path, (webSocket, request) -> {
+            if (!isLoopback(request)
+                    || !RENDERER_ORIGIN.equals(request.getHeaders().get("Origin"))
+                    || !validSession(cookieValue(request, SESSION_COOKIE))) {
+                webSocket.close();
+                return;
+            }
+            long after;
+            try {
+                String rawAfter = queryValue(request, "after");
+                after = rawAfter == null || rawAfter.isEmpty() ? 0L : Long.parseLong(rawAfter);
+            } catch (NumberFormatException error) {
+                webSocket.close();
+                return;
+            }
+            if (after < 0L || after > settings.getCursor()) {
+                webSocket.close();
+                return;
+            }
+            webSocket.setClosedCallback(error -> clients.remove(webSocket));
+            webSocket.setEndCallback(error -> clients.remove(webSocket));
+            synchronized (clients) {
+                clients.add(webSocket);
+                JSONArray retained = coordinator.getConversation();
+                long earliestRetainedSequence = Long.MAX_VALUE;
+                for (int index = 0; index < retained.length(); index++) {
+                    JSONObject event = retained.optJSONObject(index);
+                    long sequence = event != null ? event.optLong("sequence", 0L) : 0L;
+                    if (sequence > 0L) earliestRetainedSequence = Math.min(earliestRetainedSequence, sequence);
+                }
+                long currentCursor = settings.getCursor();
+                boolean stale = currentCursor > after
+                        && (earliestRetainedSequence == Long.MAX_VALUE || after + 1L < earliestRetainedSequence);
+                JSONArray events = stale
+                        ? coordinator.getLocalRecoveryFrames()
+                        : retained;
+                for (int index = 0; index < events.length(); index++) {
+                    JSONObject event = events.optJSONObject(index);
+                    if (event != null && (stale || event.optLong("sequence", 0L) > after)) {
+                        webSocket.send(event.toString());
+                    }
+                }
+            }
+        });
+    }
+
+    private void updateSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireSession(request, response)) return;
+        JSONObject snapshot = null;
+        String previousCredential = null;
+        try {
+            JSONObject body = readJson(request);
+            if (!isUnlocked()) {
+                sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
+                return;
+            }
+            snapshot = settings.snapshotForRollback();
+            previousCredential = credentialStore.load();
+            requireOnlyKeys(body, "gatewayUrl", "deviceToken", "trustMode",
+                    "certificatePin", "confirmedFingerprint", "agentProfile", "context");
+            requirePairedFields(body, "certificatePin", "confirmedFingerprint");
+            if (!body.has("trustMode")) throw new IllegalArgumentException("trustMode is required");
+            JSONObject context = body.optJSONObject("context");
+            if (context != null) requireOnlyKeys(context, "robotName", "language");
+            settings.update(body);
+            if (body.has("deviceToken")) {
+                String token = body.optString("deviceToken", "").trim();
+                if (token.length() < 16 || token.length() > 4096) {
+                    throw new IllegalArgumentException("Device credential must contain 16 to 4096 characters");
+                }
+                credentialStore.save(token);
+            }
+            coordinator.reloadGateway();
+            sendJson(response, 200, settingsJson());
+        } catch (Exception error) {
+            if (snapshot != null) {
+                try {
+                    settings.restore(snapshot);
+                    if (previousCredential == null) credentialStore.clear(); else credentialStore.save(previousCredential);
+                } catch (Exception rollbackError) {
+                    Log.e(TAG, "Could not fully roll back settings update", rollbackError);
+                }
+            }
+            sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+        }
+    }
+
+    private JSONObject readJson(AsyncHttpServerRequest request) {
+        AsyncHttpRequestBody<?> body = request.getBody();
+        if (body != null && body.get() instanceof JSONObject) return (JSONObject) body.get();
+        return new JSONObject();
+    }
+
+    private boolean requireLoopback(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (isLoopback(request)) return true;
+        sendError(response, 403, "FORBIDDEN_ORIGIN", "Local runtime is available only on this device");
+        return false;
+    }
+
+    private boolean requireSession(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireLoopback(request, response)) return false;
+        if (!"GET".equalsIgnoreCase(request.getMethod()) && !requireRendererOrigin(request, response)) return false;
+        String token = cookieValue(request, SESSION_COOKIE);
+        if (validSession(token)) return true;
+        sendError(response, 401, "SESSION_EXPIRED", "Create a renderer session first");
+        return false;
+    }
+
+    private boolean requireUnlocked(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireSession(request, response)) return false;
+        if (isUnlocked()) return true;
+        sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
+        return false;
+    }
+
+    private boolean isUnlocked() {
+        return adminPinStore.isConfigured() && System.currentTimeMillis() < unlockExpiresAt;
+    }
+
+    private boolean validSession(String candidate) {
+        String expected = rendererToken;
+        return expected != null
+                && candidate != null
+                && System.currentTimeMillis() < rendererTokenExpiresAt
+                && MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                candidate.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    private boolean isLoopback(AsyncHttpServerRequest request) {
+        if (!(request.getSocket() instanceof AsyncNetworkSocket)) return false;
+        InetSocketAddress remote = ((AsyncNetworkSocket) request.getSocket()).getRemoteAddress();
+        return remote != null && remote.getAddress() != null && remote.getAddress().isLoopbackAddress();
+    }
+
+    private boolean requireRendererOrigin(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (RENDERER_ORIGIN.equals(request.getHeaders().get("Origin"))) return true;
+        sendError(response, 403, "FORBIDDEN_ORIGIN", "Request origin is not the bundled renderer");
+        return false;
+    }
+
+    private static String queryValue(AsyncHttpServerRequest request, String name) {
+        Multimap query = request.getQuery();
+        return query != null ? query.getString(name) : null;
+    }
+
+    private static String cookieValue(AsyncHttpServerRequest request, String name) {
+        String cookieHeader = request.getHeaders().get("Cookie");
+        if (cookieHeader == null) return null;
+        for (String part : cookieHeader.split(";")) {
+            String[] pair = part.trim().split("=", 2);
+            if (pair.length == 2 && name.equals(pair[0])) return pair[1];
+        }
+        return null;
+    }
+
+    private static boolean constantTimeEquals(String expected, String candidate) {
+        return candidate != null && MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                candidate.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    private static void secureHeaders(AsyncHttpServerResponse response) {
+        response.getHeaders().set("Cache-Control", "no-store");
+        response.getHeaders().set("X-Content-Type-Options", "nosniff");
+        response.getHeaders().set("Cross-Origin-Opener-Policy", "same-origin");
+        response.getHeaders().set("Cross-Origin-Embedder-Policy", "require-corp");
+        response.getHeaders().set("Content-Security-Policy", "default-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:8787; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'");
+    }
+
+    private static void sendJson(AsyncHttpServerResponse response, int code, JSONObject body) {
+        secureHeaders(response);
+        response.code(code);
+        response.getHeaders().set("Content-Type", "application/json; charset=utf-8");
+        response.send(json(
+                "ok", true,
+                "requestId", java.util.UUID.randomUUID().toString(),
+                "data", body,
+                "error", JSONObject.NULL
+        ).toString());
+    }
+
+    private static void sendError(AsyncHttpServerResponse response, int code, String errorCode, String message) {
+        secureHeaders(response);
+        response.code(code);
+        response.getHeaders().set("Content-Type", "application/json; charset=utf-8");
+        String canonicalCode = canonicalErrorCode(errorCode, code);
+        String safeMessage = message == null || message.isEmpty() ? canonicalCode : message;
+        if (safeMessage.length() > 512) safeMessage = safeMessage.substring(0, 512);
+        response.send(json(
+                "ok", false,
+                "requestId", java.util.UUID.randomUUID().toString(),
+                "data", JSONObject.NULL,
+                "error", json(
+                        "code", canonicalCode,
+                        "message", safeMessage,
+                        "retryable", isRetryable(canonicalCode)
+                )
+        ).toString());
+    }
+
+    private JSONObject settingsJson() {
+        try {
+            JSONObject result = settings.toJson(credentialStore.hasCredential());
+            result.put("pinConfigured", adminPinStore.isConfigured());
+            result.put("unlocked", isUnlocked());
+            result.put("unlockExpiresAt", isUnlocked() ? isoTime(unlockExpiresAt) : JSONObject.NULL);
+            return result;
+        } catch (JSONException error) {
+            return json("error", "settings_unavailable");
+        }
+    }
+
+    private static JSONObject json(Object... keyValues) {
+        JSONObject result = new JSONObject();
+        try {
+            for (int index = 0; index + 1 < keyValues.length; index += 2) {
+                result.put(String.valueOf(keyValues[index]), keyValues[index + 1]);
+            }
+        } catch (JSONException error) {
+            throw new IllegalStateException("Could not construct JSON", error);
+        }
+        return result;
+    }
+
+    private static void put(JSONObject target, String name, Object value) {
+        try {
+            target.put(name, value);
+        } catch (JSONException error) {
+            throw new IllegalStateException("Could not construct JSON", error);
+        }
+    }
+
+    private static void requireOnlyKeys(JSONObject input, String... allowedKeys) throws JSONException {
+        Set<String> allowed = new HashSet<>(Arrays.asList(allowedKeys));
+        java.util.Iterator<String> keys = input.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (!allowed.contains(key)) throw new JSONException("Unsupported request field: " + key);
+        }
+    }
+
+    private static void requirePairedFields(JSONObject input, String first, String second) {
+        if (input.has(first) != input.has(second)) {
+            throw new IllegalArgumentException(first + " and " + second + " must be supplied together");
+        }
+    }
+
+    private static void validateToolCallUpdate(JSONObject body) throws Exception {
+        requireOnlyKeys(body, "status", "updatedAt", "output", "error");
+        Object statusValue = body.opt("status");
+        Object updatedAtValue = body.opt("updatedAt");
+        if (!(statusValue instanceof String)) throw new IllegalArgumentException("Tool status is required");
+        if (!(updatedAtValue instanceof String)) throw new IllegalArgumentException("updatedAt is required");
+        String status = (String) statusValue;
+        parseIsoTime((String) updatedAtValue);
+
+        boolean hasOutput = body.has("output");
+        boolean hasError = body.has("error");
+        if ("accepted".equals(status)) {
+            if (hasOutput || hasError) throw new IllegalArgumentException("Accepted updates cannot include output or error");
+            return;
+        }
+        if ("succeeded".equals(status)) {
+            if (!hasOutput || hasError) throw new IllegalArgumentException("Succeeded updates require output and cannot include error");
+            if (serializedJsonBytes(body.opt("output")) > 16 * 1024) {
+                throw new ToolOutputTooLargeException();
+            }
+            return;
+        }
+        if (!("failed".equals(status) || "rejected".equals(status))) {
+            throw new IllegalArgumentException("Tool status is invalid");
+        }
+        if (hasOutput || !hasError) throw new IllegalArgumentException("Failed or rejected updates require error and cannot include output");
+        JSONObject error = body.optJSONObject("error");
+        if (error == null) throw new IllegalArgumentException("Tool error must be an object");
+        requireOnlyKeys(error, "code", "message", "retryable");
+        Object codeValue = error.opt("code");
+        Object messageValue = error.opt("message");
+        Object retryableValue = error.opt("retryable");
+        if (!(codeValue instanceof String)
+                || !((String) codeValue).matches("^[A-Z][A-Z0-9_]{1,63}$")) {
+            throw new IllegalArgumentException("Tool error code is invalid");
+        }
+        if (!(messageValue instanceof String)
+                || ((String) messageValue).isEmpty()
+                || ((String) messageValue).length() > 512) {
+            throw new IllegalArgumentException("Tool error message is invalid");
+        }
+        if (!(retryableValue instanceof Boolean)) {
+            throw new IllegalArgumentException("Tool error retryable must be a boolean");
+        }
+    }
+
+    private static int serializedJsonBytes(Object value) {
+        String encoded;
+        if (value == null || value == JSONObject.NULL) encoded = "null";
+        else if (value instanceof String) encoded = JSONObject.quote((String) value);
+        else encoded = String.valueOf(value);
+        return encoded.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static String canonicalErrorCode(String value, int status) {
+        String normalized = value == null ? "" : value.toUpperCase(java.util.Locale.US).replaceAll("[^A-Z0-9_]", "_");
+        Set<String> allowed = new HashSet<>(Arrays.asList(
+                "INVALID_REQUEST", "UNAUTHORIZED", "FORBIDDEN_ORIGIN", "RATE_LIMITED", "NOT_FOUND",
+                "CONFLICT", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE", "GATEWAY_UNCONFIGURED",
+                "GATEWAY_AUTH", "GATEWAY_TLS", "GATEWAY_INCOMPATIBLE", "GATEWAY_OFFLINE",
+                "SESSION_EXPIRED", "TURN_CANCELLED", "ROBOT_INITIALIZING", "ROBOT_UNAVAILABLE",
+                "TOOL_REJECTED", "TIMEOUT", "ARTIFACT_EXPIRED", "INTERNAL_ERROR",
+                "INVALID_BOOTSTRAP_TOKEN", "SETUP_REQUIRED", "ALREADY_CONFIGURED", "SETTINGS_LOCKED",
+                "INVALID_PIN", "INVALID_SETTINGS"
+        ));
+        if (allowed.contains(normalized)) return normalized;
+        if (normalized.contains("TLS") || normalized.contains("CERTIFICATE")) return "GATEWAY_TLS";
+        if (normalized.contains("AUTH") || normalized.contains("CREDENTIAL")) return "GATEWAY_AUTH";
+        if (normalized.contains("INCOMPATIBLE") || normalized.contains("PROTOCOL")) return "GATEWAY_INCOMPATIBLE";
+        if (normalized.contains("EXPIRED")) return "ARTIFACT_EXPIRED";
+        if (normalized.contains("NOT_AVAILABLE") || status == 404) return "NOT_FOUND";
+        if (status == 401) return "UNAUTHORIZED";
+        if (status == 403) return "FORBIDDEN_ORIGIN";
+        if (status == 409) return "CONFLICT";
+        if (status >= 400 && status < 500) return "INVALID_REQUEST";
+        if (normalized.contains("GATEWAY") || normalized.startsWith("HTTP_") || status == 502 || status == 503) {
+            return "GATEWAY_OFFLINE";
+        }
+        return "INTERNAL_ERROR";
+    }
+
+    private static boolean isRetryable(String code) {
+        return "RATE_LIMITED".equals(code)
+                || "GATEWAY_OFFLINE".equals(code)
+                || "ROBOT_INITIALIZING".equals(code)
+                || "TIMEOUT".equals(code)
+                || "INTERNAL_ERROR".equals(code);
+    }
+
+    private static String contentType(String path) {
+        String lower = path.toLowerCase(java.util.Locale.US);
+        if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript; charset=utf-8";
+        if (lower.endsWith(".css")) return "text/css; charset=utf-8";
+        if (lower.endsWith(".wasm")) return "application/wasm";
+        if (lower.endsWith(".onnx")) return "application/octet-stream";
+        if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        return "application/octet-stream";
+    }
+
+    private static AgentGatewayClient.ResultCallback jsonResponse(AsyncHttpServerResponse response) {
+        return new AgentGatewayClient.ResultCallback() {
+            @Override public void onSuccess(JSONObject result) { sendJson(response, 200, result); }
+            @Override public void onError(String code, String message) {
+                sendError(response, statusForCallbackError(code), code, message);
+            }
+        };
+    }
+
+    private AgentGatewayClient.ResultCallback idempotentJsonResponse(
+            AsyncHttpServerResponse response,
+            int successCode,
+            String operationKey
+    ) {
+        return new AgentGatewayClient.ResultCallback() {
+            @Override public void onSuccess(JSONObject result) {
+                cacheOperation(operationKey, result);
+                sendJson(response, successCode, result);
+            }
+
+            @Override public void onError(String code, String message) {
+                sendError(response, statusForCallbackError(code), code, message);
+            }
+        };
+    }
+
+    private static int statusForCallbackError(String code) {
+        if (code == null) return 502;
+        switch (code) {
+            case "INVALID_REQUEST":
+            case "INVALID_TOOL_CALL":
+            case "INVALID_TOOL_STATUS":
+            case "INVALID_PLAYBACK":
+            case "INVALID_SETTINGS":
+            case "INVALID_PIN":
+                return 400;
+            case "UNAUTHORIZED":
+            case "GATEWAY_AUTH":
+                return 401;
+            case "FORBIDDEN_ORIGIN":
+                return 403;
+            case "NOT_FOUND":
+                return 404;
+            case "CONFLICT":
+            case "TOOL_REJECTED":
+            case "TURN_CANCELLED":
+            case "GATEWAY_INCOMPATIBLE":
+                return 409;
+            case "PAYLOAD_TOO_LARGE":
+                return 413;
+            case "SETTINGS_LOCKED":
+                return 423;
+            case "RATE_LIMITED":
+                return 429;
+            default:
+                return 502;
+        }
+    }
+
+    private String requireIdempotencyKey(
+            AsyncHttpServerRequest request,
+            AsyncHttpServerResponse response,
+            String scope
+    ) {
+        String value = request.getHeaders().get("Idempotency-Key");
+        try {
+            UUID.fromString(value);
+            return scope + ":" + value;
+        } catch (Exception error) {
+            sendError(response, 400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a UUID");
+            return null;
+        }
+    }
+
+    private boolean sendCachedOperation(String operationKey, AsyncHttpServerResponse response, int code) {
+        JSONObject cached;
+        synchronized (completedOperations) {
+            cached = completedOperations.get(operationKey);
+        }
+        if (cached == null) return false;
+        sendJson(response, code, cached);
+        return true;
+    }
+
+    private void cacheOperation(String operationKey, JSONObject result) {
+        synchronized (completedOperations) {
+            completedOperations.put(operationKey, result);
+            while (completedOperations.size() > 128) {
+                String oldest = completedOperations.keySet().iterator().next();
+                completedOperations.remove(oldest);
+            }
+        }
+    }
+
+    private static int parseInt(String value, int fallback) {
+        try { return Integer.parseInt(value); } catch (Exception ignored) { return fallback; }
+    }
+
+    private static String isoTime(long timestamp) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return format.format(new Date(timestamp));
+    }
+
+    private static String httpDate(String isoTimestamp) {
+        try {
+            long timestamp = parseIsoTime(isoTimestamp);
+            SimpleDateFormat format = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US);
+            format.setTimeZone(TimeZone.getTimeZone("GMT"));
+            return format.format(new Date(timestamp));
+        } catch (Exception error) {
+            return "Thu, 01 Jan 1970 00:00:00 GMT";
+        }
+    }
+
+    private static long parseIsoTime(String value) throws Exception {
+        String[] patterns = {"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'"};
+        for (String pattern : patterns) {
+            try {
+                SimpleDateFormat format = new SimpleDateFormat(pattern, java.util.Locale.US);
+                format.setLenient(false);
+                format.setTimeZone(TimeZone.getTimeZone("UTC"));
+                Date parsed = format.parse(value);
+                if (parsed != null) return parsed.getTime();
+            } catch (Exception ignored) {
+            }
+        }
+        throw new IllegalArgumentException("timestamp is invalid");
+    }
+
+    private static final class ToolOutputTooLargeException extends IllegalArgumentException {
+        ToolOutputTooLargeException() {
+            super("Tool output exceeds 16 KiB");
+        }
+    }
+
+    private static final class CapturingMultipartBody extends MultipartFormDataBody {
+        private final Map<String, byte[]> parts = new HashMap<>();
+        private final Map<String, String> contentTypes = new HashMap<>();
+        private Part currentPart;
+        private ByteArrayOutputStream currentBytes;
+        private boolean tooLarge;
+
+        CapturingMultipartBody(String contentType) {
+            super(contentType);
+            setMultipartCallback(part -> {
+                finishPart();
+                currentPart = part;
+                currentBytes = new ByteArrayOutputStream();
+                setDataCallback((emitter, data) -> {
+                    byte[] bytes = data.getAllByteArray();
+                    if ((long) currentBytes.size() + bytes.length <= WavValidator.MAX_BYTES) {
+                        currentBytes.write(bytes, 0, bytes.length);
+                    } else {
+                        tooLarge = true;
+                    }
+                });
+            });
+        }
+
+        @Override
+        protected void onBoundaryEnd() {
+            finishPart();
+            super.onBoundaryEnd();
+        }
+
+        byte[] bytes(String name) {
+            byte[] value = parts.get(name);
+            return value != null ? value : new byte[0];
+        }
+
+        String string(String name) {
+            return new String(bytes(name), StandardCharsets.UTF_8).trim();
+        }
+
+        String contentType(String name) {
+            return contentTypes.get(name);
+        }
+
+        boolean isTooLarge() {
+            return tooLarge;
+        }
+
+        private void finishPart() {
+            if (currentPart != null && currentBytes != null && currentPart.getName() != null) {
+                parts.put(currentPart.getName(), currentBytes.toByteArray());
+                contentTypes.put(currentPart.getName(), currentPart.getContentType());
+            }
+            currentPart = null;
+            currentBytes = null;
+        }
+    }
+}

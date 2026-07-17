@@ -7,11 +7,11 @@ android {
 
     defaultConfig {
         applicationId "com.robot.asus.kira"
-        minSdkVersion 26
+        minSdkVersion 23
         // UPDATED: targetSdkVersion should match compileSdkVersion.
         targetSdkVersion 36
         versionCode 1
-        versionName "1.0"
+        versionName "0.1.0"
     }
     buildTypes {
         release {
@@ -19,11 +19,25 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+    buildFeatures {
+        buildConfig true
+    }
     packagingOptions {
         doNotStrip "*/armeabi-v7a/*"
         doNotStrip "*/arm64-v8a/*"
         doNotStrip "*/x86/*"
         doNotStrip "*/x86_64/*"
+    }
+
+    // Keep a universal debug APK for unknown/legacy Zenbo deployments while
+    // also producing installable ABI-specific APKs for measured device rollout.
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            universalApk true
+        }
     }
 
     compileOptions {
@@ -75,6 +89,7 @@ tasks.named('preBuild').configure {
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
 
     // UPDATED: Migrated from the old support library to the modern AndroidX equivalent.
     implementation 'androidx.appcompat:appcompat:1.7.1'
@@ -86,5 +101,6 @@ dependencies {
 
     // AndroidAsync HTTP/WebSocket server for robot event streaming.
     implementation 'com.koushikdutta.async:androidasync:3.1.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
 }

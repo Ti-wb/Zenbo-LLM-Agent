@@ -9,6 +9,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -21,6 +25,7 @@ import com.asus.robotframework.API.RobotCallback;
 import com.asus.robotframework.API.RobotCmdState;
 import com.asus.robotframework.API.RobotErrorCode;
 import com.asus.robotframework.API.RobotFace;
+import com.asus.robotframework.API.Utility;
 import com.asus.robotframework.API.results.DetectFaceResult;
 import com.asus.robotframework.API.results.DetectPersonResult;
 import com.asus.robotframework.API.results.FaceResult;
@@ -39,11 +44,18 @@ public class RobotApiService extends Service {
     private static final String TAG = "RobotApiService";
     private static final int NOTIFICATION_ID = 1;
     private static final String CHANNEL_ID = "RobotApiServiceChannel";
+    private static volatile boolean localRuntimeReady;
+    private static volatile LocalRuntimeServer activeLocalRuntime;
 
     private RobotAPI robotAPI;
-    private AndroidAsyncEventServer asyncEventServer;
-    private AsyncRobotApiServer asyncRobotApiServer;
+    private GatewaySettings gatewaySettings;
+    private DeviceCredentialStore credentialStore;
+    private RobotGateway robotGateway;
+    private RemoteSessionCoordinator sessionCoordinator;
+    private LocalRuntimeServer localRuntimeServer;
     private BroadcastReceiver screenEventReceiver;
+    private SensorManager sensorManager;
+    private SensorEventListener headTouchListener;
 
     /**
      * Bring the GeckoView UI (MainActivity) to the foreground.
@@ -61,9 +73,9 @@ public class RobotApiService extends Service {
     }
 
     private void sendEvent(String event, JSONObject data) {
-        Log.d(TAG, "Sending event '" + event + "' with data: " + data.toString());
-        if (asyncEventServer != null) {
-            asyncEventServer.sendEvent(event, data);
+        Log.d(TAG, "Sending robot event type '" + event + "'");
+        if (sessionCoordinator != null) {
+            sessionCoordinator.publishRobotEvent(event, data);
         }
     }
 
@@ -71,9 +83,9 @@ public class RobotApiService extends Service {
         try {
             JSONObject obj = new JSONObject();
             obj.put("data", data);
-            Log.d(TAG, "Sending event '" + event + "' with data: " + obj.toString());
-            if (asyncEventServer != null) {
-                asyncEventServer.sendEvent(event, obj);
+            Log.d(TAG, "Sending robot event type '" + event + "'");
+            if (sessionCoordinator != null) {
+                sessionCoordinator.publishRobotEvent(event, obj);
             }
         } catch (JSONException e) {
             Log.e(TAG, "sendEvent: JSONException", e);
@@ -114,18 +126,36 @@ public class RobotApiService extends Service {
 
         startForeground(NOTIFICATION_ID, notification);
 
+        // The renderer and remote session runtime must be available even when the
+        // vendor RobotAPI is missing, incompatible, or slow to initialize.
+        gatewaySettings = new GatewaySettings(getApplicationContext());
+        credentialStore = new DeviceCredentialStore(getApplicationContext());
+        robotGateway = new RobotGateway();
+        sessionCoordinator = new RemoteSessionCoordinator(gatewaySettings, credentialStore, robotGateway);
+        localRuntimeServer = new LocalRuntimeServer(
+                getApplicationContext(),
+                gatewaySettings,
+                credentialStore,
+                sessionCoordinator,
+                robotGateway
+        );
+        sessionCoordinator.setLocalPublisher(localRuntimeServer::publish);
+        try {
+            localRuntimeServer.start(8787);
+            activeLocalRuntime = localRuntimeServer;
+            localRuntimeReady = true;
+        } catch (IOException error) {
+            localRuntimeReady = false;
+            Log.e(TAG, "Local runtime failed to bind loopback port 8787", error);
+        }
+        sessionCoordinator.start();
+
         RobotCallback robotCallback = new RobotCallback() {
             @Override
             public void initComplete() {
                 super.initComplete();
-                Log.i(TAG, "RobotAPI initialized, starting async servers.");
-                asyncEventServer = new AndroidAsyncEventServer();
-                asyncEventServer.start(8790);
-
-                    // Start AsyncHttpServer-based API on the legacy HTTP port (8787).
-                    asyncRobotApiServer = new AsyncRobotApiServer(getApplicationContext(), robotAPI);
-                asyncRobotApiServer.start(8787);
-
+                Log.i(TAG, "RobotAPI initialized; attaching native robot gateway.");
+                robotGateway.attach(robotAPI);
                 sendEvent("initComplete", new JSONObject());
             }
 
@@ -265,10 +295,44 @@ public class RobotApiService extends Service {
             }
         };
 
-        robotAPI = new RobotAPI(getApplicationContext(), robotCallback);
-        robotAPI.robot.registerListenCallback(listenCallback);
-        robotAPI.robot.setPressOnHeadAction(false);
-        robotAPI.robot.setVoiceTrigger(false);
+        try {
+            robotAPI = new RobotAPI(getApplicationContext(), robotCallback);
+            robotAPI.robot.registerListenCallback(listenCallback);
+            robotAPI.robot.setPressOnHeadAction(false);
+            robotAPI.robot.setVoiceTrigger(false);
+            registerHeadTouchSensor();
+        } catch (Throwable error) {
+            Log.e(TAG, "RobotAPI initialization failed; local runtime remains available", error);
+            sendEvent("robotUnavailable", error.getClass().getSimpleName());
+        }
+    }
+
+    private void registerHeadTouchSensor() {
+        if (headTouchListener != null) return;
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        Sensor capacityTouch = sensorManager != null
+                ? sensorManager.getDefaultSensor(Utility.SensorType.CAPACITY_TOUCH)
+                : null;
+        if (capacityTouch == null) {
+            Log.w(TAG, "Zenbo capacity touch sensor is unavailable");
+            return;
+        }
+        headTouchListener = new SensorEventListener() {
+            @Override public void onSensorChanged(SensorEvent event) {
+                if (event.values.length == 0) return;
+                int pressType = Math.round(event.values[0]);
+                if (pressType == 1 || pressType == Utility.CapEventType.CAP_EVENT_SHORT) {
+                    sendEvent("HeadPress", new JSONObject());
+                }
+            }
+
+            @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            }
+        };
+        if (!sensorManager.registerListener(headTouchListener, capacityTouch, SensorManager.SENSOR_DELAY_NORMAL)) {
+            Log.w(TAG, "Could not register Zenbo capacity touch listener");
+            headTouchListener = null;
+        }
     }
 
     /**
@@ -279,7 +343,6 @@ public class RobotApiService extends Service {
         if (screenEventReceiver != null) {
             return;
         }
-
         screenEventReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -323,6 +386,8 @@ public class RobotApiService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        localRuntimeReady = false;
+        activeLocalRuntime = null;
         if (screenEventReceiver != null) {
             try {
                 unregisterReceiver(screenEventReceiver);
@@ -331,14 +396,19 @@ public class RobotApiService extends Service {
             }
             screenEventReceiver = null;
         }
-        if (asyncEventServer != null) {
-            asyncEventServer.stop();
-            asyncEventServer = null;
+        if (sensorManager != null && headTouchListener != null) {
+            sensorManager.unregisterListener(headTouchListener);
+            headTouchListener = null;
         }
-        if (asyncRobotApiServer != null) {
-            asyncRobotApiServer.stop();
-            asyncRobotApiServer = null;
+        if (sessionCoordinator != null) {
+            sessionCoordinator.stop();
+            sessionCoordinator = null;
         }
+        if (localRuntimeServer != null) {
+            localRuntimeServer.stop();
+            localRuntimeServer = null;
+        }
+        if (robotGateway != null) robotGateway.detach();
         if (robotAPI != null) {
             robotAPI.release();
         }
@@ -347,5 +417,14 @@ public class RobotApiService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    public static boolean isLocalRuntimeReady() {
+        return localRuntimeReady;
+    }
+
+    public static String issueRendererBootstrapSecret() {
+        LocalRuntimeServer runtime = activeLocalRuntime;
+        return runtime != null ? runtime.issueBootstrapSecret() : null;
     }
 }

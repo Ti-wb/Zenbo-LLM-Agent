@@ -1,0 +1,216 @@
+package com.robot.asus.kira;
+
+import org.junit.Test;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
+
+public class RuntimeValidatorTest {
+    @Test
+    public void validatesPcm16Mono16kWavAndDeclaredDuration() {
+        byte[] wav = wav(16_000, 1, 16, 1_000);
+        WavValidator.validate(wav, 1_000);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsStereoWav() {
+        WavValidator.validate(wav(16_000, 2, 16, 1_000), 1_000);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsMismatchedDeclaredWavDuration() {
+        WavValidator.validate(wav(16_000, 1, 16, 1_000), 2_000);
+    }
+
+    @Test
+    public void validatesAudioMimeLengthDigestAndExpiry() {
+        byte[] bytes = "verified audio".getBytes(StandardCharsets.UTF_8);
+        AudioArtifactValidator.validateMetadata("audio/mpeg", bytes.length, 20_000L, 10_000L);
+        AudioArtifactValidator.validatePayload(
+                bytes,
+                "audio/mpeg",
+                "audio/mpeg",
+                bytes.length,
+                AudioArtifactValidator.sha256(bytes)
+        );
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsAudioDigestMismatch() {
+        byte[] bytes = "audio".getBytes(StandardCharsets.UTF_8);
+        AudioArtifactValidator.validatePayload(bytes, "audio/wav", "audio/wav", bytes.length,
+                "0000000000000000000000000000000000000000000000000000000000000000");
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void rejectsExpiredAudioMetadata() {
+        AudioArtifactValidator.validateMetadata("audio/wav", 100, 10_000L, 10_000L);
+    }
+
+    @Test
+    public void idempotencyKeysAreStableAndOperationScoped() {
+        String first = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "started");
+        String retry = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "started");
+        String completed = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "completed");
+        assertEquals(first, retry);
+        assertNotEquals(first, completed);
+    }
+
+    @Test
+    public void gatewayStateNeverLeaksAnUnknownRuntimeState() {
+        assertEquals("DEGRADED", GatewayStateMapper.normalize("DEGRADED"));
+        assertEquals("OFFLINE", GatewayStateMapper.normalize("RECONNECTING"));
+        assertEquals("OFFLINE", GatewayStateMapper.normalize("ERROR"));
+    }
+
+    @Test
+    public void terminalSessionEventsRecreateExceptForRevokedCredentials() {
+        assertTrue(AgentGatewayClient.shouldRecreateSession("session.closed", "policy"));
+        assertTrue(AgentGatewayClient.shouldRecreateSession("session.expired", "idle_timeout"));
+        assertFalse(AgentGatewayClient.shouldRecreateSession("session.expired", "credential_revoked"));
+    }
+
+    @Test
+    public void toolCallCannotDispatchBeforeRemoteAcceptanceOrAfterTerminal() {
+        ToolCallLifecycle lifecycle = new ToolCallLifecycle();
+        String callId = "11111111-1111-4111-8111-111111111111";
+        assertTrue(lifecycle.beginAcceptance(callId));
+        assertFalse(lifecycle.isDispatched(callId));
+        assertTrue(lifecycle.markAccepted(callId));
+        assertTrue(lifecycle.isDispatched(callId));
+        lifecycle.markTerminal(callId);
+        assertFalse(lifecycle.isDispatched(callId));
+        assertFalse(lifecycle.beginAcceptance(callId));
+    }
+
+    @Test
+    public void cancelledTurnCannotRegainPhysicalExecutionAuthority() {
+        TurnAuthority authority = new TurnAuthority();
+        String turnId = "22222222-2222-4222-8222-222222222222";
+        final boolean[] executed = {false};
+        assertTrue(authority.runIfAuthorized(turnId, () -> executed[0] = true));
+        assertTrue(executed[0]);
+        authority.revoke(turnId);
+        executed[0] = false;
+        assertFalse(authority.runIfAuthorized(turnId, () -> executed[0] = true));
+        assertFalse(executed[0]);
+        assertTrue(authority.isRevoked(turnId));
+    }
+
+    @Test
+    public void cancellationAfterQueueingStillBlocksTheActualSideEffect() {
+        TurnAuthority authority = new TurnAuthority();
+        String turnId = "33333333-3333-4333-8333-333333333333";
+        final boolean[] sideEffect = {false};
+        Runnable queuedMainThreadWork = () -> GuardedExecution.runIfAllowed(
+                action -> authority.runIfAuthorized(turnId, action),
+                () -> sideEffect[0] = true
+        );
+        authority.revoke(turnId);
+        queuedMainThreadWork.run();
+        assertFalse(sideEffect[0]);
+    }
+
+    @Test
+    public void reconnectJitterModuloIsApi23SafeAndNonNegative() {
+        assertEquals(0L, AgentGatewayClient.nonNegativeModulo(Long.MIN_VALUE, 4L));
+        assertEquals(3L, AgentGatewayClient.nonNegativeModulo(-1L, 4L));
+        assertEquals(1L, AgentGatewayClient.nonNegativeModulo(5L, 4L));
+    }
+
+    @Test
+    public void nativeToolManifestHasExactOwnersEffectsSchemasAndTimeouts() {
+        List<ToolManifestSpec.Definition> tools = ToolManifestSpec.definitions();
+        assertEquals(6, tools.size());
+        Set<String> names = new HashSet<>();
+        for (ToolManifestSpec.Definition tool : tools) {
+            String name = tool.name;
+            names.add(name);
+            boolean webOwned = "show_emotion".equals(name) || "go_to_sleep".equals(name);
+            assertEquals(webOwned ? "web" : "native", tool.owner);
+            assertEquals(webOwned ? "ui" : "get_system_status".equals(name) ? "none" : "physical",
+                    tool.sideEffect);
+            assertEquals(5_000, tool.timeoutMs);
+            assertEquals(!"start_robot_following".equals(name), tool.idempotent);
+        }
+
+        assertEquals(new HashSet<>(Arrays.asList(
+                "get_system_status", "start_robot_following", "stop_robot_following",
+                "look_at_user", "show_emotion", "go_to_sleep"
+        )), names);
+
+        assertEquals(set(), propertyNames(findTool(tools, "get_system_status").inputProperties));
+        assertEquals(set("enablePreview", "largePreview"),
+                propertyNames(findTool(tools, "start_robot_following").inputProperties));
+        assertEquals(set(), propertyNames(findTool(tools, "stop_robot_following").inputProperties));
+        assertEquals(set("doa"), propertyNames(findTool(tools, "look_at_user").inputProperties));
+        assertEquals(set("emotion", "durationMs"),
+                propertyNames(findTool(tools, "show_emotion").inputProperties));
+        assertEquals(set(), propertyNames(findTool(tools, "go_to_sleep").inputProperties));
+
+        assertEquals(set("accepted", "robotReady", "moving", "androidSdk", "robotModel"),
+                propertyNames(findTool(tools, "get_system_status").resultProperties));
+        assertEquals(set("accepted"),
+                propertyNames(findTool(tools, "start_robot_following").resultProperties));
+        assertEquals(set("accepted"),
+                propertyNames(findTool(tools, "stop_robot_following").resultProperties));
+        assertEquals(set("accepted"),
+                propertyNames(findTool(tools, "look_at_user").resultProperties));
+        assertEquals(set("ok", "emotion", "durationMs"),
+                propertyNames(findTool(tools, "show_emotion").resultProperties));
+        assertEquals(set("ok", "sleeping"),
+                propertyNames(findTool(tools, "go_to_sleep").resultProperties));
+
+        assertEquals(set("doa"), set(findTool(tools, "look_at_user").requiredInputs.toArray(new String[0])));
+        assertEquals(set("emotion"), set(findTool(tools, "show_emotion").requiredInputs.toArray(new String[0])));
+        for (ToolManifestSpec.Definition tool : tools) {
+            assertEquals(propertyNames(tool.resultProperties), new HashSet<>(tool.requiredResults));
+        }
+    }
+
+    private static ToolManifestSpec.Definition findTool(
+            List<ToolManifestSpec.Definition> tools,
+            String name
+    ) {
+        for (ToolManifestSpec.Definition tool : tools) if (name.equals(tool.name)) return tool;
+        throw new AssertionError("Missing tool: " + name);
+    }
+
+    private static Set<String> propertyNames(List<ToolManifestSpec.Property> properties) {
+        Set<String> names = new HashSet<>();
+        for (ToolManifestSpec.Property property : properties) names.add(property.name);
+        return names;
+    }
+
+    private static Set<String> set(String... values) {
+        return new HashSet<>(Arrays.asList(values));
+    }
+
+    private static byte[] wav(int sampleRate, int channels, int bitsPerSample, int durationMs) {
+        int dataSize = sampleRate * channels * (bitsPerSample / 8) * durationMs / 1_000;
+        ByteBuffer buffer = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put("RIFF".getBytes(StandardCharsets.US_ASCII));
+        buffer.putInt(36 + dataSize);
+        buffer.put("WAVEfmt ".getBytes(StandardCharsets.US_ASCII));
+        buffer.putInt(16);
+        buffer.putShort((short) 1);
+        buffer.putShort((short) channels);
+        buffer.putInt(sampleRate);
+        buffer.putInt(sampleRate * channels * (bitsPerSample / 8));
+        buffer.putShort((short) (channels * (bitsPerSample / 8)));
+        buffer.putShort((short) bitsPerSample);
+        buffer.put("data".getBytes(StandardCharsets.US_ASCII));
+        buffer.putInt(dataSize);
+        return buffer.array();
+    }
+}

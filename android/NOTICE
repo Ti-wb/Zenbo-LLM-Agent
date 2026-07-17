@@ -11,6 +11,21 @@ AndroidAsync
 Copyright 2013 Koushik Dutta (2013)
 Licensed under the Apache License, Version 2.0.
 
+OkHttp 4.12.0
+Copyright 2019 Square, Inc.
+Licensed under the Apache License, Version 2.0.
+https://square.github.io/okhttp/
+
+Okio 3.6.0
+Copyright 2013 Square, Inc.
+Licensed under the Apache License, Version 2.0.
+https://square.github.io/okio/
+
+Kotlin Standard Library 2.2.10 (resolved Android runtime version)
+Copyright 2010-2025 JetBrains s.r.o. and Kotlin Programming Language contributors.
+Licensed under the Apache License, Version 2.0.
+https://github.com/JetBrains/kotlin
+
 Mozilla GeckoView
 Licensed under the Mozilla Public License, Version 2.0.
 The corresponding source and license are available from:

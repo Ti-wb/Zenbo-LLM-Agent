@@ -1,6 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<org.mozilla.geckoview.GeckoView
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/geckoview"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent" />
+    android:layout_height="match_parent"
+    android:background="#061018">
+
+    <org.mozilla.geckoview.GeckoView
+        android:id="@+id/geckoview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:id="@+id/runtime_recovery"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="48dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/runtime_recovery_title"
+            android:textColor="#E8FBFF"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:text="@string/runtime_recovery_message"
+            android:textColor="#9FC2CC"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/runtime_retry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/runtime_recovery_retry" />
+    </LinearLayout>
+</FrameLayout>

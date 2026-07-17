@@ -6,6 +6,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.View;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -24,24 +27,49 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
     private GeckoView mGeckoView;
     private GeckoSession mGeckoSession;
     private GeckoRuntime mGeckoRuntime;
+    private View runtimeRecovery;
+    private final Handler readinessHandler = new Handler(Looper.getMainLooper());
+    private boolean rendererLoaded;
+    private final Runnable showRecovery = () -> {
+        if (!rendererLoaded && runtimeRecovery != null) runtimeRecovery.setVisibility(View.VISIBLE);
+    };
+    private final Runnable loadWhenReady = new Runnable() {
+        @Override
+        public void run() {
+            if (isFinishing() || isDestroyed() || rendererLoaded) return;
+            if (RobotApiService.isLocalRuntimeReady()) {
+                String bootstrapSecret = RobotApiService.issueRendererBootstrapSecret();
+                if (bootstrapSecret != null) {
+                    rendererLoaded = true;
+                    readinessHandler.removeCallbacks(showRecovery);
+                    if (runtimeRecovery != null) runtimeRecovery.setVisibility(View.GONE);
+                    mGeckoSession.loadUri("http://127.0.0.1:8787/#bootstrapToken=" + bootstrapSecret);
+                    return;
+                }
+                readinessHandler.postDelayed(this, 250L);
+            } else {
+                readinessHandler.postDelayed(this, 250L);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        enterImmersiveMode();
+        startRobotService();
 
         // Request notification permission on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION_REQUEST_CODE);
-            } else {
-                startRobotService();
             }
-        } else {
-            startRobotService();
         }
 
         mGeckoView = findViewById(R.id.geckoview);
+        runtimeRecovery = findViewById(R.id.runtime_recovery);
+        findViewById(R.id.runtime_retry).setOnClickListener(view -> retryRuntime());
         mGeckoSession = new GeckoSession();
 
         mGeckoSession.setPermissionDelegate(this);
@@ -50,12 +78,34 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
 
         mGeckoSession.open(mGeckoRuntime);
         mGeckoView.setSession(mGeckoSession);
-        mGeckoSession.loadUri("http://127.0.0.1:8787/");
+        readinessHandler.post(loadWhenReady);
+        readinessHandler.postDelayed(showRecovery, 15_000L);
     }
 
     private void startRobotService() {
         Intent intent = new Intent(this, RobotApiService.class);
         ContextCompat.startForegroundService(this, intent);
+    }
+
+    private void retryRuntime() {
+        readinessHandler.removeCallbacks(loadWhenReady);
+        readinessHandler.removeCallbacks(showRecovery);
+        rendererLoaded = false;
+        if (runtimeRecovery != null) runtimeRecovery.setVisibility(View.GONE);
+        stopService(new Intent(this, RobotApiService.class));
+        readinessHandler.postDelayed(() -> {
+            startRobotService();
+            readinessHandler.post(loadWhenReady);
+            readinessHandler.postDelayed(showRecovery, 15_000L);
+        }, 500L);
+    }
+
+    private void loadFreshRenderer() {
+        readinessHandler.removeCallbacks(loadWhenReady);
+        readinessHandler.removeCallbacks(showRecovery);
+        rendererLoaded = false;
+        readinessHandler.post(loadWhenReady);
+        readinessHandler.postDelayed(showRecovery, 15_000L);
     }
 
     @Override
@@ -78,12 +128,35 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == AUDIO_PERMISSION_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                mGeckoSession.reload();
+                loadFreshRenderer();
             }
         } else if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startRobotService();
-            }
+            // The foreground service is started regardless; this permission only
+            // controls whether Android 13+ shows its notification to the user.
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        readinessHandler.removeCallbacksAndMessages(null);
+        if (mGeckoSession != null) mGeckoSession.close();
+        super.onDestroy();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) enterImmersiveMode();
+    }
+
+    private void enterImmersiveMode() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        );
     }
 }
