@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000003",
+  "data": {
+    "reachable": true,
+    "tlsTrusted": false,
+    "latencyMs": 42,
+    "protocolVersion": null,
+    "confirmationRequired": true,
+    "fingerprint": "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+    "authenticated": false,
+    "capabilitiesReceived": false
+  },
+  "error": null
+}

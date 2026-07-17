@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000008",
+  "data": {
+    "gatewayUrl": "https://gateway.example.test/agent/v1",
+    "trustMode": "SYSTEM_TRUST",
+    "agentProfile": "zenbo-default",
+    "context": {
+      "robotName": "Kira",
+      "language": "zh-TW"
+    },
+    "credentialConfigured": true,
+    "certificatePinConfigured": false,
+    "pinConfigured": true,
+    "unlocked": false,
+    "unlockExpiresAt": null,
+    "deviceToken": "this-must-never-be-returned"
+  },
+  "error": null
+}

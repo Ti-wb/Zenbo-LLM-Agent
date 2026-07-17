@@ -1,0 +1,6 @@
+{
+  "gatewayUrl": "https://gateway.example.test/agent/v1",
+  "trustMode": "SYSTEM_TRUST",
+  "agentProfile": "zenbo-default",
+  "openaiApiKey": "fixture-provider-key-is-forbidden"
+}

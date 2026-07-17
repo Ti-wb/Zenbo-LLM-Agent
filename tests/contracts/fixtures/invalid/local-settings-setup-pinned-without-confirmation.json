@@ -1,0 +1,12 @@
+{
+  "pin": "123456",
+  "confirmPin": "123456",
+  "gatewayUrl": "https://gateway.example.test/agent/v1",
+  "deviceToken": "fixture-device-token-never-persist",
+  "trustMode": "CONFIRMED_SPKI_PIN",
+  "agentProfile": "zenbo-default",
+  "context": {
+    "robotName": "Kira",
+    "language": "zh-TW"
+  }
+}

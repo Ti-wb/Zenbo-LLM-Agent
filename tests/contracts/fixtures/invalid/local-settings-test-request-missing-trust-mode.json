@@ -1,0 +1,4 @@
+{
+  "gatewayUrl": "https://gateway.example.test/agent/v1",
+  "agentProfile": "zenbo-default"
+}

@@ -1,0 +1,10 @@
+{
+  "first": {
+    "clientVersion": "0.1.0",
+    "bootstrapToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "replay": {
+    "clientVersion": "0.1.0",
+    "bootstrapToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  }
+}

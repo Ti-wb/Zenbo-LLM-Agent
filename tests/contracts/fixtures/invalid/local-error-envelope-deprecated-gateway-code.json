@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "requestId": "80000000-0000-4000-8000-000000000011",
+  "data": null,
+  "error": {
+    "code": "GATEWAY_UNAVAILABLE",
+    "message": "Deprecated ambiguous Gateway error.",
+    "retryable": true
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "requestId": "80000000-0000-4000-8000-000000000002",
+  "data": null,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Renderer session is missing.",
+    "retryable": false,
+    "sessionToken": "must-not-be-returned"
+  }
+}

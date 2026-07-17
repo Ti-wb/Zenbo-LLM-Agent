@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "requestId": "80000000-0000-4000-8000-000000000007",
+  "data": null,
+  "error": {
+    "code": "GATEWAY_TLS",
+    "message": "Gateway certificate validation failed.",
+    "retryable": false
+  }
+}

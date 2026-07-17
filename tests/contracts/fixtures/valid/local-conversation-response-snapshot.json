@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000006",
+  "data": {
+    "sessionId": "20000000-0000-4000-8000-000000000001",
+    "activeTurnId": "30000000-0000-4000-8000-000000000001",
+    "turnState": "THINKING",
+    "lastSequence": 18,
+    "transcript": "今天天氣如何？",
+    "assistantText": ""
+  },
+  "error": null
+}

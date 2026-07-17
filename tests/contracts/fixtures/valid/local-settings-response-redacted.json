@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000005",
+  "data": {
+    "gatewayUrl": "https://gateway.example.test/agent/v1",
+    "trustMode": "CONFIRMED_SPKI_PIN",
+    "agentProfile": "zenbo-default",
+    "context": {
+      "robotName": "Kira",
+      "language": "zh-TW"
+    },
+    "credentialConfigured": true,
+    "certificatePinConfigured": true,
+    "pinConfigured": true,
+    "unlocked": true,
+    "unlockExpiresAt": "2026-07-17T08:15:00.000Z"
+  },
+  "error": null
+}

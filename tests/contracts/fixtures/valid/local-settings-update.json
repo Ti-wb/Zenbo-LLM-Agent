@@ -1,0 +1,12 @@
+{
+  "gatewayUrl": "https://gateway.example.com",
+  "deviceToken": "fixture-replacement-device-token",
+  "trustMode": "CONFIRMED_SPKI_PIN",
+  "certificatePin": "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+  "confirmedFingerprint": "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+  "agentProfile": "kira-default",
+  "context": {
+    "robotName": "Kira",
+    "language": "de-DE"
+  }
+}

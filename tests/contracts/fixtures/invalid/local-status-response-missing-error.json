@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000001",
+  "data": {
+    "runtimeReady": true,
+    "setupRequired": false,
+    "settingsUnlocked": false,
+    "gatewayState": "READY",
+    "robotReady": true,
+    "activeSessionId": null,
+    "activeTurnId": null
+  }
+}

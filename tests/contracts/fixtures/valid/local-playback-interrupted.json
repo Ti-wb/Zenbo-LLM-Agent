@@ -1,0 +1,8 @@
+{
+  "turnId": "40000000-0000-4000-8000-000000000001",
+  "artifactId": "50000000-0000-4000-8000-000000000001",
+  "status": "interrupted",
+  "timestamp": "2026-07-17T08:00:07.000Z",
+  "positionMs": 900,
+  "reason": "barge_in"
+}

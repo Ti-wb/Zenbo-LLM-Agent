@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000009",
+  "data": {
+    "sessionId": "20000000-0000-4000-8000-000000000001",
+    "activeTurnId": null,
+    "state": "active",
+    "lastSequence": 18,
+    "transcript": "",
+    "assistantText": ""
+  },
+  "error": null
+}

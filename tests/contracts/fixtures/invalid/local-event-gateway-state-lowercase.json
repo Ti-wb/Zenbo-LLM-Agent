@@ -1,0 +1,9 @@
+{
+  "protocolVersion": "1.0",
+  "eventId": "90000000-0000-4000-8000-000000000007",
+  "type": "local.gateway.state",
+  "timestamp": "2026-07-17T08:00:06.000Z",
+  "data": {
+    "state": "connected"
+  }
+}
