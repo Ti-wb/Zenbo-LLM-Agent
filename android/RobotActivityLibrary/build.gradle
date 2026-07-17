@@ -28,8 +28,27 @@ java {
     }
 }
 
+def zenboSdkJarPath = findProperty('zenboSdkJar') ?:
+        'ZenboSDK/.local/ZenboJuniorSDK.jar'
+def zenboSdkJar = rootProject.file(zenboSdkJarPath)
+
+tasks.register('verifyZenboSdk') {
+    doLast {
+        if (!zenboSdkJar.isFile()) {
+            throw new GradleException(
+                    "Missing ASUS Zenbo SDK: ${zenboSdkJar}. " +
+                    'See android/ZenboSDK/README.md for setup instructions.'
+            )
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('verifyZenboSdk')
+}
+
 dependencies {
     testImplementation 'junit:junit:4.12'
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    api files('../ZenboSDK/ZenboJuniorSDK.jar')
+    api files(zenboSdkJar)
 }

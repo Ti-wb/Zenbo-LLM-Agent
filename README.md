@@ -102,6 +102,37 @@ To revert back to the original launcher, clear KIRA’s default HOME association
 
 ## Developing & Building
 
+### Prerequisites
+
+- Install a current Node.js release and npm for the Vue frontend.
+- Obtain a Zenbo SDK version compatible with the target robot directly from
+  ASUS after accepting the vendor EULA. SDK binaries are not distributed by
+  this repository. Follow [android/ZenboSDK/README.md](android/ZenboSDK/README.md)
+  for the expected local path and Zenbo-K compatibility notes.
+- Install Android Studio and configure the Android SDK required by the Gradle
+  project.
+
+### Environment configuration
+
+Create a local environment file from the committed template:
+
+```sh
+cp .env.example .env
+```
+
+Fill only the integrations you intend to use. OpenAI-compatible features use
+`VITE_OPENAI_API_KEY`; stock data uses `VITE_FINNHUB_API_KEY`; and web search
+uses `VITE_FIRECRAWL_API_KEY` (or its legacy `VITE_FIRECRAWL_API_TOKEN` alias).
+The corresponding API base URLs and model names have usable examples in the
+template.
+
+Do not commit `.env`. Every variable prefixed with `VITE_` is compiled into the
+browser bundle and must be treated as public. A key placed there can be read
+from the web UI, generated Android assets, or a distributed APK. For anything
+beyond local development, route authenticated provider calls through a trusted
+backend or native credential bridge, or require the device owner to supply a
+revocable key at runtime.
+
 ### Frontend (Vue)
 
 - Install dependencies: `npm install`
@@ -118,3 +149,21 @@ To revert back to the original launcher, clear KIRA’s default HOME association
 - While `npm run android` is running, any changes to the Vue app will rebuild and update `android/KiraZenbo/src/main/assets/app/index.html` automatically.
   - To see updated UI in GeckoView, rebuild/relaunch the Android app from Android Studio (or use “Apply Changes” if available).
 - Once installed and set as the HOME/launcher, KIRA will start as the main UI; `RobotApiService` starts automatically to provide the HTTP and WebSocket APIs.
+
+## License and third-party software
+
+The original project source is provided under the
+[Apache License 2.0](LICENSE). That license does not automatically cover vendor
+SDKs or all third-party dependencies used by the Android and web applications.
+
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) records bundled and runtime
+  third-party components and their attribution requirements.
+- [WEB_THIRD_PARTY_LICENSES.txt](WEB_THIRD_PARTY_LICENSES.txt) contains the
+  generated license inventory for web dependencies.
+- [android/NOTICE](android/NOTICE) contains Android-side notices retained from
+  the upstream project.
+- [android/ZenboSDK/README.md](android/ZenboSDK/README.md) explains how to
+  obtain the proprietary ASUS SDK locally without redistributing it.
+
+When distributing an APK or another binary build, include the applicable
+third-party notices with the release.

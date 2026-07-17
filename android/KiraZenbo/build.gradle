@@ -44,6 +44,35 @@ repositories {
     }
 }
 
+def generatedLicenseAssetsDir = layout.buildDirectory.dir('generated/licenseAssets')
+def bundledLicenseFiles = [
+        rootProject.file('../LICENSE'),
+        rootProject.file('../THIRD_PARTY_NOTICES.md'),
+        rootProject.file('../WEB_THIRD_PARTY_LICENSES.txt'),
+        rootProject.file('NOTICE')
+]
+
+tasks.register('bundleLicenseAssets', Copy) {
+    from(bundledLicenseFiles) {
+        into 'licenses'
+    }
+    into generatedLicenseAssetsDir
+
+    doFirst {
+        bundledLicenseFiles.each { licenseFile ->
+            if (!licenseFile.isFile()) {
+                throw new GradleException("Missing required license asset: ${licenseFile}")
+            }
+        }
+    }
+}
+
+android.sourceSets.main.assets.srcDir(generatedLicenseAssetsDir)
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('bundleLicenseAssets')
+}
+
 dependencies {
     testImplementation 'junit:junit:4.13.2'
 
@@ -58,6 +87,4 @@ dependencies {
     // AndroidAsync HTTP/WebSocket server for robot event streaming.
     implementation 'com.koushikdutta.async:androidasync:3.1.0'
 
-    // ADDED: Swagger UI
-    implementation 'org.webjars:swagger-ui:5.17.14'
 }

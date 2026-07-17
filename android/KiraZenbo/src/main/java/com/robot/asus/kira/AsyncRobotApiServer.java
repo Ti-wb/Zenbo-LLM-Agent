@@ -35,7 +35,6 @@ import java.io.InputStream;
 
 /**
  * AsyncHttpServer-based implementation of the robot HTTP API.
- * Currently runs alongside NanoHTTPD on a separate port for testing.
  */
 public class AsyncRobotApiServer {
 

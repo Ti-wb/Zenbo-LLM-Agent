@@ -14,6 +14,11 @@ dist-ssr
 coverage
 *.local
 
+# Local environment configuration
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -36,4 +41,7 @@ coverage
 __screenshots__/
 
 # Generated assets
-android/KiraZenbo/src/main/assets/app/index.html
+android/KiraZenbo/src/main/assets/app/
+
+# Vendor SDK binaries must be obtained directly from ASUS
+/android/ZenboSDK/.local/

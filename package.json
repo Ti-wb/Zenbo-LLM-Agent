@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "android": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app"
+    "android": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app",
+    "licenses:web": "node scripts/generate-third-party-licenses.mjs"
   },
   "dependencies": {
     "@openai/agents": "^0.3.4",
