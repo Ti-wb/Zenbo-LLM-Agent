@@ -1,6 +1,6 @@
 {
   "name": "zenbo",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,20 +9,27 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "android": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:contracts": "node tests/contracts/validate-contracts.mjs",
+    "test:gateway": "node --test tests/fake-gateway/server.test.mjs",
+    "android": "vite build --outDir android/KiraZenbo/src/main/assets/app",
+    "android:watch": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app",
     "licenses:web": "node scripts/generate-third-party-licenses.mjs"
   },
   "dependencies": {
-    "@openai/agents": "^0.3.4",
-    "@ricky0123/vad-web": "^0.0.30",
-    "pinia": "^3.0.4",
-    "vue": "^3.5.25",
-    "zod": "^3.25.76"
+    "@ricky0123/vad-web": "0.0.30",
+    "pinia": "3.0.4",
+    "vue": "3.5.25"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.2",
-    "vite": "npm:rolldown-vite@latest",
-    "vite-plugin-singlefile": "^2.3.0",
-    "vite-plugin-vue-devtools": "^8.0.5"
+    "@vitejs/plugin-vue": "6.0.2",
+    "vite": "npm:rolldown-vite@7.2.10",
+    "vite-plugin-singlefile": "2.3.0",
+    "vitest": "4.0.17"
+  },
+  "overrides": {
+    "onnxruntime-common": "1.23.2",
+    "onnxruntime-web": "1.23.2"
   }
 }
