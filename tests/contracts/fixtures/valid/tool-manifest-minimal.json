@@ -1,0 +1,58 @@
+{
+  "protocolVersion": "1.0",
+  "manifestVersion": "mvp-1",
+  "tools": [
+    {
+      "name": "show_emotion",
+      "owner": "web",
+      "version": "1.0.0",
+      "description": "Display one allowlisted robot expression.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "enum": ["DEFAULT", "HAPPY", "HIDEFACE"]
+          }
+        },
+        "required": ["expression"],
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "properties": {
+          "applied": { "type": "boolean" }
+        },
+        "required": ["applied"],
+        "additionalProperties": false
+      },
+      "sideEffect": "ui",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "stop_robot_following",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Stop all active robot following behavior.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "properties": {
+          "stopped": { "type": "boolean" }
+        },
+        "required": ["stopped"],
+        "additionalProperties": false
+      },
+      "sideEffect": "physical",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    }
+  ]
+}

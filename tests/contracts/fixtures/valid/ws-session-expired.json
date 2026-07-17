@@ -1,0 +1,13 @@
+{
+  "protocolVersion": "1.0",
+  "eventId": "10000000-0000-4000-8000-000000000009",
+  "sequence": 8,
+  "sessionId": "20000000-0000-4000-8000-000000000001",
+  "turnId": null,
+  "type": "session.expired",
+  "timestamp": "2026-07-17T08:30:00.000Z",
+  "data": {
+    "reason": "idle_timeout",
+    "expiredAt": "2026-07-17T08:30:00.000Z"
+  }
+}

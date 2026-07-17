@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zenbo-k.local/contracts/agent-gateway/ws-envelope.schema.json",
+  "title": "Zenbo Agent Gateway WebSocket event envelope",
+  "description": "A gateway-to-device event on an authenticated session stream.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocolVersion",
+    "eventId",
+    "sequence",
+    "sessionId",
+    "turnId",
+    "type",
+    "timestamp",
+    "data"
+  ],
+  "properties": {
+    "protocolVersion": { "const": "1.0" },
+    "eventId": { "type": "string", "format": "uuid" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "sessionId": { "type": "string", "format": "uuid" },
+    "turnId": { "type": ["string", "null"], "format": "uuid" },
+    "type": {
+      "enum": [
+        "session.ready",
+        "session.snapshot",
+        "turn.accepted",
+        "stt.final",
+        "agent.thinking",
+        "tool.call",
+        "agent.text.final",
+        "tts.ready",
+        "turn.completed",
+        "turn.error",
+        "session.expired",
+        "turn.cancelled",
+        "session.closed"
+      ]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "data": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "turnId": { "const": null },
+        "type": { "const": "session.ready" },
+        "data": { "$ref": "#/$defs/sessionReady" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "const": null },
+        "type": { "const": "session.snapshot" },
+        "data": { "$ref": "#/$defs/sessionSnapshot" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "turn.accepted" },
+        "data": { "$ref": "#/$defs/emptyData" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "stt.final" },
+        "data": { "$ref": "#/$defs/sttFinal" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "agent.thinking" },
+        "data": { "$ref": "#/$defs/emptyData" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "tool.call" },
+        "data": { "$ref": "#/$defs/toolCall" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "agent.text.final" },
+        "data": { "$ref": "#/$defs/agentTextFinal" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "tts.ready" },
+        "data": { "$ref": "#/$defs/ttsReady" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "turn.completed" },
+        "data": { "$ref": "#/$defs/emptyData" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "turn.error" },
+        "data": { "$ref": "#/$defs/turnError" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "const": null },
+        "type": { "const": "session.expired" },
+        "data": { "$ref": "#/$defs/sessionExpired" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "$ref": "#/$defs/turnId" },
+        "type": { "const": "turn.cancelled" },
+        "data": { "$ref": "#/$defs/turnCancelled" }
+      }
+    },
+    {
+      "properties": {
+        "turnId": { "const": null },
+        "type": { "const": "session.closed" },
+        "data": { "$ref": "#/$defs/sessionClosed" }
+      }
+    }
+  ],
+  "$defs": {
+    "turnId": { "type": "string", "format": "uuid" },
+    "emptyData": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "sessionReady": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resumedAfter", "gatewayTime"],
+      "properties": {
+        "resumedAfter": { "type": "integer", "minimum": 0 },
+        "gatewayTime": { "type": "string", "format": "date-time" }
+      }
+    },
+    "sessionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "lastSequence"],
+      "properties": {
+        "state": { "enum": ["active", "closing"] },
+        "lastSequence": { "type": "integer", "minimum": 0 },
+        "activeTurnId": { "type": ["string", "null"], "format": "uuid" }
+      }
+    },
+    "sttFinal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "language"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 16000 },
+        "language": { "type": "string", "minLength": 2, "maxLength": 35 }
+      }
+    },
+    "agentTextFinal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 16000 }
+      }
+    },
+    "ttsReady": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "mimeType",
+        "byteLength",
+        "sha256",
+        "expiresAt"
+      ],
+      "properties": {
+        "artifactId": { "type": "string", "format": "uuid" },
+        "mimeType": { "enum": ["audio/mpeg", "audio/wav"] },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "turnError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "turnCancelled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "enum": ["client_request", "superseded", "timeout"] }
+      }
+    },
+    "sessionExpired": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "expiredAt"],
+      "properties": {
+        "reason": {
+          "enum": ["idle_timeout", "credential_revoked", "server_policy"]
+        },
+        "expiredAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "sessionClosed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "enum": ["client_request", "expired", "replaced", "policy"] }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "toolName",
+        "toolVersion",
+        "arguments",
+        "timeoutMs",
+        "deadlineAt"
+      ],
+      "properties": {
+        "callId": { "type": "string", "format": "uuid" },
+        "toolName": {
+          "enum": [
+            "get_system_status",
+            "start_robot_following",
+            "stop_robot_following",
+            "look_at_user",
+            "show_emotion",
+            "go_to_sleep"
+          ]
+        },
+        "toolVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "arguments": { "type": "object" },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 15000
+        },
+        "deadlineAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
