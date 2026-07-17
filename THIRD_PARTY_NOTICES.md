@@ -13,11 +13,9 @@ runtime dependencies currently declared in `package.json` are:
 
 | Component | Resolved version | License |
 | --- | --- | --- |
-| [OpenAI Agents SDK for JavaScript](https://github.com/openai/openai-agents-js) (`@openai/agents`) | 0.3.4 | MIT |
 | [VAD Web](https://github.com/ricky0123/vad) (`@ricky0123/vad-web`) | 0.0.30 | ISC |
 | [Pinia](https://github.com/vuejs/pinia) | 3.0.4 | MIT |
 | [Vue](https://github.com/vuejs/core) | 3.5.25 | MIT |
-| [Zod](https://github.com/colinhacks/zod) | 3.25.76 | MIT |
 
 Transitive production dependencies are listed in the generated web inventory
 rather than duplicated here. Development-only tooling is not included because
@@ -71,6 +69,25 @@ Copyright 2013 Koushik Dutta (2013)
 
 The Apache License 2.0 text is available in this repository's
 [`LICENSE`](LICENSE) file.
+
+### OkHttp, Okio, and Kotlin runtime
+
+The native Agent Gateway client adds OkHttp and its runtime dependencies. The
+versions below are the versions resolved in the Android debug runtime graph;
+release builds should re-check the resolved graph before distribution.
+
+| Component | Resolved version | License | Source |
+| --- | --- | --- | --- |
+| OkHttp (`com.squareup.okhttp3:okhttp`) | 4.12.0 | Apache-2.0 | <https://github.com/square/okhttp> |
+| Okio (`com.squareup.okio:okio-jvm`) | 3.6.0 | Apache-2.0 | <https://github.com/square/okio> |
+| Kotlin Standard Library (`org.jetbrains.kotlin:kotlin-stdlib`) | 2.2.10 | Apache-2.0 | <https://github.com/JetBrains/kotlin> |
+
+OkHttp carries Copyright 2019 Square, Inc. Okio carries Copyright 2013
+Square, Inc. Kotlin carries Copyright 2010-2025 JetBrains s.r.o. and Kotlin
+Programming Language contributors. The Apache License 2.0 text is available
+in this repository's [`LICENSE`](LICENSE) file. Kotlin standard-library JDK 7
+and JDK 8 compatibility artifacts also appear in the graph, but their classes
+resolve to the Kotlin 2.2.10 standard library used by the APK.
 
 ### ASUS Zenbo SDK
 

@@ -66,16 +66,35 @@ still a successful response with `data.remoteCancelled` and
 
 ## Resume and bootstrap
 
+- After renderer-session bootstrap, the renderer reads the authoritative
+  `GET /api/v1/status` and `GET /api/v1/conversation` resources before opening
+  its initial event stream. It initializes its remote cursor from the
+  conversation response's `lastSequence`.
 - The renderer supplies the last event sequence it has durably handled in
   `after`; omission means `0`.
 - The Local Runtime sends remote events in ascending sequence and suppresses
   duplicate `eventId` values. Ephemeral local controls may interleave without
   advancing or resetting that remote cursor.
 - An `after` value ahead of native state rejects the upgrade with `409`.
-- When the requested cursor is older than retained local history, the upgrade
-  succeeds and recovery follows the Agent Gateway rule: `session.ready`, then
-  an authoritative `session.snapshot`; the renderer resets its cursor from
-  `snapshot.data.lastSequence` before handling later events.
+- When the requested cursor is older than Native's retained local history, the
+  upgrade succeeds but Native MUST NOT invent, rewrite, or impersonate an Agent
+  Gateway event. In particular, it MUST NOT synthesize `session.ready` or
+  `session.snapshot` for this local retention condition.
+- For that stale-local-history case, Native sends the current normalized
+  `local.gateway.state` followed by `local.robot.state`. These are ephemeral
+  local controls without a remote `sequence`; they replace neither the missing
+  remote frames nor the authoritative HTTP state.
+- On receipt of the recovery `local.gateway.state`, the renderer reads both
+  `GET /api/v1/status` and `GET /api/v1/conversation`, atomically applies the
+  authoritative conversation state, resets its remote cursor to that
+  response's `lastSequence`, and handles later genuine remote frames from that
+  cursor. The accompanying robot control updates current robot readiness and
+  movement state but never changes the cursor.
+- Genuine remote frames remain unchanged end to end. If the external Agent
+  Gateway itself performs its specified stale-cursor recovery with
+  `session.ready` and `session.snapshot`, Native validates and relays those
+  actual remote envelopes unchanged; it does not manufacture substitutes at
+  the Local Runtime boundary.
 - A renderer-observed remote sequence gap closes processing and reconnects from
   the last durable cursor. It never guesses across a gap or repeats a physical
   side effect.

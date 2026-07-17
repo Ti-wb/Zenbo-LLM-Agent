@@ -1,63 +1,184 @@
 # Repository Guidelines
 
-This document guides contributors and AI agents working on this Zenbo web UI and Android wrapper.
+This document guides contributors and AI agents working on the Zenbo K thin
+client. The deployable Agent Gateway is a separate system and is not contained
+in this repository.
 
-## Project Structure & Module Organization
+## Architecture and Trust Boundaries
 
-- `src/` - Vue 3 single-page app (`App.vue`, `main.js`).
-- `src/composables/` - reusable hooks (e.g. `useRobotAPI.js`, `useVoiceAgent.js`, `useRobotEvents.js`, `useSleepMode.js`).
-- `src/modules/` - feature views such as `misc/` (tools like Assist, Finance, Sleep), `robot/`, and `event/` (e.g. EventDisplay, SleepWake).
-- `src/stores/` - Pinia stores and shared state.
-- `public/` - static assets injected by Vite.
-- `android/` - Gradle Android project; `KiraZenbo` bundles the Vite app, Android service, and SDK modules.
+- The Vue Web Renderer is a device UI only. It renders `PixelFace`, owns Pinia
+  interaction state, captures speech with VAD Web, and plays validated audio.
+- The Renderer talks only to the Android Local Runtime at
+  `http://127.0.0.1:8787`. HTTP endpoints live under `/api/v1`; the local event
+  stream is `ws://127.0.0.1:8787/api/v1/events` on the same unified server.
+- `MainActivity` hosts the bundled Renderer in GeckoView and uses a one-time
+  URL-fragment bootstrap token to establish an `HttpOnly` Local Runtime
+  session. Do not add a second local port or expose the Local Runtime to LAN.
+- `RobotApiService` owns the ASUS `RobotAPI`, `LocalRuntimeServer`,
+  `RemoteSessionCoordinator`, and the native `AgentGatewayClient` lifecycle.
+- Only the native `AgentGatewayClient` connects to the external Agent Gateway,
+  using HTTPS and WSS with protocol version `1.0`. The Renderer must never
+  connect to a Gateway, model provider, STT service, or TTS service directly.
+- Provider credentials belong only in the separately deployed Gateway. Device
+  tokens, TLS trust state, and settings authorization remain native concerns
+  and must not be placed in Pinia, `localStorage`, Web assets, or the APK as
+  build-time provider configuration.
+- `contracts/agent-gateway/` defines the remote boundary and
+  `contracts/local-runtime/` defines the Renderer-to-Native boundary. Treat
+  both as normative interfaces, not informal documentation.
+
+## Project Structure and Module Organization
+
+- `src/App.vue` - top-level Renderer and interaction-state presentation.
+- `src/components/PixelFace.vue` - web-rendered Zenbo face and emotion states.
+- `src/components/SettingsOverlay.vue` - Native-backed onboarding and settings.
+- `src/composables/` - orchestration hooks for Local Runtime, VAD, and playback.
+- `src/services/` - transports, timers, interaction policy, settings shaping,
+  and the web-owned tool registry.
+- `src/stores/` - Pinia runtime state; secrets must never be stored here.
+- `src/utils/` - focused helpers such as WAV/audio processing.
+- `public/vad/` - VAD and ONNX Runtime assets copied by Vite.
+- `android/KiraZenbo/` - GeckoView launcher, Local Runtime, remote Gateway
+  client, credential storage, and robot-tool mediation.
+- `android/RobotActivityLibrary/` - adapter around the locally supplied ASUS
+  Zenbo SDK.
+- `android/ZenboSDK/` - proprietary vendor SDK setup instructions; no SDK
+  binary is distributed by this repository.
+- `contracts/agent-gateway/` - remote OpenAPI, WebSocket, and tool-manifest
+  contracts.
+- `contracts/local-runtime/` - loopback OpenAPI, bootstrap security, and event
+  contracts.
+- `tests/contracts/` - deterministic contract and cross-surface consistency
+  checks.
+- `tests/fake-gateway/` - dependency-free in-memory Agent Gateway 1.0 test
+  harness; it is not production infrastructure.
+
+## Conversation and Event Flow
+
+1. `MainActivity` starts the native service and loads the bundled Renderer from
+   the loopback Local Runtime.
+2. `useRuntimeController` coordinates Pinia, VAD capture, playback, settings,
+   and `runtimeTransport`; it does not perform provider calls.
+3. `LocalRuntimeServer` validates the Renderer session and relays conversation
+   requests to `RemoteSessionCoordinator`.
+4. The native `AgentGatewayClient` uploads turns and maintains the remote
+   Gateway event stream. Native normalizes and relays permitted events over the
+   unified local WebSocket.
+5. Tool calls are validated against the fixed manifest, routed to the native
+   robot boundary or the web registry by ownership, and correlated results are
+   returned through the Local Runtime.
+
+Preserve event ordering, cursor resume behavior, terminal-event uniqueness,
+turn correlation, timeout limits, and playback reporting defined by the
+contracts. Do not create an ad-hoc event envelope or bypass Native validation.
+If the renderer's cursor predates Native's retained local history, Native emits
+only normalized `local.gateway.state` and `local.robot.state` controls; the
+Renderer refreshes `/api/v1/status` and `/api/v1/conversation` and resumes from
+the returned `lastSequence`. Never synthesize remote `session.ready` or
+`session.snapshot` envelopes for local-history recovery.
+
+## Fixed Device Tool Registry
+
+Protocol 1.0 exposes exactly six allowlisted device tools:
+
+| Tool | Owner | Implementation boundary |
+| --- | --- | --- |
+| `get_system_status` | Native | `RobotGateway` |
+| `start_robot_following` | Native | `RobotGateway` |
+| `stop_robot_following` | Native | `RobotGateway` |
+| `look_at_user` | Native | `RobotGateway` |
+| `show_emotion` | Web | `DeviceToolRegistry` / `useRuntimeController` |
+| `go_to_sleep` | Web | `DeviceToolRegistry` / `useRuntimeController` |
+
+The fixed set and its schemas are mirrored across `ToolManifestSpec`,
+`RobotGateway`, native Gateway validation, `src/services/toolOwnership.js`,
+the web registry, Agent Gateway schemas, contract fixtures, and Fake Gateway.
+When intentionally changing a tool, update every affected surface and its tests
+in the same change. Unknown tools, wrong owners, invalid arguments, expired
+deadlines, and duplicate terminal results must remain rejected.
 
 ## Build, Test, and Development Commands
 
-- `npm run dev` - start Vite dev server for local web development.
-- `npm run build` - production build into `dist/`.
-- `npm run android` - build web assets into `android/KiraZenbo/src/main/assets/app`.
-- From `android/`: `./gradlew assembleDebug` (or `gradlew.bat assembleDebug`) builds a debug APK.
+From the repository root:
 
-## Android Project Details
+```sh
+npm ci
+npm run dev
+npm run build
+npm run android
+```
 
-- Main app wrapper: `android/KiraZenbo` (hosts the web UI in `MainActivity` with GeckoView).
-- `MainActivity` also declares a `HOME` intent filter so KIRA can be set as the device launcher; when selected, the GeckoView UI becomes the home screen after boot.
-- Web assets must live under `android/KiraZenbo/src/main/assets/app`; keep this in sync via `npm run android`.
-- `RobotApiService` is a foreground service that initializes `RobotAPI`, runs `AsyncRobotApiServer` on `http://127.0.0.1:8787`, and `AndroidAsyncEventServer` on `ws://127.0.0.1:8790/events`.
-- SDK / integration modules: `RobotActivityLibrary`, `RobotDevSample`, `RobotDSBus`, `RobotDSTang`, `ZenboSDK`. Avoid changing them unless necessary; prefer integrating via the web UI or dedicated glue code.
+- `npm run dev` starts the Vite development server.
+- `npm run build` creates the production Web build in `dist/`.
+- `npm run android` builds Web assets into
+  `android/KiraZenbo/src/main/assets/app`.
+- `npm run android:watch` continuously rebuilds the Android Web assets.
+- `npm run licenses:web` regenerates the production Web dependency license
+  inventory after dependency or lockfile changes.
 
-## Robot Event Pipeline (WebSocket + HTTP)
+The complete repository-level automated checks are:
 
-- Native `RobotAPI` callbacks in `RobotApiService` send JSON payloads via `sendEvent(event, data)` into `AndroidAsyncEventServer.sendEvent` (WebSocket) and leverage `AsyncRobotApiServer` for HTTP health/actions.
-- `AndroidAsyncEventServer` exposes a WebSocket endpoint at `ws://<host>:8790/events`; each message is a JSON object `{ "type": "<eventName>", "data": { ... } }`.
-- In the web app, `useRobotEvents` opens this WebSocket, parses incoming JSON, and forwards payloads to `onEvent` and `onEventType(type, handler)` subscribers.
-- Components like `EventDisplay.vue` and `SleepWake.vue` listen for specific types (e.g. `onVoiceDetect`, `onEventUserUtterance`) to update UI, trigger `useRobotAPI` actions, or drive TTS and sleep/wake behavior.
-- When adding new robot-side events, emit them with `sendEvent("NewType", json)` in `RobotApiService`; as long as the payload has a `type` field, `useRobotEvents` will route it correctly.
+```sh
+npm test
+npm run test:contracts
+npm run test:gateway
+cd android
+./gradlew :RobotActivityLibrary:testDebugUnitTest :KiraZenbo:testDebugUnitTest
+./gradlew :KiraZenbo:assembleDebug
+```
 
-## Coding Style & Naming Conventions
+Android builds require JDK 17, Android SDK Platforms 34 and 36, and a locally
+obtained robot- and firmware-compatible ASUS Zenbo SDK JAR. Follow
+`android/ZenboSDK/README.md`; do not commit or redistribute the vendor JAR.
 
-- Use 2-space indentation and ES modules (`import` / `export`).
-- Vue components: PascalCase filenames (e.g. `Robot.vue`, `EventDisplay.vue`).
-- Composables: `useXxx.js` naming (e.g. `useRobotEvents.js`), keep side effects explicit.
-- Keep UI in `modules/`, logic in `composables/`, and shared state in `stores/`.
+## Coding Style and Design Rules
+
+- Use 2-space indentation and ES modules for JavaScript and Vue files. Follow
+  the existing Java formatting in Android sources.
+- Vue components use PascalCase filenames. Composables use `useXxx.js` names.
+- Keep presentation in components, orchestration in composables, protocol and
+  policy logic in services, and shared non-secret state in Pinia stores.
+- Make side effects explicit. Robot motion must pass through the Native-owned
+  tool boundary and its safety checks.
+- Keep Renderer-to-Native calls inside `runtimeTransport`; do not scatter
+  loopback requests across components.
+- Keep protocol payloads strict and versioned. Prefer schema changes plus
+  fixtures before or alongside implementation changes.
+- Do not add provider SDKs, provider `.env` files, or provider API keys to the
+  client. New model capabilities belong behind the external Agent Gateway.
 
 ## Testing Guidelines
 
-- No formal test runner is configured yet; include clear manual test steps in PR descriptions.
-- If you add automated tests, place them in `tests/` or `__tests__/` near the feature and wire an `npm test` script.
-- Prioritize coverage for robot control, voice, and event-handling flows.
+- Vitest tests are colocated as `*.test.js` beside Web code. Add focused tests
+  for state transitions, VAD/playback coordination, transports, settings, and
+  tool validation when those areas change.
+- Run `npm run test:contracts` for any API, event, settings, tool, or security
+  boundary change.
+- Run `npm run test:gateway` for remote lifecycle, WebSocket, artifact, or tool
+  flow changes.
+- Run the narrowest relevant Android unit tests for Native changes, then the
+  full Android test command above before handoff.
+- Hardware-dependent work must include explicit Zenbo K manual test steps and
+  name the device/firmware tested. Do not infer physical-device compatibility
+  from a successful desktop, JVM, or APK build.
 
-## Commit & Pull Request Guidelines
+## License and Dependency Hygiene
 
-- Commit messages: short, imperative summaries (e.g. `feat: add robot event display`, `fix: handle missing robot connection`).
-- Keep commits focused and logically grouped by feature or fix.
-- PRs should state purpose, key changes, testing performed (commands and platforms), and screenshots or screen recordings for UI changes.
-- Link related issues when available and call out any breaking changes explicitly.
+- Project source is Apache-2.0; preserve `LICENSE`, required notices, and
+  prominent modification notices when redistributing modified work.
+- The ASUS Zenbo SDK is proprietary and outside the project license. Never
+  commit its JAR.
+- When runtime dependencies change, update `THIRD_PARTY_NOTICES.md`, regenerate
+  `WEB_THIRD_PARTY_LICENSES.txt` when applicable, and verify Android notice
+  obligations before distribution.
 
-## Agent HTML Syntax (`<tool>` & `<context>`)
+## Commit and Pull Request Guidelines
 
-- Use `<context name="...">` to expose short, human-readable facts or instructions to the agent (e.g. `current_time` in `App.vue`, `robot` in `Robot.vue`); keep content concise and user-facing.
-- Define tools with `<tool name="snake_case_name" description="..." @call="handler" [return]>` inside feature modules (`Weather.vue`, `Finance.vue`, `Assist.vue`, etc.).
-- Add `<prop>` children to declare parameters: `name`, `type` (`string`, `number`, etc.), `description`, and `required` when applicable; names should be stable, descriptive, and in English.
-- In handlers, read `event.detail` for arguments and dispatch results with `event.target.dispatchEvent(new CustomEvent('return', { detail }))` only when the `<tool>` has the `return` attribute; omit `return` for fire-and-forget actions like `start_robot_following`.
-- Prefer one focused `<tool>` per concrete capability (weather, finance, search, reminders, image generation, robot actions) and keep descriptions specific so the agent can choose the right tool reliably.
+- Use Conventional Commits, for example `feat: add gateway reconnect state`,
+  `fix: reject expired tool calls`, `docs: update launcher recovery`, or
+  `test: cover playback cancellation`.
+- Keep commits focused and logically grouped. Do not mix generated artifacts,
+  unrelated cleanup, and behavior changes without a clear reason.
+- PRs should state purpose, key changes, tests performed, target platforms, and
+  hardware validation status. Include screenshots or recordings for visible UI
+  changes and call out protocol or compatibility breaks explicitly.
