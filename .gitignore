@@ -18,6 +18,8 @@ coverage
 .env
 .env.*
 !.env.example
+/backend/profiles.json
+/backend/.data/
 
 # Editor directories and files
 .vscode/*

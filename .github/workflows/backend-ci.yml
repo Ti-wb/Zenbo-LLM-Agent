@@ -1,0 +1,110 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.4-bookworm
+        env:
+          POSTGRES_DB: gateway_test
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.5
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Verify Go toolchain
+        run: test "$(go env GOVERSION)" = "go1.26.5"
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Check generated sqlc code
+        run: make sqlc-check
+
+      - name: Check embedded contract drift
+        run: ./scripts/check-contract-drift.sh
+
+      - name: Vet backend
+        run: go vet ./...
+
+      - name: Test backend
+        run: go test -count=1 ./...
+
+      - name: Test backend with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Run PostgreSQL integration suite
+        env:
+          GATEWAY_TEST_DATABASE_URL: postgresql://gateway:gateway@127.0.0.1:5432/gateway_test?sslmode=disable
+        run: go test -count=1 -v -run '^TestPostgresIntegration$' ./internal/store
+
+      - name: Build gateway binary
+        run: go build -trimpath -o "${RUNNER_TEMP}/zenbo-gateway" ./cmd/zenbo-gateway
+
+  contracts:
+    name: Contract and gateway tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.11.1
+          check-latest: false
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked Node.js dependencies
+        run: npm ci
+
+      - name: Validate contracts
+        run: npm run test:contracts
+
+      - name: Test Fake Gateway
+        run: npm run test:gateway
+
+      - name: Run bundled Gateway black-box suite
+        run: npm run test:gateway:blackbox

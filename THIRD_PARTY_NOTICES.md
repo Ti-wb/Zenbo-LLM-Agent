@@ -27,6 +27,48 @@ inventory includes the VAD/Silero and ONNX Runtime license texts. ONNX Runtime
 also publishes its version-specific bundled dependency notices here:
 <https://github.com/microsoft/onnxruntime/blob/v1.23.2/ThirdPartyNotices.txt>.
 
+## Go Agent Gateway runtime
+
+The separately deployed `backend/` binary includes the following direct Go
+runtime dependencies. Exact resolution is recorded in `backend/go.sum`.
+
+| Component | Resolved version | License | Source |
+| --- | --- | --- | --- |
+| coder/websocket | 1.8.15 | ISC | <https://github.com/coder/websocket> |
+| pgx | 5.10.0 | MIT | <https://github.com/jackc/pgx> |
+| OpenAI Go | 3.44.0 | Apache-2.0 | <https://github.com/openai/openai-go> |
+| Goose | 3.27.3 | MIT | <https://github.com/pressly/goose> |
+| jsonschema | 6.0.2 | Apache-2.0 | <https://github.com/santhosh-tekuri/jsonschema> |
+
+The compiled dependency graph also includes:
+
+| Component | Resolved version | License |
+| --- | --- | --- |
+| jackc/pgpassfile | 1.0.0 | MIT |
+| jackc/pgservicefile | 0.0.0-20240606120523-5a60cdf6a761 | MIT |
+| jackc/puddle | 2.2.2 | MIT |
+| mfridman/interpolate | 0.0.2 | MIT |
+| sethvargo/go-retry | 0.4.0 | Apache-2.0 |
+| tidwall/gjson | 1.18.0 | MIT |
+| tidwall/match | 1.1.1 | MIT |
+| tidwall/pretty | 1.2.1 | MIT |
+| tidwall/sjson | 1.2.5 | MIT |
+| uber-go/multierr | 1.11.0 | MIT |
+| golang.org/x/sync | 0.22.0 | BSD-3-Clause |
+| golang.org/x/text | 0.40.0 | BSD-3-Clause |
+
+The Go standard library is BSD-3-Clause. The Apache License 2.0 text is
+available in this repository's [`LICENSE`](LICENSE). MIT, ISC, and BSD notice
+texts remain in the versioned upstream modules named by `backend/go.sum` and
+must be retained when redistributing the compiled Gateway.
+
+The production container also includes the exact-pinned OpenAI Codex CLI
+0.145.0 (Apache-2.0). Its architecture-specific official musl release assets
+are accepted only after verification against the exact SHA-256 values embedded
+in the Dockerfile. Debian, Caddy, PostgreSQL, bubblewrap, curl, CA certificates,
+and tini retain the licenses and notices supplied by their respective
+container images and Debian packages.
+
 ## Android runtime
 
 ### AndroidX AppCompat

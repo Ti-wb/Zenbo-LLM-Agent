@@ -102,7 +102,7 @@ Trust-mode setup differs as follows:
 Run the deterministic integration suite with Node's built-in test runner:
 
 ```sh
-node --test tests/fake-gateway/server.test.mjs
+npm run test:gateway
 ```
 
 The independent schema checks remain available as:
@@ -110,6 +110,41 @@ The independent schema checks remain available as:
 ```sh
 node tests/contracts/validate-contracts.mjs
 ```
+
+## Shared black-box suite
+
+The provider-independent black-box suite uses the same API/WebSocket client
+against the bundled Fake Gateway and, when explicitly configured, a deployed
+Gateway:
+
+```sh
+npm run test:gateway:blackbox
+```
+
+Without external settings, the Fake Gateway scenario runs and the external
+scenario is reported as skipped with the names of the missing variables. To
+also exercise a real backend, use a dedicated test device token and device ID:
+
+```sh
+GATEWAY_BASE_URL=https://gateway.test.example/agent/v1 \
+GATEWAY_DEVICE_TOKEN='<one-time-issued-test-token>' \
+GATEWAY_DEVICE_ID='zenbo-k-blackbox' \
+GATEWAY_PROFILE=default \
+npm run test:gateway:blackbox
+```
+
+`GATEWAY_BASE_URL` may also be an origin such as `http://127.0.0.1:8080`; the
+client appends `/agent/v1`. Private TLS roots can be supplied through Node's
+standard `NODE_EXTRA_CA_CERTS` setting. The suite never prints the device
+token.
+
+The external scenario verifies authentication problems, capabilities, strict
+session and turn idempotency, the provider-independent event prefix
+`turn.accepted → stt.final → agent.thinking`, replay, and session closure. It
+does not assert model text or synthesized audio, so the same scenario applies
+to Codex OAuth and OpenAI-compatible profiles. Session creation intentionally
+replaces any existing session for the same device under protocol 1.0; never
+run it with a production robot identity.
 
 ## Simulated lifecycle
 

@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:contracts": "node tests/contracts/validate-contracts.mjs",
     "test:gateway": "node --test tests/fake-gateway/server.test.mjs",
+    "test:gateway:blackbox": "node --test tests/fake-gateway/blackbox.test.mjs",
     "android": "vite build --outDir android/KiraZenbo/src/main/assets/app",
     "android:watch": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app",
     "licenses:web": "node scripts/generate-third-party-licenses.mjs"

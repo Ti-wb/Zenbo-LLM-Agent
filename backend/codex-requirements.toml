@@ -1,0 +1,40 @@
+# System-managed Codex policy for the Gateway's non-interactive app-server.
+# This file is installed at /etc/codex/requirements.toml in the container.
+allow_remote_control = false
+allow_managed_hooks_only = true
+allowed_approval_policies = ["never"]
+allowed_sandbox_modes = ["read-only"]
+allowed_web_search_modes = ["disabled"]
+
+[features]
+shell_tool = false
+unified_exec = false
+shell_snapshot = false
+apps = false
+enable_mcp_apps = false
+plugins = false
+plugin_sharing = false
+remote_plugin = false
+multi_agent = false
+multi_agent_v2 = false
+hooks = false
+goals = false
+browser_use = false
+browser_use_external = false
+browser_use_full_cdp_access = false
+in_app_browser = false
+computer_use = false
+image_generation = false
+workspace_dependencies = false
+skill_search = false
+skill_mcp_dependency_install = false
+tool_suggest = false
+code_mode = false
+code_mode_buffered_exec = false
+code_mode_host = false
+code_mode_only = false
+artifact = false
+auth_elicitation = false
+request_permissions_tool = false
+tool_call_mcp_elicitation = false
+standalone_web_search = false

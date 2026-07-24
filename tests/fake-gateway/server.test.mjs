@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { request as httpRequest } from 'node:http';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { openWebSocket as openGatewayWebSocket } from './client.mjs';
 import {
   CAPABILITIES,
   createFixtureWav,
@@ -14,7 +14,6 @@ import {
   parseCliArguments,
   PROTOCOL_VERSION,
 } from './server.mjs';
-import { WebSocketFrameDecoder } from './websocket.mjs';
 
 const ENVELOPE_FIELDS = [
   'data',
@@ -64,6 +63,10 @@ function authHeaders(overrides = {}) {
     'X-Zenbo-Protocol': PROTOCOL_VERSION,
     ...overrides,
   };
+}
+
+function openWebSocket(url, headers = authHeaders()) {
+  return openGatewayWebSocket(url, headers, { timeoutMs: 2000 });
 }
 
 function sessionRequest(overrides = {}) {
@@ -119,103 +122,6 @@ function assertEnvelope(event, { sessionId, turnId, type, sequence }) {
   assert.equal(event.sequence, sequence);
   assert(Number.isFinite(Date.parse(event.timestamp)));
   assert(event.data && typeof event.data === 'object' && !Array.isArray(event.data));
-}
-
-class TestWebSocket {
-  constructor(socket, head) {
-    this.socket = socket;
-    this.messages = [];
-    this.waiters = [];
-    this.closed = false;
-    this.decoder = new WebSocketFrameDecoder({
-      requireMasked: false,
-      onFrame: ({ opcode, payload }) => {
-        if (opcode === 0x1) {
-          this.messages.push(JSON.parse(payload.toString('utf8')));
-          this.#drain();
-        } else if (opcode === 0x8) {
-          this.closed = true;
-        }
-      },
-      onError: (error) => this.#fail(error),
-    });
-    socket.on('data', (chunk) => this.decoder.push(chunk));
-    socket.once('close', () => {
-      this.closed = true;
-      this.#fail(new Error('WebSocket closed before expected messages arrived'));
-    });
-    socket.once('error', (error) => this.#fail(error));
-    if (head?.length) this.decoder.push(head);
-  }
-
-  take(count, timeoutMs = 2000) {
-    if (this.messages.length >= count) return Promise.resolve(this.messages.splice(0, count));
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const index = this.waiters.findIndex((waiter) => waiter.resolve === resolve);
-        if (index >= 0) this.waiters.splice(index, 1);
-        reject(new Error(`Timed out waiting for ${count} WebSocket messages`));
-      }, timeoutMs);
-      this.waiters.push({ count, resolve, reject, timeout });
-    });
-  }
-
-  destroy() {
-    this.closed = true;
-    this.socket.destroy();
-  }
-
-  #drain() {
-    while (this.waiters.length && this.messages.length >= this.waiters[0].count) {
-      const waiter = this.waiters.shift();
-      clearTimeout(waiter.timeout);
-      waiter.resolve(this.messages.splice(0, waiter.count));
-    }
-  }
-
-  #fail(error) {
-    if (!this.waiters.length) return;
-    for (const waiter of this.waiters.splice(0)) {
-      clearTimeout(waiter.timeout);
-      waiter.reject(error);
-    }
-  }
-}
-
-function openWebSocket(url, headers = authHeaders()) {
-  return new Promise((resolve, reject) => {
-    const target = new URL(url);
-    const request = httpRequest({
-      hostname: target.hostname,
-      port: target.port,
-      path: `${target.pathname}${target.search}`,
-      method: 'GET',
-      headers: {
-        ...headers,
-        Connection: 'Upgrade',
-        Upgrade: 'websocket',
-        'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
-        'Sec-WebSocket-Version': '13',
-      },
-    });
-    request.once('upgrade', (response, socket, head) => {
-      resolve({ status: response.statusCode, client: new TestWebSocket(socket, head), body: null });
-    });
-    request.once('response', (response) => {
-      const chunks = [];
-      response.on('data', (chunk) => chunks.push(chunk));
-      response.once('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        resolve({
-          status: response.statusCode,
-          client: null,
-          body: text ? JSON.parse(text) : null,
-        });
-      });
-    });
-    request.once('error', reject);
-    request.end();
-  });
 }
 
 async function withGateway(options, callback) {

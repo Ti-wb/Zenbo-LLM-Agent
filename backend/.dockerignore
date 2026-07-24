@@ -1,0 +1,8 @@
+.env
+profiles.json
+artifacts/
+coverage/
+tmp/
+*.out
+zenbo-gateway
+.git/
