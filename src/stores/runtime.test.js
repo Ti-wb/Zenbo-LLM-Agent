@@ -117,18 +117,55 @@ describe('runtime store', () => {
     expect(store.settings.robotName).toBe('Kira');
   });
 
-  it('prioritizes safety and turn-state expressions over an explicit emotion', () => {
+  it('keeps a backend emotion pending until playback and expires it from playback start', () => {
     const store = useRuntimeStore();
     store.setConnection(CONNECTION_STATES.READY);
-    store.setEmotion(Emotion.HAPPY);
-    expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+    store.queueEmotion(Emotion.HAPPY, 1500);
+    expect(store.pendingEmotion).toBe(Emotion.HAPPY);
+    expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
 
     store.transition('thinking_started');
     expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
 
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+    expect(store.pendingEmotion).toBe('');
+    expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+    expect(store.emotionExpiresAt).toBe(2500);
+
+    store.clearExpiredEmotion(2499);
+    expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+    store.clearExpiredEmotion(2500);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+  });
+
+  it('keeps duration zero through playback but clears emotions on terminal and safety resets', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.queueEmotion(Emotion.EXCITED, 0);
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+
+    expect(store.effectiveEmotion).toBe(Emotion.EXCITED);
+    expect(store.emotionExpiresAt).toBe(0);
+
+    store.transition('reset');
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+
+    store.queueEmotion(Emotion.HAPPY, 0);
+    store.transition('speech_started');
+    expect(store.pendingEmotion).toBe('');
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+
+    store.setEmotion(Emotion.HAPPY);
+    store.setConnection(CONNECTION_STATES.DEGRADED);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+
+    store.setConnection(CONNECTION_STATES.READY);
+    store.setEmotion(Emotion.HAPPY);
     store.goToSleep();
     expect(store.sleeping).toBe(true);
     expect(store.turnState).toBe(TURN_STATES.IDLE);
-    expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
   });
 });

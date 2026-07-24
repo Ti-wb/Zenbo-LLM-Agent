@@ -808,8 +808,29 @@ const toolDefinition = toolSchema.$defs.tool;
 assert.deepEqual(toolDefinition.properties.name.enum, deviceToolAllowlist);
 assert.deepEqual(toolDefinition.properties.owner.enum, ['native', 'web']);
 assert.deepEqual(toolDefinition.properties.sideEffect.enum, ['none', 'ui', 'physical']);
+const emotionValues = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'];
+const fixtureManifest = readJson(join(validFixtureDir, 'tool-manifest-minimal.json'));
+const fixtureEmotionTool = fixtureManifest.tools.find((tool) => tool.name === 'show_emotion');
+assert(fixtureEmotionTool, 'show_emotion fixture is missing');
+assert.deepEqual(fixtureEmotionTool.inputSchema.required, ['emotion']);
+assert.deepEqual(fixtureEmotionTool.inputSchema.properties.emotion.enum, emotionValues);
+assert.equal(fixtureEmotionTool.inputSchema.properties.durationMs.minimum, 0);
+assert.equal(fixtureEmotionTool.inputSchema.properties.durationMs.maximum, 30000);
+assert.deepEqual(fixtureEmotionTool.resultSchema.required, ['ok', 'emotion', 'durationMs']);
+assert.deepEqual(fixtureEmotionTool.resultSchema.properties.emotion.enum, emotionValues);
+assert.equal(fixtureEmotionTool.resultSchema.properties.durationMs.minimum, 0);
+assert.equal(fixtureEmotionTool.resultSchema.properties.durationMs.maximum, 30000);
+const fixtureEmotionCall = readJson(join(validFixtureDir, 'ws-tool-call.json'));
+assert.deepEqual(fixtureEmotionCall.data.arguments, { emotion: 'HAPPY', durationMs: 0 });
+const fixtureEmotionResult = readJson(join(validFixtureDir, 'local-tool-call-result.json'));
+assert.deepEqual(fixtureEmotionResult.output, {
+  ok: true,
+  emotion: 'HAPPY',
+  durationMs: 0,
+});
 assert(wsProtocol.includes('authoritative\n  `session.snapshot`'));
 assert(!wsProtocol.includes('fails with `410`'));
+assert(wsProtocol.includes('restart resumes only when the marker is empty'));
 validateOpenApi(openApi);
 validateLocalOpenApi(localOpenApi);
 assert(localBootstrap.includes('HttpOnly; SameSite=Strict'));

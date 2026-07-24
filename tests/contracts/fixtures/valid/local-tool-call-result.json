@@ -2,7 +2,8 @@
   "status": "succeeded",
   "updatedAt": "2026-07-17T08:00:08.000Z",
   "output": {
+    "ok": true,
     "emotion": "HAPPY",
-    "applied": true
+    "durationMs": 0
   }
 }

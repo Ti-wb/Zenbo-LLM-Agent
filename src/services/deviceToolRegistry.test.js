@@ -5,7 +5,12 @@ function callId(number) {
   return `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
 }
 
-function registerEmotionTool(registry, handler = vi.fn(() => ({ ok: true }))) {
+const EMOTIONS = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'];
+
+function registerEmotionTool(
+  registry,
+  handler = vi.fn(() => ({ ok: true, emotion: 'HAPPY', durationMs: 0 })),
+) {
   registry.register({
     name: 'show_emotion',
     owner: 'web',
@@ -15,14 +20,18 @@ function registerEmotionTool(registry, handler = vi.fn(() => ({ ok: true }))) {
       type: 'object',
       required: ['emotion'],
       additionalProperties: false,
-      properties: { emotion: { type: 'string', enum: ['HAPPY', 'CONCERNED'] } },
+      properties: {
+        emotion: { type: 'string', enum: EMOTIONS },
+        durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
+      },
     },
     resultSchema: {
       type: 'object',
-      required: ['ok'],
+      required: ['ok', 'emotion', 'durationMs'],
       properties: {
         ok: { type: 'boolean' },
-        emotion: { type: 'string', enum: ['HAPPY', 'CONCERNED'] },
+        emotion: { type: 'string', enum: EMOTIONS },
+        durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
       },
       additionalProperties: false,
     },
@@ -77,7 +86,7 @@ describe('DeviceToolRegistry', () => {
     const concurrentReplay = registry.execute(envelope);
     await Promise.resolve();
     expect(handler).toHaveBeenCalledTimes(1);
-    resolveHandler({ ok: true, emotion: 'HAPPY' });
+    resolveHandler({ ok: true, emotion: 'HAPPY', durationMs: 0 });
 
     await expect(first).resolves.toMatchObject({ callId: callId(1), status: 'success' });
     await expect(concurrentReplay).resolves.toMatchObject({ callId: callId(1), status: 'success' });

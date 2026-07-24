@@ -94,6 +94,8 @@ export const useRuntimeStore = defineStore('runtime', {
     lastSequence: 0,
     transcript: '',
     assistantText: '',
+    pendingEmotion: '',
+    pendingEmotionDurationMs: 0,
     explicitEmotion: Emotion.NEUTRAL,
     emotionExpiresAt: 0,
     mouthLevel: 0,
@@ -106,6 +108,7 @@ export const useRuntimeStore = defineStore('runtime', {
 
   getters: {
     effectiveEmotion(state) {
+      if (state.connectionState !== CONNECTION_STATES.READY) return Emotion.NEUTRAL;
       if (state.turnState === TURN_STATES.LISTENING) return Emotion.CURIOUS;
       if (
         state.turnState === TURN_STATES.UPLOADING ||
@@ -141,6 +144,9 @@ export const useRuntimeStore = defineStore('runtime', {
 
   actions: {
     transition(event, payload = {}) {
+      if (['reset', 'speech_started', 'failed', 'wake'].includes(event)) {
+        this.resetEmotion();
+      }
       this.turnState = nextTurnState(this.turnState, event);
       if (payload.turnId !== undefined) this.activeTurnId = payload.turnId || '';
       if (payload.transcript !== undefined) this.transcript = payload.transcript || '';
@@ -153,6 +159,7 @@ export const useRuntimeStore = defineStore('runtime', {
     setConnection(state, error = '') {
       this.connectionState = state;
       this.error = error;
+      if (state !== CONNECTION_STATES.READY) this.resetEmotion();
     },
 
     setSession(session = {}) {
@@ -213,6 +220,7 @@ export const useRuntimeStore = defineStore('runtime', {
     },
 
     applyConversationSnapshot(snapshot = {}) {
+      this.resetEmotion();
       this.$patch({
         sessionId: snapshot.sessionId || '',
         activeTurnId: snapshot.activeTurnId || '',
@@ -229,6 +237,29 @@ export const useRuntimeStore = defineStore('runtime', {
     setEmotion(emotion, durationMs = 0) {
       this.explicitEmotion = SUPPORTED_EMOTIONS.includes(emotion) ? emotion : Emotion.NEUTRAL;
       this.emotionExpiresAt = durationMs > 0 ? Date.now() + durationMs : 0;
+    },
+
+    queueEmotion(emotion, durationMs = 0) {
+      this.pendingEmotion = SUPPORTED_EMOTIONS.includes(emotion) ? emotion : Emotion.NEUTRAL;
+      this.pendingEmotionDurationMs = durationMs;
+    },
+
+    activatePendingEmotion(now = Date.now()) {
+      const emotion = SUPPORTED_EMOTIONS.includes(this.pendingEmotion)
+        ? this.pendingEmotion
+        : Emotion.NEUTRAL;
+      const durationMs = this.pendingEmotionDurationMs;
+      this.explicitEmotion = emotion;
+      this.emotionExpiresAt = durationMs > 0 ? now + durationMs : 0;
+      this.pendingEmotion = '';
+      this.pendingEmotionDurationMs = 0;
+    },
+
+    resetEmotion() {
+      this.pendingEmotion = '';
+      this.pendingEmotionDurationMs = 0;
+      this.explicitEmotion = Emotion.NEUTRAL;
+      this.emotionExpiresAt = 0;
     },
 
     clearExpiredEmotion(now = Date.now()) {

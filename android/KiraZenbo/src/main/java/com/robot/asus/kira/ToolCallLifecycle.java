@@ -1,7 +1,9 @@
 package com.robot.asus.kira;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /** Pure ordering guard for Gateway acceptance, renderer dispatch, and terminal tool results. */
 final class ToolCallLifecycle {
@@ -31,6 +33,17 @@ final class ToolCallLifecycle {
 
     synchronized void markTerminal(String callId) {
         states.put(callId, State.TERMINAL);
+    }
+
+    synchronized Set<String> terminateActiveCalls() {
+        Set<String> terminated = new HashSet<>();
+        for (Map.Entry<String, State> entry : states.entrySet()) {
+            if (entry.getValue() != State.TERMINAL) {
+                entry.setValue(State.TERMINAL);
+                terminated.add(entry.getKey());
+            }
+        }
+        return terminated;
     }
 
     synchronized void forget(String callId) {

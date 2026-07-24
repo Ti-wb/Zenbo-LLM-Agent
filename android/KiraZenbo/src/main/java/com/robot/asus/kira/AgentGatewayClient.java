@@ -115,6 +115,13 @@ public final class AgentGatewayClient {
     public synchronized void start() {
         if (running) return;
         running = true;
+        GatewaySettings.RemoteSessionState restored = settings.loadRemoteSessionState();
+        if (restored != null && shouldResumePersistedSession(restored.activeTurnId)) {
+            remoteSessionId = restored.sessionId;
+        } else {
+            if (restored != null) settings.clearRemoteSessionState();
+            remoteSessionId = null;
+        }
         connect(++generation);
     }
 
@@ -122,6 +129,7 @@ public final class AgentGatewayClient {
         if (!running) return;
         generation++;
         remoteSessionId = null;
+        settings.clearRemoteSessionState();
         capabilitiesChecked = false;
         sessionCreateIdempotencyKey = UUID.randomUUID().toString();
         cancelReconnect();
@@ -173,10 +181,11 @@ public final class AgentGatewayClient {
                         "text", text,
                         "language", input.optString("language", Locale.getDefault().toLanguageTag())
                 );
-                executeJson(authorizedRequest(url)
+                Request request = authorizedRequest(url)
                         .post(RequestBody.create(jsonBody.toString(), JSON))
                         .header("Idempotency-Key", clientTurnId)
-                        .build(), callback);
+                        .build();
+                executeTurnUpload(request, clientTurnId, callback);
                 return;
             }
             String encodedAudio = input.optString("audioBase64", "");
@@ -197,16 +206,27 @@ public final class AgentGatewayClient {
                     .addFormDataPart("language", input.optString("language", Locale.getDefault().toLanguageTag()))
                     .addFormDataPart("audio", clientTurnId + ".wav", RequestBody.create(audio, WAV))
                     .build();
-            executeJson(authorizedRequest(url).post(body).header("Idempotency-Key", clientTurnId).build(), callback);
+            Request request = authorizedRequest(url)
+                    .post(body)
+                    .header("Idempotency-Key", clientTurnId)
+                    .build();
+            executeTurnUpload(request, clientTurnId, callback);
         } catch (Exception error) {
             callback.onError("GATEWAY_UNAVAILABLE", error.getMessage());
         }
     }
 
     public void cancelTurn(String turnId, String reason, ResultCallback callback) {
+        if (!isAllowedCancelReason(reason)) {
+            callback.onError(
+                    "INVALID_CANCEL_REASON",
+                    "reason must be client_request, superseded, or timeout"
+            );
+            return;
+        }
         try {
             HttpUrl url = sessionUrl("turns", turnId, "cancel");
-            RequestBody body = RequestBody.create(json("reason", "client_request").toString(), JSON);
+            RequestBody body = RequestBody.create(cancelRequestBody(reason).toString(), JSON);
             executeJson(authorizedRequest(url)
                     .post(body)
                     .header("Idempotency-Key", sessionIdempotency("cancel", turnId, reason))
@@ -228,7 +248,7 @@ public final class AgentGatewayClient {
     public void reportPlayback(JSONObject update, ResultCallback callback) {
         try {
             HttpUrl url = sessionUrl("playback");
-            executeJson(authorizedRequest(url)
+            executeOptionalJson(authorizedRequest(url)
                     .post(RequestBody.create(update.toString(), JSON))
                     .header("Idempotency-Key", sessionIdempotency(
                             "playback",
@@ -346,7 +366,8 @@ public final class AgentGatewayClient {
                     try {
                         validateCapabilities(new JSONObject(body.string()));
                         synchronized (AgentGatewayClient.this) { capabilitiesChecked = true; }
-                        createRemoteSession(expectedGeneration);
+                        if (getRemoteSessionId() == null) createRemoteSession(expectedGeneration);
+                        else openEventStream(expectedGeneration);
                     } catch (Exception error) {
                         updateState("INCOMPATIBLE", "Gateway capabilities response is invalid");
                     }
@@ -402,11 +423,11 @@ public final class AgentGatewayClient {
                         long lastSequence = session.getLong("lastSequence");
                         synchronized (AgentGatewayClient.this) {
                             if (!isGenerationCurrent(expectedGeneration)) return;
+                            settings.persistRemoteSessionState(id, lastSequence);
                             remoteSessionId = id;
-                            settings.replaceCursor(lastSequence);
                         }
                         openEventStream(expectedGeneration);
-                    } catch (JSONException error) {
+                    } catch (Exception error) {
                         handleHttpFailure(expectedGeneration, error, null);
                     }
                 }
@@ -497,9 +518,21 @@ public final class AgentGatewayClient {
                 if (!isCurrent(socket, socketGeneration) || !eventCommitPending) return;
                 String type = message.getString("type");
                 if ("session.snapshot".equals(type)) {
-                    settings.replaceCursor(message.getJSONObject("data").getLong("lastSequence"));
+                    JSONObject snapshot = message.getJSONObject("data");
+                    settings.replaceRemoteSessionSnapshot(
+                            remoteSessionId,
+                            snapshot.getLong("lastSequence"),
+                            snapshot.isNull("activeTurnId")
+                                    ? ""
+                                    : snapshot.optString("activeTurnId", "")
+                    );
                 } else if (!"session.ready".equals(type)) {
-                    settings.setCursor(message.getLong("sequence"));
+                    settings.commitRemoteEvent(
+                            remoteSessionId,
+                            message.getLong("sequence"),
+                            type,
+                            message.isNull("turnId") ? "" : message.optString("turnId", "")
+                    );
                 }
                 terminal = "session.expired".equals(type) || "session.closed".equals(type);
                 eventCommitPending = false;
@@ -672,13 +705,21 @@ public final class AgentGatewayClient {
             updateState("AUTH_ERROR", "Gateway rejected the device credential");
             return;
         }
-        if (response != null && response.code() == 404) remoteSessionId = null;
+        if (response != null && shouldResetRemoteSession(response.code())) {
+            resetRemoteSessionForRecovery();
+        }
         if (response != null && response.code() == 426) { updateState("INCOMPATIBLE", "Gateway protocol version is incompatible"); return; }
         if (error instanceof SSLPeerUnverifiedException || error instanceof SSLHandshakeException) {
             updateState("TLS_ERROR", "TLS identity verification failed; check certificate pin and device clock");
             return;
         }
         scheduleReconnect(socketGeneration, reason);
+    }
+
+    private synchronized void resetRemoteSessionForRecovery() {
+        remoteSessionId = null;
+        sessionCreateIdempotencyKey = UUID.randomUUID().toString();
+        settings.clearRemoteSessionState();
     }
 
     private void handleTerminalSessionEvent(
@@ -692,8 +733,9 @@ public final class AgentGatewayClient {
             if (!isCurrent(socket, socketGeneration)) return;
             remoteSessionId = null;
             webSocket = null;
+            sessionCreateIdempotencyKey = UUID.randomUUID().toString();
         }
-        settings.replaceCursor(0L);
+        settings.clearRemoteSessionState();
         socket.close(1000, type);
         if (shouldRecreateSession(type, reason)) {
             scheduleReconnect(socketGeneration, type + ":" + reason);
@@ -719,7 +761,93 @@ public final class AgentGatewayClient {
         reconnectTask = scheduler.schedule(() -> connect(expectedGeneration), delay, TimeUnit.MILLISECONDS);
     }
 
+    private void executeTurnUpload(
+            Request request,
+            String clientTurnId,
+            ResultCallback callback
+    ) {
+        String sessionId = getRemoteSessionId();
+        settings.markRemoteTurnInFlight(sessionId, clientTurnId);
+        try {
+            executeJson(request, new ResultCallback() {
+                @Override public void onSuccess(JSONObject result) {
+                    String remoteTurnId = result.optString("turnId", "");
+                    try {
+                        UUID.fromString(remoteTurnId);
+                        if (!sessionId.equals(result.optString("sessionId", ""))
+                                || !clientTurnId.equals(result.optString("clientTurnId", ""))
+                                || !settings.replaceRemoteTurnMarker(
+                                        sessionId,
+                                        clientTurnId,
+                                        remoteTurnId
+                                )) {
+                            throw new IllegalStateException(
+                                    "Turn response does not match the pending upload"
+                            );
+                        }
+                        callback.onSuccess(result);
+                    } catch (Exception error) {
+                        abandonUncertainRemoteSession(sessionId);
+                        callback.onError(
+                                "GATEWAY_OFFLINE",
+                                "Gateway returned an invalid turn response"
+                        );
+                    }
+                }
+
+                @Override public void onError(String code, String message) {
+                    // A failed response cannot prove the Gateway did not accept the request.
+                    // Abandon the entire session so the unknown turn cannot surface or replay.
+                    abandonUncertainRemoteSession(sessionId);
+                    callback.onError(code, message);
+                }
+            });
+        } catch (RuntimeException error) {
+            // The request was not handed to OkHttp, so this marker is safe to clear.
+            settings.clearRemoteTurnMarker(sessionId, clientTurnId);
+            throw error;
+        }
+    }
+
+    private void abandonUncertainRemoteSession(String expectedSessionId) {
+        WebSocket abandonedSocket;
+        int reconnectGeneration;
+        synchronized (this) {
+            if (!running
+                    || !isSameRemoteSession(expectedSessionId, remoteSessionId)) {
+                return;
+            }
+            settings.clearRemoteSessionState();
+            generation++;
+            reconnectGeneration = generation;
+            remoteSessionId = null;
+            sessionCreateIdempotencyKey = UUID.randomUUID().toString();
+            cancelReconnect();
+            abandonedSocket = webSocket;
+            webSocket = null;
+            resetEventDelivery();
+        }
+        if (abandonedSocket != null) abandonedSocket.cancel();
+        connect(reconnectGeneration);
+    }
+
+    static boolean isSameRemoteSession(String expectedSessionId, String activeSessionId) {
+        return expectedSessionId != null && expectedSessionId.equals(activeSessionId);
+    }
+
     private void executeJson(Request request, ResultCallback callback) {
+        executeJsonResponse(request, callback, false);
+    }
+
+    private void executeOptionalJson(Request request, ResultCallback callback) {
+        executeJsonResponse(request, callback, true);
+    }
+
+    private void executeJsonResponse(
+            Request request,
+            ResultCallback callback,
+            boolean allowEmptySuccess
+    ) {
         requireHttpClient().newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException error) {
                 if (error instanceof SSLPeerUnverifiedException || error instanceof SSLHandshakeException) {
@@ -746,14 +874,20 @@ public final class AgentGatewayClient {
                         }
                         return;
                     }
-                    String text = body != null ? body.string() : "{}";
-                    try { callback.onSuccess(new JSONObject(text)); }
+                    String text = body != null ? body.string() : "";
+                    try { callback.onSuccess(parseSuccessBody(text, allowEmptySuccess)); }
                     catch (JSONException error) {
                         callback.onError("GATEWAY_OFFLINE", "Gateway returned an invalid JSON response");
                     }
                 }
             }
         });
+    }
+
+    static JSONObject parseSuccessBody(String body, boolean allowEmpty) throws JSONException {
+        String text = body == null ? "" : body.trim();
+        if (allowEmpty && text.isEmpty()) return new JSONObject();
+        return new JSONObject(text);
     }
 
     private synchronized Request.Builder authorizedRequest(HttpUrl url) {
@@ -873,6 +1007,27 @@ public final class AgentGatewayClient {
     static boolean shouldRecreateSession(String type, String reason) {
         return ("session.expired".equals(type) || "session.closed".equals(type))
                 && !("session.expired".equals(type) && "credential_revoked".equals(reason));
+    }
+
+    static boolean shouldResetRemoteSession(int websocketHttpStatus) {
+        return websocketHttpStatus == 404 || websocketHttpStatus == 409;
+    }
+
+    static boolean shouldResumePersistedSession(String activeTurnId) {
+        return activeTurnId == null || activeTurnId.isEmpty();
+    }
+
+    static boolean isAllowedCancelReason(String reason) {
+        return "client_request".equals(reason)
+                || "superseded".equals(reason)
+                || "timeout".equals(reason);
+    }
+
+    static JSONObject cancelRequestBody(String reason) {
+        if (!isAllowedCancelReason(reason)) {
+            throw new IllegalArgumentException("Cancel reason is not allowed");
+        }
+        return json("reason", reason);
     }
 
     private static final Set<String> EVENT_TYPES = new HashSet<>(Arrays.asList(

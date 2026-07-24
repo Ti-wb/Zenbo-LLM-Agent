@@ -3,6 +3,7 @@ import { createRenderer, defineComponent, ref } from 'vue';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CONNECTION_STATES,
+  Emotion,
   GatewayEventType,
   TURN_STATES,
   useRuntimeStore,
@@ -132,6 +133,70 @@ describe('gateway error recovery state', () => {
 });
 
 describe('runtime authoritative recovery', () => {
+  it('activates a pending backend emotion only when TTS playback starts and clears it when playback ends', async () => {
+    const initial = {
+      sessionId: 'session-1',
+      activeTurnId: 'turn-1',
+      turnState: TURN_STATES.THINKING,
+      lastSequence: 3,
+      transcript: '',
+      assistantText: '',
+    };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, playback, runtime } = await mountController({ transport, conversation: initial });
+
+    await transport.emit('event', {
+      type: GatewayEventType.TOOL_CALL,
+      sequence: 4,
+      turnId: 'turn-1',
+      data: {
+        callId: '00000000-0000-4000-8000-000000000004',
+        toolName: 'show_emotion',
+        toolVersion: '1.0.0',
+        arguments: { emotion: Emotion.HAPPY, durationMs: 2000 },
+        timeoutMs: 5000,
+        deadlineAt: '2999-01-01T00:00:00.000Z',
+      },
+    });
+
+    expect(runtime.pendingEmotion).toBe(Emotion.HAPPY);
+    expect(runtime.explicitEmotion).toBe(Emotion.NEUTRAL);
+    expect(runtime.effectiveEmotion).toBe(Emotion.CURIOUS);
+    expect(transport.sendToolResult).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'success',
+        result: { ok: true, emotion: Emotion.HAPPY, durationMs: 2000 },
+      }),
+    );
+
+    await transport.emit('event', {
+      type: GatewayEventType.AGENT_TEXT_FINAL,
+      sequence: 5,
+      turnId: 'turn-1',
+      data: { text: '很高興見到你！' },
+    });
+    await transport.emit('event', {
+      type: GatewayEventType.TTS_READY,
+      sequence: 6,
+      turnId: 'turn-1',
+      data: { artifactId: '00000000-0000-4000-8000-000000000006' },
+    });
+
+    expect(playback.play).toHaveBeenCalledOnce();
+    expect(runtime.explicitEmotion).toBe(Emotion.NEUTRAL);
+    const playbackCallbacks = playback.play.mock.calls[0][1];
+    const playbackStartedAt = Date.now();
+    playbackCallbacks.onStarted();
+    expect(runtime.turnState).toBe(TURN_STATES.SPEAKING);
+    expect(runtime.effectiveEmotion).toBe(Emotion.HAPPY);
+    expect(runtime.emotionExpiresAt).toBeGreaterThanOrEqual(playbackStartedAt + 2000);
+
+    await playbackCallbacks.onEnded();
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    app.unmount();
+  });
+
   it('re-reads the local conversation for a remote snapshot before later turn events', async () => {
     const initial = {
       sessionId: 'session-1',

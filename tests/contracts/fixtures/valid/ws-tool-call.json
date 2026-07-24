@@ -11,7 +11,8 @@
     "toolName": "show_emotion",
     "toolVersion": "1.0.0",
     "arguments": {
-      "expression": "HAPPY"
+      "emotion": "HAPPY",
+      "durationMs": 0
     },
     "timeoutMs": 5000,
     "deadlineAt": "2026-07-17T08:00:09.000Z"

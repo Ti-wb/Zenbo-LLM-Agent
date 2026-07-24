@@ -10,7 +10,7 @@
     "toolName": "show_emotion",
     "toolVersion": "1.0.0",
     "arguments": {
-      "expression": "HAPPY"
+      "emotion": "HAPPY"
     },
     "deadlineAt": "not-a-date"
   }

@@ -22,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Coordinates local renderer turns, remote Gateway events, and correlated robot tool calls. */
 public final class RemoteSessionCoordinator implements AgentGatewayClient.Listener {
@@ -40,7 +41,7 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
     private final Map<String, JSONObject> terminalToolResults = new HashMap<>();
     private final Map<String, JSONObject> audioArtifacts = new HashMap<>();
     private final Map<String, String> playbackArtifactTurns = new HashMap<>();
-    private final Map<String, String> pendingWebTools = new HashMap<>();
+    private final Map<String, String> pendingWebToolTurns = new HashMap<>();
     private final Map<String, ScheduledFuture<?>> toolTimeouts = new HashMap<>();
     private final ToolCallLifecycle toolCallLifecycle = new ToolCallLifecycle();
     private final TurnAuthority turnAuthority = new TurnAuthority();
@@ -53,8 +54,9 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
     private volatile String transcript = "";
     private volatile String assistantText = "";
     private String uploadingClientTurnId;
+    private long uploadGeneration;
     private PendingUploadCancel pendingUploadCancel;
-    private boolean physicalToolExecuting;
+    private final AtomicReference<String> physicalToolOwner = new AtomicReference<>();
 
     private static final class PendingUploadCancel {
         final String reason;
@@ -85,8 +87,13 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         gatewayClient.start();
     }
 
-    public void reloadGateway() {
-        gatewayClient.reload();
+    public synchronized void reloadGateway() {
+        PendingUploadCancel pending = abortLocalTurnAndTools("IDLE", true);
+        try {
+            gatewayClient.reload();
+        } finally {
+            if (pending != null) completePendingCancel(pending, false, null, null);
+        }
     }
 
     public void stop() {
@@ -152,6 +159,7 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             throw new JSONException("A turn is already active");
         }
         String turnId = input.optString("clientTurnId", input.optString("turnId", UUID.randomUUID().toString()));
+        long callbackGeneration = ++uploadGeneration;
         awaitingTurnAcceptance = true;
         uploadingClientTurnId = turnId;
         turnState = "UPLOADING";
@@ -160,12 +168,22 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         gatewayClient.uploadTurn(input, new AgentGatewayClient.ResultCallback() {
             @Override public void onSuccess(JSONObject result) {
                 String remoteTurnId = result.optString("turnId", "");
-                PendingUploadCancel pending = claimPendingUploadCancel(remoteTurnId);
+                PendingUploadCancel pending;
                 synchronized (RemoteSessionCoordinator.this) {
-                    if (turnId.equals(uploadingClientTurnId)) {
+                    if (!isCurrentUploadCallback(
+                            callbackGeneration,
+                            uploadGeneration,
+                            turnId,
+                            uploadingClientTurnId
+                    )) {
+                        return;
+                    }
+                    pending = claimPendingUploadCancel(remoteTurnId);
+                    if (pending == null) {
+                        invalidateUploadCallbackLocked();
                         uploadingClientTurnId = null;
                         awaitingTurnAcceptance = false;
-                        if (pending == null && !turnAuthority.isRevoked(remoteTurnId)) {
+                        if (!turnAuthority.isRevoked(remoteTurnId)) {
                             activeTurnId = remoteTurnId;
                         }
                     }
@@ -175,13 +193,15 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             @Override public void onError(String code, String message) {
                 PendingUploadCancel pending;
                 synchronized (RemoteSessionCoordinator.this) {
-                    if (!turnId.equals(uploadingClientTurnId)) return;
-                    awaitingTurnAcceptance = false;
-                    uploadingClientTurnId = null;
-                    activeTurnId = null;
-                    turnState = "ERROR";
-                    pending = pendingUploadCancel;
-                    pendingUploadCancel = null;
+                    if (!isCurrentUploadCallback(
+                            callbackGeneration,
+                            uploadGeneration,
+                            turnId,
+                            uploadingClientTurnId
+                    )) {
+                        return;
+                    }
+                    pending = abortLocalTurnAndTools("ERROR", true);
                 }
                 if (pending != null) completePendingCancel(pending, false, null, null);
                 publishGatewayFailure(code, "Gateway turn upload failed");
@@ -221,7 +241,9 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
                 turnState = "IDLE";
                 retryRevokedTurnCancel(snapshotTurnId);
             } else {
-                if (snapshotTurnId != null && !snapshotTurnId.equals(activeTurnId)) clearTurnRecoveryState();
+                if (shouldResetRecoveryForSnapshot(activeTurnId, snapshotTurnId)) {
+                    clearTurnRecoveryState();
+                }
                 activeTurnId = snapshotTurnId;
                 turnState = activeTurnId == null ? "IDLE" : "THINKING";
             }
@@ -241,10 +263,13 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             turnState = "SYNTHESIZING";
         }
         if ("tts.ready".equals(type) && currentTurnEvent) turnState = "SYNTHESIZING";
-        if ("turn.completed".equals(type) || "turn.error".equals(type) || "turn.cancelled".equals(type)) {
+        if (isTurnTerminalEvent(type)) {
             if (currentTurnEvent) {
-                activeTurnId = null;
-                turnState = "turn.error".equals(type) ? "ERROR" : "IDLE";
+                PendingUploadCancel pending = abortLocalTurnAndTools(
+                        "turn.error".equals(type) ? "ERROR" : "IDLE",
+                        false
+                );
+                if (pending != null) completePendingCancel(pending, false, null, null);
             }
             synchronized (cancelRequestedTurns) { cancelRequestedTurns.remove(turnId); }
         }
@@ -257,17 +282,8 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
                 }
             }
         }
-        if ("session.expired".equals(type) || "session.closed".equals(type)) {
-            PendingUploadCancel pending;
-            synchronized (this) {
-                pending = pendingUploadCancel;
-                pendingUploadCancel = null;
-                uploadingClientTurnId = null;
-            }
-            activeTurnId = null;
-            awaitingTurnAcceptance = false;
-            turnState = "IDLE";
-            clearTurnRecoveryState();
+        if (isSessionTerminalEvent(type)) {
+            PendingUploadCancel pending = abortLocalTurnAndTools("IDLE", true);
             if (pending != null) completePendingCancel(pending, false, null, null);
         }
         if ("tool.call".equals(type)) {
@@ -297,6 +313,93 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         assistantText = "";
     }
 
+    static boolean shouldResetRecoveryForSnapshot(
+            String currentTurnId,
+            String snapshotTurnId
+    ) {
+        return snapshotTurnId == null
+                || !snapshotTurnId.equals(currentTurnId);
+    }
+
+    static boolean isTurnTerminalEvent(String type) {
+        return "turn.completed".equals(type)
+                || "turn.error".equals(type)
+                || "turn.cancelled".equals(type);
+    }
+
+    static boolean isSessionTerminalEvent(String type) {
+        return "session.expired".equals(type) || "session.closed".equals(type);
+    }
+
+    static boolean isCurrentUploadCallback(
+            long callbackGeneration,
+            long currentGeneration,
+            String callbackClientTurnId,
+            String uploadingClientTurnId
+    ) {
+        return callbackGeneration == currentGeneration
+                && callbackClientTurnId != null
+                && callbackClientTurnId.equals(uploadingClientTurnId);
+    }
+
+    private void invalidateUploadCallbackLocked() {
+        uploadGeneration++;
+    }
+
+    private PendingUploadCancel abortLocalTurnAndTools(
+            String nextTurnState,
+            boolean clearRecovery
+    ) {
+        PendingUploadCancel pending;
+        synchronized (this) {
+            turnAuthority.revoke(activeTurnId);
+            activeTurnId = null;
+            awaitingTurnAcceptance = false;
+            uploadingClientTurnId = null;
+            invalidateUploadCallbackLocked();
+            pending = pendingUploadCancel;
+            pendingUploadCancel = null;
+            turnState = nextTurnState;
+        }
+        synchronized (cancelRequestedTurns) {
+            cancelRequestedTurns.clear();
+        }
+        abandonPendingToolWork();
+        boolean robotStopped = robotGateway.emergencyStop();
+        releaseAnyPhysicalTool();
+        if (clearRecovery) {
+            clearTurnRecoveryState();
+        } else {
+            clearTurnArtifacts();
+        }
+        publishRobotState();
+        if (pending != null) pending.robotStopped |= robotStopped;
+        return pending;
+    }
+
+    private void abandonPendingToolWork() {
+        Set<String> abandonedCallIds = toolCallLifecycle.terminateActiveCalls();
+        synchronized (pendingWebToolTurns) {
+            abandonedCallIds.addAll(pendingWebToolTurns.keySet());
+            pendingWebToolTurns.clear();
+        }
+        synchronized (toolTimeouts) {
+            abandonedCallIds.addAll(toolTimeouts.keySet());
+            for (ScheduledFuture<?> task : toolTimeouts.values()) {
+                task.cancel(false);
+            }
+            toolTimeouts.clear();
+        }
+        if (abandonedCallIds.isEmpty()) return;
+        JSONObject error = json(
+                "code", "TURN_TERMINATED",
+                "message", "Turn authority ended before tool completion",
+                "retryable", false
+        );
+        JSONObject terminal = toolUpdate("rejected", null, error);
+        for (String callId : abandonedCallIds) markTerminal(callId, terminal);
+    }
+
     private void handleToolCall(JSONObject message, AgentGatewayClient.EventCommitCallback eventCallback) {
         JSONObject data = message.optJSONObject("data");
         if (data == null) {
@@ -313,7 +416,15 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             priorTerminal = terminalToolResults.get(callId);
         }
         if (priorTerminal != null) {
-            gatewayClient.reportToolResult(callId, priorTerminal, eventResultCallback(eventCallback));
+            boolean reported = turnAuthority.runIfAuthorized(
+                    toolTurnId,
+                    () -> gatewayClient.reportToolResult(
+                            callId,
+                            priorTerminal,
+                            eventResultCallback(eventCallback)
+                    )
+            );
+            if (!reported) eventCallback.commit();
             return;
         }
         if (!toolCallLifecycle.beginAcceptance(callId)) {
@@ -332,8 +443,9 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             if (robotGateway.isPhysicalTool(name)) {
                 synchronized (this) {
                     if (!message.optString("turnId", "").equals(activeTurnId)) throw new IllegalArgumentException("Physical tool is not for the active user turn");
-                    if (physicalToolExecuting) throw new IllegalArgumentException("Another physical tool is already executing");
-                    physicalToolExecuting = true;
+                }
+                if (!tryClaimPhysicalTool(physicalToolOwner, callId)) {
+                    throw new IllegalArgumentException("Another physical tool is already executing");
                 }
             }
         } catch (Exception error) {
@@ -343,22 +455,26 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         }
 
         JSONObject accepted = toolUpdate("accepted", null, null);
-        gatewayClient.reportToolResult(callId, accepted, new AgentGatewayClient.ResultCallback() {
+        boolean acceptanceReported = turnAuthority.runIfAuthorized(toolTurnId, () ->
+                gatewayClient.reportToolResult(callId, accepted, new AgentGatewayClient.ResultCallback() {
             @Override public void onSuccess(JSONObject ignored) {
                 if (!toolCallLifecycle.markAccepted(callId)) return;
                 if (turnAuthority.isRevoked(toolTurnId)) {
-                    if (robotGateway.isPhysicalTool(name)) releasePhysicalTool();
+                    if (robotGateway.isPhysicalTool(name)) releasePhysicalTool(callId);
                     rejectToolCall(message, "TURN_CANCELLED", "Turn authority was cancelled", eventCallback);
                     return;
                 }
                 scheduleToolTimeout(
                         callId,
                         name,
+                        toolTurnId,
                         data.optInt("timeoutMs", 5_000),
                         data.optString("deadlineAt", "")
                 );
                 if (!robotGateway.isNativeTool(name)) {
-                    synchronized (pendingWebTools) { pendingWebTools.put(callId, name); }
+                    synchronized (pendingWebToolTurns) {
+                        pendingWebToolTurns.put(callId, toolTurnId);
+                    }
                     remember(message);
                     publishLocal(message);
                     eventCallback.commit();
@@ -366,43 +482,66 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
                 }
                 remember(message);
                 publishLocal(message);
-                boolean executionStarted = turnAuthority.runIfAuthorized(toolTurnId, () -> {
-                    executeNativeTool(callId, name, arguments, toolTurnId);
-                    eventCallback.commit();
-                });
+                boolean executionStarted = turnAuthority.runIfAuthorized(
+                        toolTurnId,
+                        () -> executeNativeTool(callId, name, arguments, toolTurnId)
+                );
+                if (executionStarted) eventCallback.commit();
                 if (!executionStarted) {
-                    if (robotGateway.isPhysicalTool(name)) releasePhysicalTool();
+                    if (robotGateway.isPhysicalTool(name)) releasePhysicalTool(callId);
                     rejectToolCall(message, "TURN_CANCELLED", "Turn authority was cancelled", eventCallback);
                 }
             }
             @Override public void onError(String code, String detail) {
                 toolCallLifecycle.failAcceptance(callId);
-                if (robotGateway.isPhysicalTool(name)) releasePhysicalTool();
+                if (robotGateway.isPhysicalTool(name)) releasePhysicalTool(callId);
                 eventCallback.retry();
             }
-        });
+        }));
+        if (!acceptanceReported) {
+            if (robotGateway.isPhysicalTool(name)) releasePhysicalTool(callId);
+            JSONObject terminated = toolUpdate(
+                    "rejected",
+                    null,
+                    json(
+                            "code", "TURN_TERMINATED",
+                            "message", "Turn authority ended before tool acceptance",
+                            "retryable", false
+                    )
+            );
+            markTerminal(callId, terminated);
+            eventCallback.commit();
+        }
     }
 
     private void executeNativeTool(String callId, String name, JSONObject arguments, String toolTurnId) {
         robotGateway.execute(callId, name, arguments,
                 action -> turnAuthority.runIfAuthorized(toolTurnId, action), result -> {
             try {
-                synchronized (terminalToolCallTimes) {
-                    if (terminalToolCalls.contains(callId)) return;
-                }
-                boolean success = !"error".equals(result.optString("status"));
-                JSONObject error = result.optJSONObject("error");
-                JSONObject normalizedError = error == null ? null : new JSONObject()
-                        .put("code", error.optString("code", "EXECUTION_FAILED").toUpperCase(Locale.US))
-                        .put("message", error.optString("message", "Tool execution failed"))
-                        .put("retryable", false);
-                JSONObject update = toolUpdate(success ? "succeeded" : "failed", result.optJSONObject("result"), normalizedError);
-                cancelToolTimeout(callId);
-                markTerminal(callId, update);
-                gatewayClient.reportToolResult(callId, update, NO_OP_CALLBACK);
-            } catch (JSONException ignored) {
+                turnAuthority.runIfAuthorized(toolTurnId, () -> {
+                    synchronized (terminalToolCallTimes) {
+                        if (terminalToolCalls.contains(callId)) return;
+                    }
+                    try {
+                        boolean success = !"error".equals(result.optString("status"));
+                        JSONObject error = result.optJSONObject("error");
+                        JSONObject normalizedError = error == null ? null : new JSONObject()
+                                .put("code", error.optString("code", "EXECUTION_FAILED").toUpperCase(Locale.US))
+                                .put("message", error.optString("message", "Tool execution failed"))
+                                .put("retryable", false);
+                        JSONObject update = toolUpdate(
+                                success ? "succeeded" : "failed",
+                                result.optJSONObject("result"),
+                                normalizedError
+                        );
+                        cancelToolTimeout(callId);
+                        markTerminal(callId, update);
+                        gatewayClient.reportToolResult(callId, update, NO_OP_CALLBACK);
+                    } catch (JSONException ignored) {
+                    }
+                });
             } finally {
-                if (robotGateway.isPhysicalTool(name)) releasePhysicalTool();
+                if (robotGateway.isPhysicalTool(name)) releasePhysicalTool(callId);
             }
                 });
     }
@@ -426,7 +565,16 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         JSONObject update = toolUpdate("rejected", null, error);
         markTerminal(callId, update);
         cancelToolTimeout(callId);
-        gatewayClient.reportToolResult(callId, update, eventResultCallback(eventCallback));
+        String toolTurnId = message.optString("turnId", "");
+        boolean reported = turnAuthority.runIfAuthorized(
+                toolTurnId,
+                () -> gatewayClient.reportToolResult(
+                        callId,
+                        update,
+                        eventResultCallback(eventCallback)
+                )
+        );
+        if (!reported) eventCallback.commit();
     }
 
     private static AgentGatewayClient.ResultCallback eventResultCallback(
@@ -484,14 +632,21 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             String reason,
             AgentGatewayClient.ResultCallback callback
     ) {
+        String remoteReason = AgentGatewayClient.isAllowedCancelReason(reason)
+                ? reason
+                : "client_request";
         String current;
         synchronized (this) {
             current = activeTurnId;
             if ((current == null || current.isEmpty()) && awaitingTurnAcceptance) {
                 boolean robotStopped = robotGateway.emergencyStop();
-                releasePhysicalTool();
+                releaseAnyPhysicalTool();
                 if (pendingUploadCancel == null) {
-                    pendingUploadCancel = new PendingUploadCancel(reason, robotStopped, callback);
+                    pendingUploadCancel = new PendingUploadCancel(
+                            remoteReason,
+                            robotStopped,
+                            callback
+                    );
                 } else {
                     pendingUploadCancel.robotStopped |= robotStopped;
                     pendingUploadCancel.callbacks.add(callback);
@@ -504,7 +659,7 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
                 && (requestedTurnId == null || requestedTurnId.isEmpty() || requestedTurnId.equals(current));
         if (targetsCurrent) turnAuthority.revoke(current);
         boolean robotStopped = robotGateway.emergencyStop();
-        releasePhysicalTool();
+        releaseAnyPhysicalTool();
         publishRobotState();
         if (current == null || current.isEmpty()
                 || (requestedTurnId != null && !requestedTurnId.isEmpty() && !requestedTurnId.equals(current))) {
@@ -518,7 +673,7 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             }
             cancelRequestedTurns.add(current);
         }
-        gatewayClient.cancelTurn(current, reason, new AgentGatewayClient.ResultCallback() {
+        gatewayClient.cancelTurn(current, remoteReason, new AgentGatewayClient.ResultCallback() {
             @Override public void onSuccess(JSONObject ignored) {
                 callback.onSuccess(json("remoteCancelled", true, "robotStopped", robotStopped));
             }
@@ -537,6 +692,7 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         PendingUploadCancel pending = pendingUploadCancel;
         pendingUploadCancel = null;
         uploadingClientTurnId = null;
+        invalidateUploadCallbackLocked();
         awaitingTurnAcceptance = false;
         activeTurnId = null;
         turnState = "IDLE";
@@ -622,9 +778,11 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
                 return;
             }
         }
-        String name;
-        synchronized (pendingWebTools) { name = pendingWebTools.get(callId); }
-        if (name == null) {
+        String toolTurnId;
+        synchronized (pendingWebToolTurns) {
+            toolTurnId = pendingWebToolTurns.get(callId);
+        }
+        if (toolTurnId == null) {
             callback.onError("TOOL_REJECTED", "Tool call is not pending for the renderer");
             return;
         }
@@ -636,18 +794,37 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             callback.onError("TOOL_REJECTED", "Tool status is invalid");
             return;
         }
-        synchronized (pendingWebTools) { pendingWebTools.remove(callId); }
-        cancelToolTimeout(callId);
-        markTerminal(callId, update);
-        gatewayClient.reportToolResult(callId, update, new AgentGatewayClient.ResultCallback() {
-            @Override public void onSuccess(JSONObject ignored) {
-                callback.onSuccess(json("callId", callId, "status", status));
+        final boolean[] claimed = {false};
+        boolean authorized = turnAuthority.runIfAuthorized(toolTurnId, () -> {
+            synchronized (pendingWebToolTurns) {
+                if (!toolTurnId.equals(pendingWebToolTurns.get(callId))) return;
+                pendingWebToolTurns.remove(callId);
             }
+            claimed[0] = true;
+            cancelToolTimeout(callId);
+            markTerminal(callId, update);
+            gatewayClient.reportToolResult(callId, update, new AgentGatewayClient.ResultCallback() {
+                @Override public void onSuccess(JSONObject ignored) {
+                    callback.onSuccess(json("callId", callId, "status", status));
+                }
 
-            @Override public void onError(String code, String message) {
-                callback.onError(code, message);
-            }
+                @Override public void onError(String code, String message) {
+                    callback.onError(code, message);
+                }
+            });
         });
+        if (authorized && claimed[0]) return;
+        synchronized (terminalToolCallTimes) {
+            JSONObject terminal = terminalToolResults.get(callId);
+            if (terminal != null) {
+                callback.onSuccess(json(
+                        "callId", callId,
+                        "status", terminal.optString("status", "rejected")
+                ));
+                return;
+            }
+        }
+        callback.onError("TOOL_REJECTED", "Tool turn is no longer active");
     }
 
     public void reportPlayback(JSONObject update, AgentGatewayClient.ResultCallback callback) {
@@ -729,13 +906,37 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         return update;
     }
 
-    private synchronized void releasePhysicalTool() {
-        physicalToolExecuting = false;
+    private void releasePhysicalTool(String callId) {
+        releasePhysicalTool(physicalToolOwner, callId);
+    }
+
+    static boolean tryClaimPhysicalTool(
+            AtomicReference<String> ownerReference,
+            String callId
+    ) {
+        return callId != null
+                && !callId.isEmpty()
+                && ownerReference.compareAndSet(null, callId);
+    }
+
+    static void releasePhysicalTool(
+            AtomicReference<String> ownerReference,
+            String callId
+    ) {
+        if (callId == null || callId.isEmpty()) return;
+        while (true) {
+            String owner = ownerReference.get();
+            if (!callId.equals(owner) || ownerReference.compareAndSet(owner, null)) return;
+        }
+    }
+
+    private void releaseAnyPhysicalTool() {
+        physicalToolOwner.set(null);
     }
 
     private void markTerminal(String callId, JSONObject terminalResult) {
-        toolCallLifecycle.markTerminal(callId);
         synchronized (terminalToolCallTimes) {
+            toolCallLifecycle.markTerminal(callId);
             terminalToolCalls.add(callId);
             if (terminalResult != null) terminalToolResults.put(callId, terminalResult);
             terminalToolCallTimes.put(callId, System.currentTimeMillis());
@@ -749,7 +950,13 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
         }
     }
 
-    private void scheduleToolTimeout(String callId, String name, int requestedTimeoutMs, String deadlineAt) {
+    private void scheduleToolTimeout(
+            String callId,
+            String name,
+            String toolTurnId,
+            int requestedTimeoutMs,
+            String deadlineAt
+    ) {
         long delay;
         try {
             long deadlineDelay = Math.max(1L, parseDeadline(deadlineAt) - System.currentTimeMillis());
@@ -758,24 +965,38 @@ public final class RemoteSessionCoordinator implements AgentGatewayClient.Listen
             delay = 1L;
         }
         ScheduledFuture<?> task = scheduler.schedule(() -> {
-            synchronized (terminalToolCallTimes) {
-                if (terminalToolCalls.contains(callId)) return;
+            boolean authorized = turnAuthority.runIfAuthorized(toolTurnId, () -> {
+                try {
+                    synchronized (terminalToolCallTimes) {
+                        if (terminalToolCalls.contains(callId)) return;
+                    }
+                    synchronized (pendingWebToolTurns) {
+                        pendingWebToolTurns.remove(callId);
+                    }
+                    if (robotGateway.isPhysicalTool(name)) {
+                        robotGateway.emergencyStop();
+                        releasePhysicalTool(callId);
+                        publishRobotState();
+                    }
+                    JSONObject error = json(
+                            "code", "TIMEOUT",
+                            "message", "Tool execution exceeded its deadline",
+                            "retryable", false
+                    );
+                    JSONObject update = toolUpdate("failed", null, error);
+                    markTerminal(callId, update);
+                    gatewayClient.reportToolResult(callId, update, NO_OP_CALLBACK);
+                } finally {
+                    synchronized (toolTimeouts) {
+                        toolTimeouts.remove(callId);
+                    }
+                }
+            });
+            if (!authorized) {
+                synchronized (toolTimeouts) {
+                    toolTimeouts.remove(callId);
+                }
             }
-            synchronized (pendingWebTools) { pendingWebTools.remove(callId); }
-            if (robotGateway.isPhysicalTool(name)) {
-                robotGateway.emergencyStop();
-                releasePhysicalTool();
-                publishRobotState();
-            }
-            JSONObject error = json(
-                    "code", "TIMEOUT",
-                    "message", "Tool execution exceeded its deadline",
-                    "retryable", false
-            );
-            JSONObject update = toolUpdate("failed", null, error);
-            markTerminal(callId, update);
-            gatewayClient.reportToolResult(callId, update, NO_OP_CALLBACK);
-            synchronized (toolTimeouts) { toolTimeouts.remove(callId); }
         }, delay, TimeUnit.MILLISECONDS);
         synchronized (toolTimeouts) { toolTimeouts.put(callId, task); }
     }

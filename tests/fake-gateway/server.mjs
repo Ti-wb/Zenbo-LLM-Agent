@@ -42,6 +42,26 @@ const TOOL_ALLOWLIST = new Set([
   'show_emotion',
   'go_to_sleep',
 ]);
+const EMOTION_VALUES = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'];
+const SHOW_EMOTION_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    emotion: { type: 'string', enum: EMOTION_VALUES },
+    durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
+  },
+  required: ['emotion'],
+  additionalProperties: false,
+};
+const SHOW_EMOTION_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    emotion: { type: 'string', enum: EMOTION_VALUES },
+    durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
+  },
+  required: ['ok', 'emotion', 'durationMs'],
+  additionalProperties: false,
+};
 
 export const CAPABILITIES = Object.freeze({
   protocolVersion: PROTOCOL_VERSION,
@@ -353,11 +373,39 @@ function validateSessionRequest(body) {
         throw new HttpProblem(400, 'INVALID_TOOL_MANIFEST', 'Invalid tool object schema');
       }
     }
+    if (
+      tool.name === 'show_emotion' &&
+      (
+        tool.owner !== 'web' ||
+        tool.sideEffect !== 'ui' ||
+        stableStringify(tool.inputSchema) !== stableStringify(SHOW_EMOTION_INPUT_SCHEMA) ||
+        stableStringify(tool.resultSchema) !== stableStringify(SHOW_EMOTION_RESULT_SCHEMA)
+      )
+    ) {
+      throw new HttpProblem(
+        400,
+        'INVALID_TOOL_MANIFEST',
+        'show_emotion must use the canonical emotion and durationMs schemas',
+      );
+    }
     names.add(tool.name);
   }
 }
 
-function validateToolUpdate(body) {
+function validateShowEmotionOutput(output) {
+  assertExactKeys(output, ['ok', 'emotion', 'durationMs']);
+  if (
+    output.ok !== true ||
+    !EMOTION_VALUES.includes(output.emotion) ||
+    !Number.isInteger(output.durationMs) ||
+    output.durationMs < 0 ||
+    output.durationMs > 30000
+  ) {
+    throw new HttpProblem(422, 'INVALID_TOOL_RESULT', 'Invalid show_emotion output');
+  }
+}
+
+function validateToolUpdate(body, toolName) {
   assertExactKeys(body, ['status', 'updatedAt'], ['status', 'updatedAt', 'output', 'error']);
   if (!['accepted', 'succeeded', 'failed', 'rejected'].includes(body.status)) {
     throw new HttpProblem(422, 'INVALID_TOOL_RESULT', 'Invalid tool result status');
@@ -373,6 +421,9 @@ function validateToolUpdate(body) {
   }
   if ('output' in body && Buffer.byteLength(JSON.stringify(body.output)) > MAX_TOOL_OUTPUT_BYTES) {
     throw new HttpProblem(413, 'PAYLOAD_TOO_LARGE', 'Tool output exceeds 16 KiB');
+  }
+  if (body.status === 'succeeded' && toolName === 'show_emotion') {
+    validateShowEmotionOutput(body.output);
   }
 }
 
@@ -835,7 +886,9 @@ export class FakeAgentGateway {
       callId,
       toolName: tool.name,
       toolVersion: tool.version,
-      arguments: {},
+      arguments: tool.name === 'show_emotion'
+        ? { emotion: 'HAPPY', durationMs: 0 }
+        : {},
       timeoutMs,
       deadlineAt: isoTime(this.now() + timeoutMs),
     });
@@ -849,7 +902,7 @@ export class FakeAgentGateway {
     const call = session.calls.get(callId);
     if (!call) throw new HttpProblem(404, 'TOOL_CALL_NOT_FOUND', 'Tool call does not exist');
     const body = await readJson(request, MAX_TOOL_OUTPUT_BYTES + 4096);
-    validateToolUpdate(body);
+    validateToolUpdate(body, call.toolName);
     const representation = stableStringify(body);
     if (call.update && stableStringify(call.update) === representation) {
       sendJson(response, 200, call.update);
