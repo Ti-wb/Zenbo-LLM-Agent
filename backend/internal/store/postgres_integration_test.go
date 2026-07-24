@@ -9,13 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Ti-wb/Zenbo-LLM-Agent/backend/internal/application"
+	migrationassets "github.com/Ti-wb/Zenbo-LLM-Agent/backend/migrations"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 )
 
 func TestPostgresIntegration(t *testing.T) {
@@ -42,6 +46,81 @@ func TestPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("concurrent cancellation idempotency replays committed response", func(t *testing.T) {
+		session := createIntegrationSession(
+			t, ctx, store, device,
+			"01000000-0000-4000-8000-000000000001",
+			"02000000-0000-4000-8000-000000000001",
+			now.Add(-3*time.Second),
+		)
+		turn := createIntegrationTurn(
+			t, ctx, store, device, session.ID,
+			"03000000-0000-4000-8000-000000000001",
+			"04000000-0000-4000-8000-000000000001",
+			"05000000-0000-4000-8000-000000000001",
+			now.Add(-2*time.Second),
+		)
+		requestDigest := sha256.Sum256([]byte("concurrent-cancel"))
+		params := application.CancelTurnParams{
+			SessionID:        session.ID,
+			TurnID:           turn.ID,
+			Device:           device,
+			IdempotencyKey:   "06000000-0000-4000-8000-000000000001",
+			RequestDigest:    requestDigest[:],
+			IdempotencyUntil: now.Add(24 * time.Hour),
+			Reason:           "client_request",
+			Now:              now.Add(-time.Second),
+		}
+		type result struct {
+			turnID   string
+			changed  bool
+			replayed bool
+			err      error
+		}
+		const callers = 4
+		start := make(chan struct{})
+		results := make(chan result, callers)
+		var ready sync.WaitGroup
+		ready.Add(callers)
+		for range callers {
+			go func() {
+				ready.Done()
+				<-start
+				got, changed, replayed, err := store.CancelTurn(ctx, params)
+				results <- result{
+					turnID: got.ID, changed: changed, replayed: replayed, err: err,
+				}
+			}()
+		}
+		ready.Wait()
+		close(start)
+
+		changedCount := 0
+		replayedCount := 0
+		for range callers {
+			result := <-results
+			if result.err != nil {
+				t.Fatalf("concurrent cancellation failed: %v", result.err)
+			}
+			if result.turnID != turn.ID {
+				t.Fatalf("turn ID = %q, want %q", result.turnID, turn.ID)
+			}
+			if result.changed {
+				changedCount++
+			}
+			if result.replayed {
+				replayedCount++
+			}
+		}
+		if changedCount != 1 || replayedCount != callers-1 {
+			t.Fatalf(
+				"changed = %d, replayed = %d; want 1 and %d",
+				changedCount, replayedCount, callers-1,
+			)
+		}
+	})
+
 	first := createIntegrationSession(
 		t, ctx, store, device,
 		"10000000-0000-4000-8000-000000000001",
@@ -611,6 +690,56 @@ func TestPostgresIntegration(t *testing.T) {
 	_ = schema
 }
 
+func TestPostgresProviderRevisionMigrationIntegration(t *testing.T) {
+	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = os.Getenv("TEST_DATABASE_URL")
+	}
+	if databaseURL == "" {
+		t.Skip("set GATEWAY_TEST_DATABASE_URL or TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, _ := integrationPoolVersion(t, ctx, databaseURL, 1)
+
+	now := time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC)
+	deviceDigest := sha256.Sum256([]byte("v1-device-token"))
+	const deviceRowID = "a1000000-0000-4000-8000-000000000001"
+	const sessionID = "a2000000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO devices (
+			id, token_digest, device_id, label, created_at, bound_at
+		) VALUES ($1, $2, 'v1-device', 'v1 migration', $3, $3)
+	`, deviceRowID, deviceDigest[:], now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO sessions (
+			id, device_row_id, device_id, protocol_version, state,
+			agent_profile, provider_kind, provider_profile,
+			client, context, tool_manifest, created_at, updated_at, expires_at
+		) VALUES (
+			$1, $2, 'v1-device', '1.0', 'active',
+			'default', 'openai-compatible', 'default',
+			'{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3, $3, $4
+		)
+	`, sessionID, deviceRowID, now, now.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	applyIntegrationMigrations(t, ctx, pool.Config().ConnConfig, 0)
+	session, err := scanSession(pool.QueryRow(ctx,
+		`SELECT `+sessionColumns+` FROM sessions WHERE id = $1`,
+		sessionID,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ProviderRevision != "" {
+		t.Fatalf("migrated v1 provider revision = %q, want empty", session.ProviderRevision)
+	}
+}
+
 func TestPostgresEventRetentionIntegration(t *testing.T) {
 	databaseURL := os.Getenv("GATEWAY_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -891,6 +1020,15 @@ func assertRetainedSequences(
 }
 
 func integrationPool(t *testing.T, ctx context.Context, databaseURL string) (*pgxpool.Pool, string) {
+	return integrationPoolVersion(t, ctx, databaseURL, 0)
+}
+
+func integrationPoolVersion(
+	t *testing.T,
+	ctx context.Context,
+	databaseURL string,
+	version int64,
+) (*pgxpool.Pool, string) {
 	t.Helper()
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -919,29 +1057,37 @@ func integrationPool(t *testing.T, ctx context.Context, databaseURL string) (*pg
 	if err != nil {
 		t.Fatal(err)
 	}
-	migrationPath := filepath.Join("..", "..", "migrations", "00001_gateway.sql")
-	migration, err := os.ReadFile(migrationPath)
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	up := strings.SplitN(string(migration), "-- +goose Down", 2)[0]
-	connection, err := pool.Acquire(ctx)
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	_, err = connection.Conn().PgConn().Exec(ctx, up).ReadAll()
-	connection.Release()
-	if err != nil {
-		pool.Close()
-		t.Fatalf("apply migration: %v", err)
-	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
 		pool.Close()
 	})
+	applyIntegrationMigrations(t, ctx, config.ConnConfig, version)
 	return pool, schema
+}
+
+func applyIntegrationMigrations(
+	t *testing.T,
+	ctx context.Context,
+	config *pgx.ConnConfig,
+	version int64,
+) {
+	t.Helper()
+	database := stdlib.OpenDB(*config)
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	goose.SetBaseFS(migrationassets.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if version > 0 {
+		err = goose.UpToContext(ctx, database, ".", version)
+	} else {
+		err = goose.UpContext(ctx, database, ".")
+	}
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 }
 
 func createIntegrationSession(
@@ -968,6 +1114,7 @@ func createIntegrationSessionWithProvider(
 ) application.Session {
 	t.Helper()
 	digest := sha256.Sum256([]byte(sessionID))
+	providerRevision := strings.Repeat("a", 64)
 	session, replayed, err := store.CreateSession(ctx, application.CreateSessionParams{
 		ID:               sessionID,
 		Device:           device,
@@ -977,6 +1124,7 @@ func createIntegrationSessionWithProvider(
 		AgentProfile:     "default",
 		ProviderKind:     providerKind,
 		ProviderProfile:  providerProfile,
+		ProviderRevision: providerRevision,
 		Client:           json.RawMessage(`{"appVersion":"test"}`),
 		Context:          json.RawMessage(`{"robotName":"Kira","language":"zh-TW"}`),
 		ToolManifest:     json.RawMessage(`{"protocolVersion":"1.0","tools":[]}`),
@@ -985,6 +1133,9 @@ func createIntegrationSessionWithProvider(
 	})
 	if err != nil || replayed {
 		t.Fatalf("create session = replayed %v err %v", replayed, err)
+	}
+	if session.ProviderRevision != providerRevision {
+		t.Fatalf("provider revision = %q", session.ProviderRevision)
 	}
 	return session
 }

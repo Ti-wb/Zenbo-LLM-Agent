@@ -78,15 +78,9 @@ type Client struct {
 
 // New validates config without making a network request.
 func New(config Config) (*Client, error) {
-	base, err := url.Parse(strings.TrimSpace(config.BaseURL))
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return nil, fmt.Errorf("openai-compatible base URL must be an absolute HTTP(S) URL")
-	}
-	if base.Scheme != "http" && base.Scheme != "https" {
-		return nil, fmt.Errorf("openai-compatible base URL scheme must be http or https")
-	}
-	if base.RawQuery != "" || base.Fragment != "" {
-		return nil, fmt.Errorf("openai-compatible base URL must not contain a query or fragment")
+	baseURL, err := NormalizeBaseURL(config.BaseURL)
+	if err != nil {
+		return nil, err
 	}
 	mode := config.Mode
 	if mode == "" {
@@ -115,7 +109,7 @@ func New(config Config) (*Client, error) {
 		headers[key] = value
 	}
 	options := []option.RequestOption{
-		option.WithBaseURL(apiBaseURL(base)),
+		option.WithBaseURL(baseURL),
 		// Always set the key, including an empty value, so an explicitly
 		// unauthenticated LiteLLM profile never inherits process credentials.
 		option.WithAPIKey(config.APIKey),
@@ -312,15 +306,33 @@ func (c *Client) withTimeout(ctx context.Context) (context.Context, context.Canc
 
 var errResponseTooLarge = errors.New("provider response exceeded configured size limit")
 
-func apiBaseURL(base *url.URL) string {
+// NormalizeBaseURL validates and canonicalizes the configured endpoint exactly
+// as provider requests use it. Readiness probes and profile revisions call this
+// helper so they cannot drift onto a different path.
+func NormalizeBaseURL(raw string) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("openai-compatible base URL must be an absolute HTTP(S) URL")
+	}
+	if base.Scheme != "http" && base.Scheme != "https" {
+		return "", fmt.Errorf("openai-compatible base URL scheme must be http or https")
+	}
+	if base.RawQuery != "" || base.Fragment != "" {
+		return "", fmt.Errorf("openai-compatible base URL must not contain a query or fragment")
+	}
 	normalized := *base
-	basePath := strings.TrimSuffix(normalized.Path, "/")
-	if path.Base(basePath) != "v1" {
-		basePath += "/v1"
+	basePath := path.Clean("/" + normalized.Path)
+	if basePath == "/" {
+		basePath = ""
+	}
+	if basePath == "" {
+		basePath = "/v1"
+	} else if path.Base(basePath) != "v1" {
+		basePath = path.Join(basePath, "v1")
 	}
 	normalized.Path = basePath + "/"
 	normalized.RawPath = ""
-	return normalized.String()
+	return normalized.String(), nil
 }
 
 // responseLimitMiddleware bounds the body before the SDK decodes it. This
@@ -649,6 +661,7 @@ func buildChatParams(model string, request provider.StepRequest) (openaisdk.Chat
 func parseResponses(raw []byte) (provider.StepResponse, error) {
 	var response struct {
 		ID     string `json:"id"`
+		Status string `json:"status"`
 		Output []struct {
 			Type      string          `json:"type"`
 			CallID    string          `json:"call_id"`
@@ -667,6 +680,13 @@ func parseResponses(raw []byte) (provider.StepResponse, error) {
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return provider.StepResponse{}, malformed("step", "provider returned invalid Responses API JSON", err)
+	}
+	if response.Status != "completed" {
+		return provider.StepResponse{}, malformed(
+			"step",
+			"provider returned a non-completed Responses API result",
+			nil,
+		)
 	}
 	result := provider.StepResponse{
 		ResponseID: response.ID,
@@ -708,7 +728,8 @@ func parseChatCompletion(raw []byte) (provider.StepResponse, error) {
 	var response struct {
 		ID      string `json:"id"`
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content json.RawMessage `json:"content"`
 				Tools   []struct {
 					ID       string `json:"id"`
@@ -731,7 +752,17 @@ func parseChatCompletion(raw []byte) (provider.StepResponse, error) {
 	if len(response.Choices) == 0 {
 		return provider.StepResponse{}, malformed("step", "provider returned no choices", nil)
 	}
-	text, err := decodeChatContent(response.Choices[0].Message.Content)
+	choice := response.Choices[0]
+	switch choice.FinishReason {
+	case "stop", "tool_calls":
+	default:
+		return provider.StepResponse{}, malformed(
+			"step",
+			"provider returned a non-success Chat Completions finish reason",
+			nil,
+		)
+	}
+	text, err := decodeChatContent(choice.Message.Content)
 	if err != nil {
 		return provider.StepResponse{}, malformed("step", "provider returned malformed message content", err)
 	}
@@ -744,7 +775,7 @@ func parseChatCompletion(raw []byte) (provider.StepResponse, error) {
 			TotalTokens:  response.Usage.TotalTokens,
 		},
 	}
-	for _, call := range response.Choices[0].Message.Tools {
+	for _, call := range choice.Message.Tools {
 		arguments, err := normalizeArguments(call.Function.Arguments)
 		if err != nil || call.ID == "" || call.Function.Name == "" {
 			return provider.StepResponse{}, malformed("step", "provider returned a malformed function call", err)
@@ -757,6 +788,20 @@ func parseChatCompletion(raw []byte) (provider.StepResponse, error) {
 	}
 	if result.Text == "" && len(result.ToolCalls) == 0 {
 		return provider.StepResponse{}, malformed("step", "provider returned neither text nor tool calls", nil)
+	}
+	if choice.FinishReason == "tool_calls" && len(result.ToolCalls) == 0 {
+		return provider.StepResponse{}, malformed(
+			"step",
+			"provider returned a tool_calls finish reason without tool calls",
+			nil,
+		)
+	}
+	if choice.FinishReason == "stop" && len(result.ToolCalls) != 0 {
+		return provider.StepResponse{}, malformed(
+			"step",
+			"provider returned tool calls with a stop finish reason",
+			nil,
+		)
 	}
 	return result, nil
 }

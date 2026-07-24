@@ -20,8 +20,11 @@ import java.util.TimeZone;
 import java.util.Locale;
 import java.util.Arrays;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -48,7 +51,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 /** Native-only Agent Gateway protocol 1.0 client. Provider secrets never enter this process. */
-public final class AgentGatewayClient {
+public final class AgentGatewayClient implements GatewayTransport {
     public interface Listener {
         void onGatewayStateChanged(String state, String detail);
         void onGatewayMessage(JSONObject message, EventCommitCallback callback);
@@ -94,7 +97,6 @@ public final class AgentGatewayClient {
     private int failures;
     private String remoteSessionId;
     private boolean capabilitiesChecked;
-    private String sessionCreateIdempotencyKey = UUID.randomUUID().toString();
     private String state = "OFFLINE";
     private String detail = "";
     private final Deque<String> deferredEventFrames = new ArrayDeque<>();
@@ -118,12 +120,16 @@ public final class AgentGatewayClient {
         connect(++generation);
     }
 
+    @Override
+    public void prepareReload() {
+        settings.rotateSessionCreateIdempotencyKey();
+    }
+
     public synchronized void reload() {
         if (!running) return;
         generation++;
         remoteSessionId = null;
         capabilitiesChecked = false;
-        sessionCreateIdempotencyKey = UUID.randomUUID().toString();
         cancelReconnect();
         if (webSocket != null) webSocket.cancel();
         webSocket = null;
@@ -135,6 +141,7 @@ public final class AgentGatewayClient {
     public synchronized void shutdown() {
         running = false;
         generation++;
+        remoteSessionId = null;
         cancelReconnect();
         if (webSocket != null) webSocket.close(1000, "service stopped");
         webSocket = null;
@@ -162,11 +169,15 @@ public final class AgentGatewayClient {
         );
     }
 
-    public void uploadTurn(JSONObject input, ResultCallback callback) {
+    public void uploadTurn(
+            String expectedSessionId,
+            JSONObject input,
+            ResultCallback callback
+    ) {
         try {
             String clientTurnId = input.optString("clientTurnId", input.optString("turnId", UUID.randomUUID().toString()));
             String text = input.optString("text", "").trim();
-            HttpUrl url = sessionUrl("turns");
+            HttpUrl url = expectedSessionUrl(expectedSessionId, "turns");
             if (!text.isEmpty()) {
                 JSONObject jsonBody = json(
                         "clientTurnId", clientTurnId,
@@ -176,7 +187,7 @@ public final class AgentGatewayClient {
                 executeJson(authorizedRequest(url)
                         .post(RequestBody.create(jsonBody.toString(), JSON))
                         .header("Idempotency-Key", clientTurnId)
-                        .build(), callback);
+                        .build(), expectedSessionId, callback);
                 return;
             }
             String encodedAudio = input.optString("audioBase64", "");
@@ -197,52 +208,102 @@ public final class AgentGatewayClient {
                     .addFormDataPart("language", input.optString("language", Locale.getDefault().toLanguageTag()))
                     .addFormDataPart("audio", clientTurnId + ".wav", RequestBody.create(audio, WAV))
                     .build();
-            executeJson(authorizedRequest(url).post(body).header("Idempotency-Key", clientTurnId).build(), callback);
+            executeJson(
+                    authorizedRequest(url)
+                            .post(body)
+                            .header("Idempotency-Key", clientTurnId)
+                            .build(),
+                    expectedSessionId,
+                    callback
+            );
         } catch (Exception error) {
             callback.onError("GATEWAY_UNAVAILABLE", error.getMessage());
         }
     }
 
-    public void cancelTurn(String turnId, String reason, ResultCallback callback) {
+    public void cancelTurn(
+            String expectedSessionId,
+            String turnId,
+            String reason,
+            ResultCallback callback
+    ) {
         try {
-            HttpUrl url = sessionUrl("turns", turnId, "cancel");
+            HttpUrl url = expectedSessionUrl(
+                    expectedSessionId,
+                    "turns",
+                    turnId,
+                    "cancel"
+            );
             RequestBody body = RequestBody.create(json("reason", "client_request").toString(), JSON);
             executeJson(authorizedRequest(url)
                     .post(body)
-                    .header("Idempotency-Key", sessionIdempotency("cancel", turnId, reason))
-                    .build(), callback);
+                    .header("Idempotency-Key", stableIdempotency(
+                            "cancel",
+                            expectedSessionId,
+                            turnId,
+                            reason
+                    ))
+                    .build(), expectedSessionId, callback);
         } catch (Exception error) {
             callback.onError("GATEWAY_UNAVAILABLE", error.getMessage());
         }
     }
 
-    public void reportToolResult(String callId, JSONObject update, ResultCallback callback) {
+    public void reportToolResult(
+            String expectedSessionId,
+            String callId,
+            JSONObject update,
+            ResultCallback callback
+    ) {
         try {
-            HttpUrl url = sessionUrl("tool-calls", callId);
-            executeJson(authorizedRequest(url).put(RequestBody.create(update.toString(), JSON)).build(), callback);
+            HttpUrl url = expectedSessionUrl(
+                    expectedSessionId,
+                    "tool-calls",
+                    callId
+            );
+            executeJson(
+                    authorizedRequest(url)
+                            .put(RequestBody.create(update.toString(), JSON))
+                            .build(),
+                    expectedSessionId,
+                    callback
+            );
         } catch (Exception error) {
             callback.onError("GATEWAY_UNAVAILABLE", error.getMessage());
         }
     }
 
-    public void reportPlayback(JSONObject update, ResultCallback callback) {
+    public void reportPlayback(
+            String expectedSessionId,
+            JSONObject update,
+            ResultCallback callback
+    ) {
         try {
-            HttpUrl url = sessionUrl("playback");
+            HttpUrl url = expectedSessionUrl(
+                    expectedSessionId,
+                    "playback"
+            );
             executeJson(authorizedRequest(url)
                     .post(RequestBody.create(update.toString(), JSON))
-                    .header("Idempotency-Key", sessionIdempotency(
+                    .header("Idempotency-Key", stableIdempotency(
                             "playback",
+                            expectedSessionId,
                             update.optString("turnId", ""),
                             update.optString("artifactId", ""),
                             update.optString("status", "")
                     ))
-                    .build(), callback);
+                    .build(), expectedSessionId, callback);
         } catch (Exception error) {
             callback.onError("GATEWAY_UNAVAILABLE", error.getMessage());
         }
     }
 
-    public void downloadAudio(String artifactId, JSONObject expected, BinaryCallback callback) {
+    public void downloadAudio(
+            String expectedSessionId,
+            String artifactId,
+            JSONObject expected,
+            BinaryCallback callback
+    ) {
         try {
             String expectedType = expected.getString("mimeType");
             int expectedLength = expected.getInt("byteLength");
@@ -262,7 +323,11 @@ public final class AgentGatewayClient {
                 callback.onError("INVALID_AUDIO", error.getMessage());
                 return;
             }
-            Request request = authorizedRequest(sessionUrl("audio", artifactId)).get().build();
+            Request request = authorizedRequest(expectedSessionUrl(
+                    expectedSessionId,
+                    "audio",
+                    artifactId
+            )).get().build();
             requireHttpClient().newCall(request).enqueue(new Callback() {
                 @Override public void onFailure(Call call, IOException error) {
                     callback.onError("DOWNLOAD_FAILED", error.getMessage());
@@ -370,9 +435,17 @@ public final class AgentGatewayClient {
                 "context", json("robotName", settings.getRobotName(), "language", settings.getLanguage()),
                 "toolManifest", toolManifest
         );
+        String requestKey;
+        String requestFingerprint = sessionCreateFingerprint(requestJson);
+        try {
+            requestKey = settings.prepareSessionCreate(requestFingerprint);
+        } catch (RuntimeException error) {
+            updateState("DEGRADED", "Could not persist Gateway session identity");
+            return;
+        }
         Request request = authorizedRequest(apiBaseUrl.newBuilder().addPathSegment("sessions").build())
                 .post(RequestBody.create(requestJson.toString(), JSON))
-                .header("Idempotency-Key", sessionCreateIdempotencyKey)
+                .header("Idempotency-Key", requestKey)
                 .build();
         requireHttpClient().newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException error) {
@@ -390,6 +463,27 @@ public final class AgentGatewayClient {
                         updateState("INCOMPATIBLE", "Gateway protocol version is incompatible");
                         return;
                     }
+                    if (closeable.code() == 409) {
+                        try {
+                            if (settings.recoverSessionCreateConflict(
+                                    requestKey,
+                                    requestFingerprint
+                            )) {
+                                createRemoteSession(expectedGeneration);
+                            } else {
+                                updateState(
+                                        "DEGRADED",
+                                        "Gateway rejected the session create identity"
+                                );
+                            }
+                        } catch (RuntimeException error) {
+                            updateState(
+                                    "DEGRADED",
+                                    "Could not persist Gateway session identity"
+                            );
+                        }
+                        return;
+                    }
                     ResponseBody body = closeable.body();
                     if (closeable.code() != 201 || body == null) {
                         handleHttpFailure(expectedGeneration, null, closeable);
@@ -400,14 +494,22 @@ public final class AgentGatewayClient {
                         validateSessionResponse(session);
                         String id = session.getString("sessionId");
                         long lastSequence = session.getLong("lastSequence");
+                        if (!settings.acceptSessionCreateResponse(
+                                requestKey,
+                                id,
+                                lastSequence
+                        )) {
+                            return;
+                        }
                         synchronized (AgentGatewayClient.this) {
                             if (!isGenerationCurrent(expectedGeneration)) return;
                             remoteSessionId = id;
-                            settings.replaceCursor(lastSequence);
                         }
                         openEventStream(expectedGeneration);
                     } catch (JSONException error) {
                         handleHttpFailure(expectedGeneration, error, null);
+                    } catch (RuntimeException error) {
+                        updateState("DEGRADED", "Could not persist Gateway session identity");
                     }
                 }
             }
@@ -655,8 +757,9 @@ public final class AgentGatewayClient {
         while (keys.hasNext()) if (!allowed.contains(keys.next())) throw new JSONException("unexpected event data field");
     }
 
-    private static void requireLength(String value, int minimum, int maximum, String name) throws JSONException {
-        if (value.length() < minimum || value.length() > maximum) throw new JSONException(name + " length is invalid");
+    static void requireLength(String value, int minimum, int maximum, String name) throws JSONException {
+        int length = ProtocolStrings.length(value);
+        if (length < minimum || length > maximum) throw new JSONException(name + " length is invalid");
     }
 
     private static void requireTimestamp(String value) throws JSONException {
@@ -696,6 +799,12 @@ public final class AgentGatewayClient {
         settings.replaceCursor(0L);
         socket.close(1000, type);
         if (shouldRecreateSession(type, reason)) {
+            try {
+                settings.rotateSessionCreateIdempotencyKey();
+            } catch (IllegalStateException error) {
+                updateState("DEGRADED", "Could not persist Gateway session identity");
+                return;
+            }
             scheduleReconnect(socketGeneration, type + ":" + reason);
         } else {
             updateState("AUTH_ERROR", "Gateway revoked the device credential");
@@ -719,14 +828,32 @@ public final class AgentGatewayClient {
         reconnectTask = scheduler.schedule(() -> connect(expectedGeneration), delay, TimeUnit.MILLISECONDS);
     }
 
-    private void executeJson(Request request, ResultCallback callback) {
+    private void executeJson(
+            Request request,
+            String expectedSessionId,
+            ResultCallback callback
+    ) {
+        final int requestGeneration;
+        synchronized (this) {
+            requestGeneration = generation;
+        }
         requireHttpClient().newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException error) {
                 if (error instanceof SSLPeerUnverifiedException || error instanceof SSLHandshakeException) {
-                    updateState("TLS_ERROR", "TLS identity verification failed");
+                    updateStateForRequest(
+                            requestGeneration,
+                            expectedSessionId,
+                            "TLS_ERROR",
+                            "TLS identity verification failed"
+                    );
                     callback.onError("GATEWAY_TLS", "Gateway TLS verification failed");
                 } else {
-                    updateState("DEGRADED", "Gateway request failed");
+                    updateStateForRequest(
+                            requestGeneration,
+                            expectedSessionId,
+                            "DEGRADED",
+                            "Gateway request failed"
+                    );
                     callback.onError("GATEWAY_OFFLINE", "Gateway request failed");
                 }
             }
@@ -735,13 +862,33 @@ public final class AgentGatewayClient {
                     ResponseBody body = closeable.body();
                     if (!closeable.isSuccessful()) {
                         if (closeable.code() == 401 || closeable.code() == 403) {
-                            updateState("AUTH_ERROR", "Gateway rejected the device credential");
+                            updateStateForRequest(
+                                    requestGeneration,
+                                    expectedSessionId,
+                                    "AUTH_ERROR",
+                                    "Gateway rejected the device credential"
+                            );
                             callback.onError(gatewayErrorForHttpStatus(closeable.code()), "Gateway rejected the device credential");
                         } else if (closeable.code() == 426) {
-                            updateState("INCOMPATIBLE", "Gateway protocol version is incompatible");
+                            updateStateForRequest(
+                                    requestGeneration,
+                                    expectedSessionId,
+                                    "INCOMPATIBLE",
+                                    "Gateway protocol version is incompatible"
+                            );
                             callback.onError(gatewayErrorForHttpStatus(closeable.code()), "Gateway protocol version is incompatible");
+                        } else if (closeable.code() == 409) {
+                            callback.onError(
+                                    "CONFLICT",
+                                    safeGatewayFailureDetail(closeable.code(), null)
+                            );
                         } else {
-                            updateState("DEGRADED", "Gateway returned HTTP " + closeable.code());
+                            updateStateForRequest(
+                                    requestGeneration,
+                                    expectedSessionId,
+                                    "DEGRADED",
+                                    "Gateway returned HTTP " + closeable.code()
+                            );
                             callback.onError("GATEWAY_OFFLINE", safeGatewayFailureDetail(closeable.code(), null));
                         }
                         return;
@@ -754,6 +901,34 @@ public final class AgentGatewayClient {
                 }
             }
         });
+    }
+
+    private synchronized void updateStateForRequest(
+            int requestGeneration,
+            String expectedSessionId,
+            String newState,
+            String newDetail
+    ) {
+        if (!requestContextIsCurrent(
+                requestGeneration,
+                generation,
+                expectedSessionId,
+                remoteSessionId
+        )) {
+            return;
+        }
+        updateState(newState, newDetail);
+    }
+
+    static boolean requestContextIsCurrent(
+            int requestGeneration,
+            int currentGeneration,
+            String expectedSessionId,
+            String currentSessionId
+    ) {
+        return requestGeneration == currentGeneration
+                && expectedSessionId != null
+                && expectedSessionId.equals(currentSessionId);
     }
 
     private synchronized Request.Builder authorizedRequest(HttpUrl url) {
@@ -775,6 +950,17 @@ public final class AgentGatewayClient {
         HttpUrl.Builder builder = apiBaseUrl.newBuilder().addPathSegment("sessions").addPathSegment(remoteSessionId);
         for (String segment : segments) builder.addPathSegment(segment);
         return builder.build();
+    }
+
+    private synchronized HttpUrl expectedSessionUrl(
+            String expectedSessionId,
+            String... segments
+    ) {
+        if (expectedSessionId == null
+                || !expectedSessionId.equals(remoteSessionId)) {
+            throw new IllegalStateException("Remote session changed");
+        }
+        return sessionUrl(segments);
     }
 
     private synchronized OkHttpClient requireHttpClient() {
@@ -842,16 +1028,52 @@ public final class AgentGatewayClient {
         return result;
     }
 
-    private synchronized String sessionIdempotency(String operation, String... values) {
-        return stableIdempotency(operation, remoteSessionId, values);
-    }
-
     static String stableIdempotency(String operation, String remoteSessionId, String... values) {
         StringBuilder material = new StringBuilder(operation)
                 .append('\n')
                 .append(remoteSessionId != null ? remoteSessionId : "");
         for (String value : values) material.append('\n').append(value != null ? value : "");
         return UUID.nameUUIDFromBytes(material.toString().getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    static String sessionCreateFingerprint(JSONObject request) {
+        try {
+            return sha256(canonicalJson(request).getBytes(StandardCharsets.UTF_8));
+        } catch (JSONException error) {
+            throw new IllegalArgumentException("Session create request is invalid", error);
+        }
+    }
+
+    private static String canonicalJson(Object value) throws JSONException {
+        if (value == null || value == JSONObject.NULL) return "null";
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            List<String> keys = new ArrayList<>();
+            java.util.Iterator<String> iterator = object.keys();
+            while (iterator.hasNext()) keys.add(iterator.next());
+            Collections.sort(keys);
+            StringBuilder result = new StringBuilder("{");
+            for (int index = 0; index < keys.size(); index++) {
+                if (index > 0) result.append(',');
+                String key = keys.get(index);
+                result.append(JSONObject.quote(key))
+                        .append(':')
+                        .append(canonicalJson(object.get(key)));
+            }
+            return result.append('}').toString();
+        }
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < array.length(); index++) {
+                if (index > 0) result.append(',');
+                result.append(canonicalJson(array.get(index)));
+            }
+            return result.append(']').toString();
+        }
+        if (value instanceof String) return JSONObject.quote((String) value);
+        if (value instanceof Boolean || value instanceof Number) return value.toString();
+        return JSONObject.quote(String.valueOf(value));
     }
 
     static String gatewayErrorForHttpStatus(int status) {

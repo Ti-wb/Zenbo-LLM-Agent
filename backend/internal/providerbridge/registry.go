@@ -6,6 +6,7 @@ package providerbridge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,8 +47,9 @@ type Registry struct {
 }
 
 type profileSet struct {
-	kind string
-	set  application.ProviderSet
+	kind     string
+	revision string
+	set      application.ProviderSet
 }
 
 type readinessCheck struct {
@@ -93,6 +95,15 @@ func New(file config.File, options Options) (*Registry, error) {
 		break
 	}
 	for _, profileConfig := range file.Profiles {
+		revision, err := ProfileRevision(profileConfig, RevisionOptions{
+			ProviderTimeout: options.ProviderTimeout,
+			CodexHome:       options.CodexHome,
+			CodexWorkingDir: options.CodexWorkingDir,
+		})
+		if err != nil {
+			registry.Close()
+			return nil, fmt.Errorf("profile %s: calculate provider revision: %w", profileConfig.ID, err)
+		}
 		credentials, err := profileConfig.Credentials(options.EnvironmentLookup)
 		if err != nil {
 			registry.Close()
@@ -105,7 +116,11 @@ func New(file config.File, options Options) (*Registry, error) {
 			registry.Close()
 			return nil, fmt.Errorf("profile %s: %w", profileConfig.ID, err)
 		}
-		registry.profiles[profileConfig.ID] = profileSet{kind: profileConfig.Kind, set: set}
+		registry.profiles[profileConfig.ID] = profileSet{
+			kind:     profileConfig.Kind,
+			revision: revision,
+			set:      set,
+		}
 		if set.ThreadDeleter != nil {
 			if _, exists := registry.threadDeleters[profileConfig.Kind]; !exists {
 				// Codex v1 uses one shared CODEX_HOME identity. Retention
@@ -217,6 +232,118 @@ func buildProfile(
 
 const maxModelsResponseBytes = 1 << 20
 
+type profileRevisionDocument struct {
+	Kind  string                `json:"kind"`
+	LLM   profileRevisionLLM    `json:"llm"`
+	Media profileRevisionMedia  `json:"media"`
+	Codex *profileRevisionCodex `json:"codex,omitempty"`
+}
+
+type profileRevisionLLM struct {
+	BaseURL              string `json:"baseUrl"`
+	APIKeyEnv            string `json:"apiKeyEnv"`
+	AllowUnauthenticated bool   `json:"allowUnauthenticated"`
+	Mode                 string `json:"mode"`
+	Model                string `json:"model"`
+	TimeoutNanoseconds   int64  `json:"timeoutNanoseconds"`
+}
+
+type profileRevisionMedia struct {
+	BaseURL              string `json:"baseUrl"`
+	APIKeyEnv            string `json:"apiKeyEnv"`
+	AllowUnauthenticated bool   `json:"allowUnauthenticated"`
+	TranscriptionModel   string `json:"transcriptionModel"`
+	SpeechModel          string `json:"speechModel"`
+	Voice                string `json:"voice"`
+	TimeoutNanoseconds   int64  `json:"timeoutNanoseconds"`
+	SendSpeechLanguage   bool   `json:"sendSpeechLanguage"`
+}
+
+type profileRevisionCodex struct {
+	Home       string `json:"home"`
+	WorkingDir string `json:"workingDir"`
+}
+
+// RevisionOptions contains process settings that affect the concrete provider
+// selected for a session. Credential values are deliberately absent.
+type RevisionOptions struct {
+	ProviderTimeout time.Duration
+	CodexHome       string
+	CodexWorkingDir string
+}
+
+// ProfileRevision returns a deterministic fingerprint of provider behavior.
+// It intentionally includes credential environment-variable references but
+// never resolves or hashes credential values.
+func ProfileRevision(profile config.Profile, options RevisionOptions) (string, error) {
+	if options.ProviderTimeout <= 0 {
+		options.ProviderTimeout = 90 * time.Second
+	}
+	mediaBaseURL, err := openaiadapter.NormalizeBaseURL(profile.Media.BaseURL)
+	if err != nil {
+		return "", fmt.Errorf("normalize media base URL: %w", err)
+	}
+	llmBaseURL := ""
+	if profile.Kind == "openai-compatible" {
+		llmBaseURL, err = openaiadapter.NormalizeBaseURL(profile.LLM.BaseURL)
+		if err != nil {
+			return "", fmt.Errorf("normalize LLM base URL: %w", err)
+		}
+	}
+	document := profileRevisionDocument{
+		Kind: profile.Kind,
+		LLM: profileRevisionLLM{
+			BaseURL:              llmBaseURL,
+			APIKeyEnv:            profile.LLM.APIKeyEnv,
+			AllowUnauthenticated: profile.LLM.AllowUnauthenticated,
+			Mode:                 profile.LLM.Mode,
+			Model:                profile.LLM.Model,
+			TimeoutNanoseconds:   int64(profile.LLMTimeout(options.ProviderTimeout)),
+		},
+		Media: profileRevisionMedia{
+			BaseURL:              mediaBaseURL,
+			APIKeyEnv:            profile.Media.APIKeyEnv,
+			AllowUnauthenticated: profile.Media.AllowUnauthenticated,
+			TranscriptionModel:   profile.Media.TranscriptionModel,
+			SpeechModel:          profile.Media.SpeechModel,
+			Voice:                profile.Media.Voice,
+			TimeoutNanoseconds:   int64(profile.MediaTimeout(options.ProviderTimeout)),
+			SendSpeechLanguage:   profile.Media.SendSpeechLanguage,
+		},
+	}
+	if profile.Kind == "codex" {
+		codexHome, normalizeErr := normalizeAbsolutePath("Codex home", options.CodexHome)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		codexWorkingDir, normalizeErr := normalizeAbsolutePath(
+			"Codex working directory",
+			options.CodexWorkingDir,
+		)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		document.Codex = &profileRevisionCodex{
+			Home:       codexHome,
+			WorkingDir: codexWorkingDir,
+		}
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		return "", fmt.Errorf("encode profile revision: %w", err)
+	}
+	revision := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", revision), nil
+}
+
+func normalizeAbsolutePath(name, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%s must be an absolute path", name)
+	}
+	return filepath.Clean(value), nil
+}
+
 func endpointReadiness(
 	name, baseURL, apiKey string,
 	requiredModels []string,
@@ -225,7 +352,11 @@ func endpointReadiness(
 	return readinessCheck{
 		name: name,
 		check: func(ctx context.Context) error {
-			parsed, err := url.Parse(baseURL)
+			normalized, err := openaiadapter.NormalizeBaseURL(baseURL)
+			if err != nil {
+				return err
+			}
+			parsed, err := url.Parse(normalized)
 			if err != nil {
 				return err
 			}
@@ -295,6 +426,18 @@ func (registry *Registry) ForSession(_ context.Context, session application.Sess
 		return application.ProviderSet{}, fmt.Errorf(
 			"provider profile %q kind changed from %q to %q",
 			session.ProviderProfile, session.ProviderKind, profile.kind,
+		)
+	}
+	if session.ProviderRevision == "" {
+		return application.ProviderSet{}, fmt.Errorf(
+			"provider profile %q has no pinned revision",
+			session.ProviderProfile,
+		)
+	}
+	if profile.revision != session.ProviderRevision {
+		return application.ProviderSet{}, fmt.Errorf(
+			"provider profile %q configuration changed after session creation",
+			session.ProviderProfile,
 		)
 	}
 	return profile.set, nil

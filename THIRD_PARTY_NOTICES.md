@@ -175,6 +175,8 @@ to be packaged into the application runtime:
 | Foojay toolchain resolver convention plugin | 0.8.0 | Apache-2.0 | <https://github.com/gradle/foojay-toolchains> |
 | Gradle Wrapper / Gradle Build Tool | 8.13 | Apache-2.0 | <https://github.com/gradle/gradle> |
 | JUnit 4 | 4.13.2 and 4.12 | EPL-1.0 | <https://github.com/junit-team/junit4> |
+| JSON-java | 20240303 | Public Domain | <https://github.com/stleary/JSON-java> |
 
-The committed Gradle Wrapper JAR contains its own `META-INF/LICENSE`. JUnit is
-declared with `testImplementation` and is not included in production APKs.
+The committed Gradle Wrapper JAR contains its own `META-INF/LICENSE`. JUnit and
+JSON-java are declared with `testImplementation` and are not included in
+production APKs.

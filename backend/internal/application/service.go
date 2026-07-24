@@ -19,12 +19,13 @@ import (
 )
 
 type Profile struct {
-	ID              string
-	DisplayName     string
-	Languages       []string
-	Default         bool
-	ProviderKind    string
-	ProviderProfile string
+	ID               string
+	DisplayName      string
+	Languages        []string
+	Default          bool
+	ProviderKind     string
+	ProviderProfile  string
+	ProviderRevision string
 }
 
 type Config struct {
@@ -78,8 +79,11 @@ func NewAdapter(repository Repository, blobs blob.Store, providers Providers, co
 	profiles := make(map[string]Profile, len(config.Profiles))
 	defaults := 0
 	for _, profile := range config.Profiles {
-		if profile.ID == "" || profile.ProviderKind == "" || profile.ProviderProfile == "" {
-			return nil, fmt.Errorf("profile ID, provider kind and provider profile are required")
+		if profile.ID == "" || profile.ProviderKind == "" ||
+			profile.ProviderProfile == "" || !validProviderRevision(profile.ProviderRevision) {
+			return nil, fmt.Errorf(
+				"profile ID, provider kind, provider profile and a lowercase SHA-256 provider revision are required",
+			)
 		}
 		if _, exists := profiles[profile.ID]; exists {
 			return nil, fmt.Errorf("duplicate profile %q", profile.ID)
@@ -100,6 +104,12 @@ func NewAdapter(repository Repository, blobs blob.Store, providers Providers, co
 		profiles:   profiles,
 		clock:      clock,
 	}, nil
+}
+
+func validProviderRevision(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size &&
+		hex.EncodeToString(decoded) == value
 }
 
 func (service *Adapter) Capabilities(context.Context, domain.Principal) (domain.Capabilities, error) {
@@ -163,6 +173,7 @@ func (service *Adapter) CreateSession(
 		AgentProfile:     profile.ID,
 		ProviderKind:     profile.ProviderKind,
 		ProviderProfile:  profile.ProviderProfile,
+		ProviderRevision: profile.ProviderRevision,
 		Client:           client,
 		Context:          robotContext,
 		ToolManifest:     manifest,

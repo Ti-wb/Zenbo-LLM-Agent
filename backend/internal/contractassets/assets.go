@@ -23,8 +23,13 @@ const (
 	WSEnvelopeSHA256   = "0350e1ddef9a0b26a81aa38c2b3104205104d00dcb6b5649a9bf4be5b3199958"
 
 	maxContractAssetBytes = 1 << 20
-	maxInstanceBytes      = 64 << 10
-	maxInstanceDepth      = 64
+	// A 16,000-character protocol text field can occupy 96,000 bytes when
+	// encoding/json escapes every character as a six-byte \uXXXX sequence.
+	// Keep room for the envelope while retaining a hard bound for schema
+	// branches such as tool arguments that are structurally but not
+	// byte-bounded.
+	maxInstanceBytes = 128 << 10
+	maxInstanceDepth = 64
 
 	openAPIAsset      = "assets/openapi.json"
 	toolManifestAsset = "assets/tool-manifest.schema.json"

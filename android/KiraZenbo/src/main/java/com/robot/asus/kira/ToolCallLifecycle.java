@@ -29,6 +29,10 @@ final class ToolCallLifecycle {
         if (states.get(callId) == State.ACCEPTING) states.remove(callId);
     }
 
+    synchronized void failDispatch(String callId) {
+        if (states.get(callId) == State.DISPATCHED) states.remove(callId);
+    }
+
     synchronized void markTerminal(String callId) {
         states.put(callId, State.TERMINAL);
     }

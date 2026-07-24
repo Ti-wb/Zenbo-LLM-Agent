@@ -15,6 +15,7 @@ import (
 
 type fakeRepository struct {
 	Repository
+	createSession    func(context.Context, CreateSessionParams) (Session, bool, error)
 	createTurn       func(context.Context, CreateTurnParams) (Turn, bool, error)
 	cancelTurn       func(context.Context, CancelTurnParams) (Turn, bool, bool, error)
 	getSession       func(context.Context, string, string) (Session, error)
@@ -26,6 +27,13 @@ type fakeRepository struct {
 	leaseArtifact    func(context.Context, string, string, time.Time, time.Duration) (ArtifactLease, error)
 	markArtifact     func(context.Context, string, string, time.Time) error
 	releaseArtifact  func(context.Context, string, string) error
+}
+
+func (repository *fakeRepository) CreateSession(
+	ctx context.Context,
+	params CreateSessionParams,
+) (Session, bool, error) {
+	return repository.createSession(ctx, params)
 }
 
 func (repository *fakeRepository) CreateTurn(ctx context.Context, params CreateTurnParams) (Turn, bool, error) {
@@ -95,6 +103,48 @@ func (repository *fakeRepository) ReleaseArtifactLease(
 	artifactID, owner string,
 ) error {
 	return repository.releaseArtifact(ctx, artifactID, owner)
+}
+
+const testProviderRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestCreateSessionPinsConfiguredProviderRevision(t *testing.T) {
+	now := time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC)
+	var captured CreateSessionParams
+	repository := &fakeRepository{
+		createSession: func(
+			_ context.Context,
+			params CreateSessionParams,
+		) (Session, bool, error) {
+			captured = params
+			return Session{
+				ID:               params.ID,
+				DeviceRowID:      params.Device.ID,
+				DeviceID:         params.Device.DeviceID,
+				ProtocolVersion:  ProtocolVersion,
+				State:            SessionActive,
+				AgentProfile:     params.AgentProfile,
+				ProviderKind:     params.ProviderKind,
+				ProviderProfile:  params.ProviderProfile,
+				ProviderRevision: params.ProviderRevision,
+				CreatedAt:        params.Now,
+				UpdatedAt:        params.Now,
+				ExpiresAt:        params.ExpiresAt,
+			}, false, nil
+		},
+	}
+	service := testAdapter(t, repository, &memoryBlobStore{}, now)
+	_, err := service.CreateSession(
+		context.Background(),
+		domain.Principal{TokenID: "device-row", DeviceID: "device-id"},
+		"10000000-0000-4000-8000-000000000001",
+		domain.CreateSessionRequest{AgentProfile: "default"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if captured.ProviderRevision != testProviderRevision {
+		t.Fatalf("provider revision = %q", captured.ProviderRevision)
+	}
 }
 
 type memoryBlobStore struct {
@@ -466,7 +516,7 @@ func testAdapter(t *testing.T, repository Repository, blobs blob.Store, now time
 		Profiles: []Profile{{
 			ID: "default", DisplayName: "Default", Languages: []string{"zh-TW"},
 			Default: true, ProviderKind: "openai-compatible",
-			ProviderProfile: "default",
+			ProviderProfile: "default", ProviderRevision: testProviderRevision,
 		}},
 		Clock: func() time.Time { return now },
 	})

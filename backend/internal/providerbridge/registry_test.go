@@ -146,8 +146,8 @@ func TestRegistryReadinessProbesModels(t *testing.T) {
 	  "profiles":[{
 	    "id":"default","displayName":"Lite","languages":["zh-TW"],"isDefault":true,
 	    "kind":"openai-compatible",
-	    "llm":{"baseUrl":"BASE/v1","apiKeyEnv":"KEY","mode":"responses","model":"model"},
-	    "media":{"baseUrl":"BASE/v1","apiKeyEnv":"KEY","transcriptionModel":"stt","speechModel":"tts","voice":"voice"}
+	    "llm":{"baseUrl":"BASE//v1/","apiKeyEnv":"KEY","mode":"responses","model":"model"},
+	    "media":{"baseUrl":"BASE//v1/","apiKeyEnv":"KEY","transcriptionModel":"stt","speechModel":"tts","voice":"voice"}
 	  }]
 	}`, "BASE", server.URL)
 	file, err := config.Decode(strings.NewReader(raw))
@@ -178,6 +178,172 @@ func TestRegistryReadinessProbesModels(t *testing.T) {
 		ProviderKind:    "codex",
 	}); err == nil {
 		t.Fatal("expected pinned provider kind mismatch to fail")
+	}
+}
+
+func TestRegistryRejectsChangedPinnedProfileRevision(t *testing.T) {
+	original := revisionTestProfile()
+	originalRevision, err := ProfileRevision(original, revisionTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := original
+	changed.LLM.Model = "replacement-model"
+	changedRevision, err := ProfileRevision(changed, revisionTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedRevision == originalRevision {
+		t.Fatal("model change did not change provider revision")
+	}
+
+	registry := &Registry{profiles: map[string]profileSet{
+		"default": {
+			kind:     changed.Kind,
+			revision: changedRevision,
+			set:      application.ProviderSet{Model: changed.LLM.Model},
+		},
+	}}
+	_, err = registry.ForSession(context.Background(), application.Session{
+		ProviderKind:     original.Kind,
+		ProviderProfile:  original.ID,
+		ProviderRevision: originalRevision,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configuration changed") {
+		t.Fatalf("changed profile was accepted: %v", err)
+	}
+	_, err = registry.ForSession(context.Background(), application.Session{
+		ProviderKind:    changed.Kind,
+		ProviderProfile: changed.ID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no pinned revision") {
+		t.Fatalf("legacy unpinned session was accepted: %v", err)
+	}
+
+	set, err := registry.ForSession(context.Background(), application.Session{
+		ProviderKind:     changed.Kind,
+		ProviderProfile:  changed.ID,
+		ProviderRevision: changedRevision,
+	})
+	if err != nil || set.Model != changed.LLM.Model {
+		t.Fatalf("current pinned profile = %#v, %v", set, err)
+	}
+}
+
+func TestProfileRevisionIncludesCredentialReferenceButNotValue(t *testing.T) {
+	profile := revisionTestProfile()
+	first, err := ProfileRevision(profile, revisionTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.LLM.APIKeyEnv = "REPLACEMENT_LLM_KEY"
+	second, err := ProfileRevision(profile, revisionTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("credential environment reference did not change provider revision")
+	}
+	if strings.Contains(first, "LLM_KEY") || strings.Contains(second, "REPLACEMENT_LLM_KEY") {
+		t.Fatal("provider revision exposed a credential environment reference")
+	}
+}
+
+func TestCodexRuntimePathChangesInvalidatePinnedRevision(t *testing.T) {
+	profile := revisionTestProfile()
+	profile.Kind = "codex"
+	profile.LLM = config.LLM{Model: "gpt-codex"}
+	originalOptions := revisionTestOptions()
+	originalRevision, err := ProfileRevision(profile, originalOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equivalentOptions := originalOptions
+	equivalentOptions.CodexHome = "/var/lib/zenbo-gateway/./codex/"
+	equivalentOptions.CodexWorkingDir = "/var/empty/./codex/"
+	equivalentRevision, err := ProfileRevision(profile, equivalentOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equivalentRevision != originalRevision {
+		t.Fatal("equivalent normalized Codex paths changed provider revision")
+	}
+
+	tests := []struct {
+		name   string
+		change func(*RevisionOptions)
+	}{
+		{
+			name: "home",
+			change: func(options *RevisionOptions) {
+				options.CodexHome = "/var/lib/zenbo-gateway/other-codex-home"
+			},
+		},
+		{
+			name: "working directory",
+			change: func(options *RevisionOptions) {
+				options.CodexWorkingDir = "/var/empty/other-codex-cwd"
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changedOptions := originalOptions
+			test.change(&changedOptions)
+			changedRevision, err := ProfileRevision(profile, changedOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changedRevision == originalRevision {
+				t.Fatal("Codex runtime path change did not change provider revision")
+			}
+			registry := &Registry{profiles: map[string]profileSet{
+				profile.ID: {
+					kind:     profile.Kind,
+					revision: changedRevision,
+					set:      application.ProviderSet{Model: profile.LLM.Model},
+				},
+			}}
+			_, err = registry.ForSession(context.Background(), application.Session{
+				ProviderKind:     profile.Kind,
+				ProviderProfile:  profile.ID,
+				ProviderRevision: originalRevision,
+			})
+			if err == nil || !strings.Contains(err.Error(), "configuration changed") {
+				t.Fatalf("changed Codex runtime path was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func revisionTestOptions() RevisionOptions {
+	return RevisionOptions{
+		ProviderTimeout: 90 * time.Second,
+		CodexHome:       "/var/lib/zenbo-gateway/codex",
+		CodexWorkingDir: "/var/empty/codex",
+	}
+}
+
+func revisionTestProfile() config.Profile {
+	return config.Profile{
+		ID:          "default",
+		DisplayName: "Default",
+		Languages:   []string{"zh-TW"},
+		IsDefault:   true,
+		Kind:        "openai-compatible",
+		LLM: config.LLM{
+			BaseURL:   "https://llm.example.test",
+			APIKeyEnv: "LLM_KEY",
+			Mode:      "responses",
+			Model:     "model",
+		},
+		Media: config.Media{
+			BaseURL:            "https://media.example.test",
+			APIKeyEnv:          "MEDIA_KEY",
+			TranscriptionModel: "stt",
+			SpeechModel:        "tts",
+			Voice:              "voice",
+		},
 	}
 }
 

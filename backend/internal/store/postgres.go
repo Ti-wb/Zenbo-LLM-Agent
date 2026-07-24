@@ -7,12 +7,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Ti-wb/Zenbo-LLM-Agent/backend/internal/application"
 	"github.com/Ti-wb/Zenbo-LLM-Agent/backend/internal/store/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	maxTransactionAttempts    = 4
+	transactionRetryBaseDelay = 5 * time.Millisecond
 )
 
 type Postgres struct {
@@ -77,21 +83,60 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+// inTransaction may invoke action more than once after a serialization failure
+// or deadlock. Callers must keep action limited to transaction-local database
+// work and derive any externally visible side effects from committed state.
 func inTransaction[T any](ctx context.Context, pool *pgxpool.Pool, options pgx.TxOptions, action func(pgx.Tx) (T, error)) (T, error) {
+	return retryTransaction(ctx, func() (T, error) {
+		var zero T
+		tx, err := pool.BeginTx(ctx, options)
+		if err != nil {
+			return zero, fmt.Errorf("begin transaction: %w", err)
+		}
+		value, err := action(tx)
+		if err != nil {
+			_ = tx.Rollback(context.Background())
+			return zero, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			_ = tx.Rollback(context.Background())
+			return zero, mapDatabaseError(err)
+		}
+		return value, nil
+	})
+}
+
+func retryTransaction[T any](ctx context.Context, attempt func() (T, error)) (T, error) {
 	var zero T
-	tx, err := pool.BeginTx(ctx, options)
-	if err != nil {
-		return zero, fmt.Errorf("begin transaction: %w", err)
+	for attemptNumber := 1; attemptNumber <= maxTransactionAttempts; attemptNumber++ {
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
+		value, err := attempt()
+		if err == nil {
+			return value, nil
+		}
+		if !isRetryableTransactionError(err) || attemptNumber == maxTransactionAttempts {
+			return zero, err
+		}
+		delay := transactionRetryBaseDelay << (attemptNumber - 1)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return zero, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	value, err := action(tx)
-	if err != nil {
-		return zero, err
+	return zero, errors.New("postgres transaction retry loop exhausted")
+}
+
+func isRetryableTransactionError(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return zero, mapDatabaseError(err)
-	}
-	return value, nil
+	return postgresError.Code == "40001" || postgresError.Code == "40P01"
 }
 
 func mapDatabaseError(err error) error {

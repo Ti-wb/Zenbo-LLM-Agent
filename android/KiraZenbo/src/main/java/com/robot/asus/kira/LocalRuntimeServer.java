@@ -501,7 +501,7 @@ public final class LocalRuntimeServer {
             if (expectedSecret == null
                     || !requestShapeValid
                     || clientVersion.isEmpty()
-                    || clientVersion.length() > 64
+                    || ProtocolStrings.length(clientVersion) > 64
                     || now > expectedExpiry
                     || !constantTimeEquals(expectedSecret, suppliedSecret)) {
                 failedBootstrapAttempts++;
@@ -626,7 +626,7 @@ public final class LocalRuntimeServer {
                 if (text.isEmpty() && input.optString("audioBase64", "").isEmpty()) {
                     throw new IllegalArgumentException("WAV audio or text is required");
                 }
-                if (text.length() > 16_000) throw new IllegalArgumentException("Text turn exceeds 16000 characters");
+                validateTextTurnLength(text);
                 if (!language.matches("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")) {
                     throw new IllegalArgumentException("language is invalid");
                 }
@@ -841,7 +841,7 @@ public final class LocalRuntimeServer {
         response.getHeaders().set("Content-Type", "application/json; charset=utf-8");
         String canonicalCode = canonicalErrorCode(errorCode, code);
         String safeMessage = message == null || message.isEmpty() ? canonicalCode : message;
-        if (safeMessage.length() > 512) safeMessage = safeMessage.substring(0, 512);
+        safeMessage = ProtocolStrings.truncate(safeMessage, 512);
         response.send(json(
                 "ok", false,
                 "requestId", java.util.UUID.randomUUID().toString(),
@@ -939,7 +939,7 @@ public final class LocalRuntimeServer {
         }
         if (!(messageValue instanceof String)
                 || ((String) messageValue).isEmpty()
-                || ((String) messageValue).length() > 512) {
+                || ProtocolStrings.length((String) messageValue) > 512) {
             throw new IllegalArgumentException("Tool error message is invalid");
         }
         if (!(retryableValue instanceof Boolean)) {
@@ -953,6 +953,12 @@ public final class LocalRuntimeServer {
         else if (value instanceof String) encoded = JSONObject.quote((String) value);
         else encoded = String.valueOf(value);
         return encoded.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    static void validateTextTurnLength(String text) {
+        if (ProtocolStrings.length(text) > 16_000) {
+            throw new IllegalArgumentException("Text turn exceeds 16000 characters");
+        }
     }
 
     private static String canonicalErrorCode(String value, int status) {

@@ -2,6 +2,7 @@ package contractassets
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,6 +90,59 @@ func TestEmbeddedSchemaValidatorsRejectStructuralViolations(t *testing.T) {
 	}`)
 	if err := ValidateWSEnvelope(envelope); err == nil {
 		t.Fatal("envelope with an invalid UUID format was accepted")
+	}
+}
+
+func TestWSEnvelopeValidatorAcceptsMaximumEscapedText(t *testing.T) {
+	envelope, err := json.Marshal(map[string]any{
+		"protocolVersion": "1.0",
+		"eventId":         "50000000-0000-4000-8000-000000000001",
+		"sequence":        1,
+		"sessionId":       "10000000-0000-4000-8000-000000000001",
+		"turnId":          "20000000-0000-4000-8000-000000000001",
+		"type":            "agent.text.final",
+		"timestamp":       "2026-07-24T01:02:03.004Z",
+		"data": map[string]any{
+			"text": strings.Repeat("<", 16_000),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope) <= 64<<10 {
+		t.Fatalf("escaped envelope is only %d bytes; test did not cross the old limit", len(envelope))
+	}
+	if err := ValidateWSEnvelope(envelope); err != nil {
+		t.Fatalf("valid maximum-length escaped text was rejected: %v", err)
+	}
+}
+
+func TestWSEnvelopeValidatorRetainsBoundForUnboundedArguments(t *testing.T) {
+	envelope, err := json.Marshal(map[string]any{
+		"protocolVersion": "1.0",
+		"eventId":         "50000000-0000-4000-8000-000000000001",
+		"sequence":        1,
+		"sessionId":       "10000000-0000-4000-8000-000000000001",
+		"turnId":          "20000000-0000-4000-8000-000000000001",
+		"type":            "tool.call",
+		"timestamp":       "2026-07-24T01:02:03.004Z",
+		"data": map[string]any{
+			"callId":      "60000000-0000-4000-8000-000000000001",
+			"toolName":    "show_emotion",
+			"toolVersion": "1.0.0",
+			"arguments": map[string]any{
+				"unbounded": strings.Repeat("x", maxInstanceBytes),
+			},
+			"timeoutMs":  5000,
+			"deadlineAt": "2026-07-24T01:02:08.004Z",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateWSEnvelope(envelope)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized unbounded arguments were not rejected: %v", err)
 	}
 }
 

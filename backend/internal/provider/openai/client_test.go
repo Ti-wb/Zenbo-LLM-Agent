@@ -46,6 +46,7 @@ func TestResponsesStepWithToolCall(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		io.WriteString(writer, `{
 			"id":"resp_123",
+			"status":"completed",
 			"output":[
 				{"type":"message","content":[{"type":"output_text","text":"Let me look."}]},
 				{"type":"function_call","call_id":"call_123","name":"look_at_user","arguments":"{\"speed\":\"slow\"}"}
@@ -56,7 +57,7 @@ func TestResponsesStepWithToolCall(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, Config{
-		BaseURL: server.URL,
+		BaseURL: server.URL + "//v1/",
 		APIKey:  "secret",
 		Mode:    ModeResponses,
 		Model:   "robot-model",
@@ -87,6 +88,28 @@ func TestResponsesStepWithToolCall(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLCanonicalizesPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://example.test", want: "https://example.test/v1/"},
+		{raw: "https://example.test//v1/", want: "https://example.test/v1/"},
+		{raw: "https://example.test/custom///", want: "https://example.test/custom/v1/"},
+		{raw: "https://example.test/custom//v1//", want: "https://example.test/custom/v1/"},
+	}
+	for _, test := range tests {
+		normalized, err := NormalizeBaseURL(test.raw)
+		if err != nil {
+			t.Fatalf("%q: %v", test.raw, err)
+		}
+		if normalized != test.want {
+			t.Fatalf("%q normalized to %q, want %q", test.raw, normalized, test.want)
+		}
+	}
+}
+
 func TestChatCompletionsStep(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -95,7 +118,7 @@ func TestChatCompletionsStep(t *testing.T) {
 		}
 		io.WriteString(writer, `{
 			"id":"chat_123",
-			"choices":[{"message":{"content":"Hi there","tool_calls":[]}}],
+			"choices":[{"finish_reason":"stop","message":{"content":"Hi there","tool_calls":[]}}],
 			"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
 		}`)
 	}))
@@ -162,7 +185,7 @@ func TestChatCompletionsSerializesToolHistoryAndParsesCall(t *testing.T) {
 		}
 		io.WriteString(writer, `{
 			"id":"chat_tool",
-			"choices":[{"message":{"content":null,"tool_calls":[{
+			"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{
 				"id":"next_call",
 				"type":"function",
 				"function":{"name":"show_emotion","arguments":"{\"emotion\":\"happy\"}"}
@@ -226,7 +249,7 @@ func TestResponsesSerializesToolOutput(t *testing.T) {
 		if !found {
 			t.Errorf("function result missing from %#v", payload.Input)
 		}
-		io.WriteString(writer, `{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
+		io.WriteString(writer, `{"id":"r","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -433,11 +456,65 @@ func TestStepRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestResponsesRejectsNonCompletedStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"", "queued", "in_progress", "incomplete", "failed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"id":     "response",
+				"status": status,
+				"output": []any{map[string]any{
+					"type": "message",
+					"content": []any{map[string]any{
+						"type": "output_text",
+						"text": "partial text must not escape",
+					}},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = parseResponses(raw)
+			var providerError *provider.Error
+			if !errors.As(err, &providerError) || providerError.Kind != provider.ErrorMalformed {
+				t.Fatalf("status %q error = %#v", status, err)
+			}
+		})
+	}
+}
+
+func TestChatCompletionsRejectsNonSuccessFinishReason(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"", "length", "content_filter", "function_call", "error"} {
+		t.Run(reason, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"id": "completion",
+				"choices": []any{map[string]any{
+					"finish_reason": reason,
+					"message": map[string]any{
+						"content":    "partial text must not escape",
+						"tool_calls": []any{},
+					},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = parseChatCompletion(raw)
+			var providerError *provider.Error
+			if !errors.As(err, &providerError) || providerError.Kind != provider.ErrorMalformed {
+				t.Fatalf("finish reason %q error = %#v", reason, err)
+			}
+		})
+	}
+}
+
 func TestStepRejectsMalformedToolArguments(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		io.WriteString(writer, `{
 			"id":"resp",
+			"status":"completed",
 			"output":[{"type":"function_call","call_id":"call","name":"tool","arguments":"not json"}]
 		}`)
 	}))
@@ -466,6 +543,7 @@ func TestClientDoesNotInheritOpenAIEnvironment(t *testing.T) {
 		}
 		io.WriteString(writer, `{
 			"id":"response",
+			"status":"completed",
 			"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
 		}`)
 	}))

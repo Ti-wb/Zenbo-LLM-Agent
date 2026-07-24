@@ -1,5 +1,6 @@
 package com.robot.asus.kira;
 
+import org.json.JSONObject;
 import org.junit.Test;
 
 import java.nio.ByteBuffer;
@@ -96,29 +97,184 @@ public class RuntimeValidatorTest {
     @Test
     public void cancelledTurnCannotRegainPhysicalExecutionAuthority() {
         TurnAuthority authority = new TurnAuthority();
+        String sessionId = "11111111-1111-4111-8111-111111111111";
+        long epoch = 7L;
         String turnId = "22222222-2222-4222-8222-222222222222";
         final boolean[] executed = {false};
-        assertTrue(authority.runIfAuthorized(turnId, () -> executed[0] = true));
+        assertTrue(authority.runIfAuthorized(
+                sessionId,
+                epoch,
+                turnId,
+                () -> executed[0] = true
+        ));
         assertTrue(executed[0]);
-        authority.revoke(turnId);
+        authority.revoke(sessionId, epoch, turnId);
         executed[0] = false;
-        assertFalse(authority.runIfAuthorized(turnId, () -> executed[0] = true));
+        assertFalse(authority.runIfAuthorized(
+                sessionId,
+                epoch,
+                turnId,
+                () -> executed[0] = true
+        ));
         assertFalse(executed[0]);
-        assertTrue(authority.isRevoked(turnId));
+        assertTrue(authority.isRevoked(sessionId, epoch, turnId));
+        assertFalse(authority.isRevoked(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                epoch,
+                turnId
+        ));
+        assertFalse(authority.isRevoked(sessionId, epoch + 1L, turnId));
+        authority.clearSession(sessionId, epoch);
+        assertFalse(authority.isRevoked(sessionId, epoch, turnId));
+        authority.revoke(sessionId, epoch, turnId);
+        authority.forget(sessionId, epoch, turnId);
+        assertFalse(authority.isRevoked(sessionId, epoch, turnId));
     }
 
     @Test
     public void cancellationAfterQueueingStillBlocksTheActualSideEffect() {
         TurnAuthority authority = new TurnAuthority();
+        String sessionId = "11111111-1111-4111-8111-111111111111";
+        long epoch = 9L;
         String turnId = "33333333-3333-4333-8333-333333333333";
         final boolean[] sideEffect = {false};
         Runnable queuedMainThreadWork = () -> GuardedExecution.runIfAllowed(
-                action -> authority.runIfAuthorized(turnId, action),
+                action -> authority.runIfAuthorized(
+                        sessionId,
+                        epoch,
+                        turnId,
+                        action
+                ),
                 () -> sideEffect[0] = true
         );
-        authority.revoke(turnId);
+        authority.revoke(sessionId, epoch, turnId);
         queuedMainThreadWork.run();
         assertFalse(sideEffect[0]);
+    }
+
+    @Test
+    public void toolJournalEntryValidationFailsClosedOnInconsistentState()
+            throws Exception {
+        ToolCallJournal.Entry dispatched = new ToolCallJournal.Entry(
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333",
+                "web",
+                "show_emotion",
+                10L,
+                null,
+                0L,
+                ToolCallJournal.DeliveryState.NONE
+        );
+        assertTrue(SharedPreferencesToolCallJournal.isValidEntry(dispatched));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                dispatched.withDeliveryState(
+                        ToolCallJournal.DeliveryState.PENDING
+                )
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                new ToolCallJournal.Entry(
+                        dispatched.sessionId,
+                        dispatched.callId,
+                        dispatched.turnId,
+                        dispatched.owner,
+                        dispatched.name,
+                        dispatched.dispatchedAt,
+                        new JSONObject(),
+                        0L,
+                        ToolCallJournal.DeliveryState.PENDING
+                )
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                new ToolCallJournal.Entry(
+                        "not-a-uuid",
+                        dispatched.callId,
+                        dispatched.turnId,
+                        "unknown",
+                        "",
+                        -1L,
+                        null,
+                        0L,
+                        ToolCallJournal.DeliveryState.NONE
+                )
+        ));
+        JSONObject succeeded = new JSONObject()
+                .put("status", "succeeded")
+                .put("updatedAt", "2026-07-24T12:34:56.789Z")
+                .put("output", new JSONObject()
+                        .put("ok", true)
+                        .put("emotion", "HAPPY")
+                        .put("durationMs", 100));
+        JSONObject failed = new JSONObject()
+                .put("status", "failed")
+                .put("updatedAt", "2026-07-24T12:34:56Z")
+                .put("error", new JSONObject()
+                        .put("code", "TIMEOUT")
+                        .put("message", "deadline exceeded")
+                        .put("retryable", false));
+        assertTrue(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, succeeded)
+        ));
+        assertTrue(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, failed)
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject())
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject()
+                        .put("status", "accepted")
+                        .put("updatedAt", "2026-07-24T12:34:56.789Z"))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject(succeeded.toString())
+                        .put("updatedAt", "not-a-timestamp"))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject(succeeded.toString())
+                        .put("output", new JSONObject().put("ok", true)))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject(succeeded.toString())
+                        .put("output", new JSONObject()
+                                .put("ok", true)
+                                .put("emotion", "HAPPY")
+                                .put("durationMs", "100")))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject(succeeded.toString())
+                        .put("output", new JSONObject()
+                                .put("ok", true)
+                                .put("emotion", "HAPPY")
+                                .put("durationMs", 100)
+                                .put("unexpected", true)))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject(failed.toString())
+                        .put("unexpected", true))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                terminalEntry(dispatched, new JSONObject()
+                        .put("status", "failed")
+                        .put("updatedAt", "2026-07-24T12:34:56.789Z")
+                        .put("error", new JSONObject()
+                                .put("code", "bad")
+                                .put("message", "")
+                                .put("retryable", "false")))
+        ));
+        assertFalse(SharedPreferencesToolCallJournal.isValidEntry(
+                new ToolCallJournal.Entry(
+                        dispatched.sessionId,
+                        dispatched.callId,
+                        dispatched.turnId,
+                        "native",
+                        dispatched.name,
+                        dispatched.dispatchedAt,
+                        succeeded,
+                        20L,
+                        ToolCallJournal.DeliveryState.PENDING
+                )
+        ));
     }
 
     @Test
@@ -184,6 +340,23 @@ public class RuntimeValidatorTest {
     ) {
         for (ToolManifestSpec.Definition tool : tools) if (name.equals(tool.name)) return tool;
         throw new AssertionError("Missing tool: " + name);
+    }
+
+    private static ToolCallJournal.Entry terminalEntry(
+            ToolCallJournal.Entry dispatched,
+            JSONObject update
+    ) {
+        return new ToolCallJournal.Entry(
+                dispatched.sessionId,
+                dispatched.callId,
+                dispatched.turnId,
+                dispatched.owner,
+                dispatched.name,
+                dispatched.dispatchedAt,
+                update,
+                20L,
+                ToolCallJournal.DeliveryState.PENDING
+        );
     }
 
     private static Set<String> propertyNames(List<ToolManifestSpec.Property> properties) {

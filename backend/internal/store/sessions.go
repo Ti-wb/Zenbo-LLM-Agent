@@ -166,17 +166,17 @@ func (store *Postgres) CreateSession(ctx context.Context, params application.Cre
 		created, err := scanSession(tx.QueryRow(ctx, `
 			INSERT INTO sessions (
 				id, device_row_id, device_id, protocol_version, state,
-				agent_profile, provider_kind, provider_profile, client, context,
-				tool_manifest, created_at, updated_at, expires_at
+				agent_profile, provider_kind, provider_profile, provider_revision,
+				client, context, tool_manifest, created_at, updated_at, expires_at
 			) VALUES (
 				COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2, $3, '1.0',
-				'active', $4, $5, $6, $7, $8, $9, $10, $10, $11
+				'active', $4, $5, $6, $7, $8, $9, $10, $11, $11, $12
 			)
 			RETURNING `+sessionColumns,
 			params.ID, params.Device.ID, params.Device.DeviceID, params.AgentProfile,
-			params.ProviderKind, params.ProviderProfile, normalizeJSON(params.Client),
-			normalizeJSON(params.Context), normalizeJSON(params.ToolManifest),
-			params.Now, params.ExpiresAt,
+			params.ProviderKind, params.ProviderProfile, params.ProviderRevision,
+			normalizeJSON(params.Client), normalizeJSON(params.Context),
+			normalizeJSON(params.ToolManifest), params.Now, params.ExpiresAt,
 		))
 		if err != nil {
 			return sessionCreateResult{}, mapDatabaseError(err)

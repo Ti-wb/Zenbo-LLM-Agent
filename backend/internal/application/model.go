@@ -31,23 +31,24 @@ func (state SessionState) Terminal() bool {
 }
 
 type Session struct {
-	ID              string
-	DeviceRowID     string
-	DeviceID        string
-	ProtocolVersion string
-	State           SessionState
-	AgentProfile    string
-	ProviderKind    string
-	ProviderProfile string
-	Client          json.RawMessage
-	Context         json.RawMessage
-	ToolManifest    json.RawMessage
-	LastSequence    uint64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	ExpiresAt       time.Time
-	ClosedAt        *time.Time
-	CloseReason     string
+	ID               string
+	DeviceRowID      string
+	DeviceID         string
+	ProtocolVersion  string
+	State            SessionState
+	AgentProfile     string
+	ProviderKind     string
+	ProviderProfile  string
+	ProviderRevision string
+	Client           json.RawMessage
+	Context          json.RawMessage
+	ToolManifest     json.RawMessage
+	LastSequence     uint64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	ExpiresAt        time.Time
+	ClosedAt         *time.Time
+	CloseReason      string
 }
 
 type TurnState string
@@ -228,6 +229,7 @@ type CreateSessionParams struct {
 	AgentProfile     string
 	ProviderKind     string
 	ProviderProfile  string
+	ProviderRevision string
 	Client           json.RawMessage
 	Context          json.RawMessage
 	ToolManifest     json.RawMessage

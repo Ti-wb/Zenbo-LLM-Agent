@@ -1,5 +1,6 @@
 package com.robot.asus.kira;
 
+import org.json.JSONObject;
 import org.junit.Test;
 
 import okhttp3.HttpUrl;
@@ -12,6 +13,7 @@ import okhttp3.mockwebserver.RecordedRequest;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 
 public class AgentGatewayClientTest {
     @Test
@@ -71,5 +73,52 @@ public class AgentGatewayClientTest {
         assertFalse(detail.contains("Bearer"));
         assertFalse(detail.contains("super-secret-device-token"));
         assertFalse(detail.contains(secretBody));
+    }
+
+    @Test
+    public void sessionCreateFingerprintIsCanonicalAndPayloadSensitive() throws Exception {
+        JSONObject first = new JSONObject()
+                .put("agentProfile", "default")
+                .put("context", new JSONObject()
+                        .put("robotName", "Zenbo K")
+                        .put("language", "zh-TW"));
+        JSONObject sameDifferentOrder = new JSONObject()
+                .put("context", new JSONObject()
+                        .put("language", "zh-TW")
+                        .put("robotName", "Zenbo K"))
+                .put("agentProfile", "default");
+        JSONObject changed = new JSONObject(first.toString())
+                .put("agentProfile", "office");
+
+        assertEquals(
+                AgentGatewayClient.sessionCreateFingerprint(first),
+                AgentGatewayClient.sessionCreateFingerprint(sameDifferentOrder)
+        );
+        assertNotEquals(
+                AgentGatewayClient.sessionCreateFingerprint(first),
+                AgentGatewayClient.sessionCreateFingerprint(changed)
+        );
+    }
+
+    @Test
+    public void staleHttpRequestCannotMutateReplacementSessionState() {
+        assertFalse(AgentGatewayClient.requestContextIsCurrent(
+                7,
+                8,
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222"
+        ));
+        assertFalse(AgentGatewayClient.requestContextIsCurrent(
+                8,
+                8,
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222"
+        ));
+        assertEquals(true, AgentGatewayClient.requestContextIsCurrent(
+                8,
+                8,
+                "22222222-2222-4222-8222-222222222222",
+                "22222222-2222-4222-8222-222222222222"
+        ));
     }
 }

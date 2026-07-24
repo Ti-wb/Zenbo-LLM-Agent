@@ -131,7 +131,12 @@ public class RobotApiService extends Service {
         gatewaySettings = new GatewaySettings(getApplicationContext());
         credentialStore = new DeviceCredentialStore(getApplicationContext());
         robotGateway = new RobotGateway();
-        sessionCoordinator = new RemoteSessionCoordinator(gatewaySettings, credentialStore, robotGateway);
+        sessionCoordinator = new RemoteSessionCoordinator(
+                gatewaySettings,
+                credentialStore,
+                robotGateway,
+                new SharedPreferencesToolCallJournal(getApplicationContext())
+        );
         localRuntimeServer = new LocalRuntimeServer(
                 getApplicationContext(),
                 gatewaySettings,

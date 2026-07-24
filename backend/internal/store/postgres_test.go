@@ -3,8 +3,12 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Ti-wb/Zenbo-LLM-Agent/backend/internal/application"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type stubHealthQuerier struct {
@@ -69,5 +73,74 @@ func TestOpenDoesNotExposeDatabaseCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("Open error exposed database credential: %q", err)
+	}
+}
+
+func TestRetryTransactionRetriesSerializationAndDeadlockErrors(t *testing.T) {
+	for _, code := range []string{"40001", "40P01"} {
+		t.Run(code, func(t *testing.T) {
+			attempts := 0
+			value, err := retryTransaction(context.Background(), func() (string, error) {
+				attempts++
+				if attempts < 3 {
+					return "", fmt.Errorf(
+						"transaction stage failed: %w",
+						&pgconn.PgError{Code: code},
+					)
+				}
+				return "committed", nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value != "committed" || attempts != 3 {
+				t.Fatalf("result = %q after %d attempts", value, attempts)
+			}
+		})
+	}
+}
+
+func TestRetryTransactionDoesNotRetryDomainErrors(t *testing.T) {
+	attempts := 0
+	_, err := retryTransaction(context.Background(), func() (struct{}, error) {
+		attempts++
+		return struct{}{}, application.ErrConflict
+	})
+	if !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("error = %v, want conflict", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestRetryTransactionHasABoundedAttemptCount(t *testing.T) {
+	attempts := 0
+	expected := &pgconn.PgError{Code: "40001"}
+	_, err := retryTransaction(context.Background(), func() (struct{}, error) {
+		attempts++
+		return struct{}{}, expected
+	})
+	if !errors.Is(err, expected) {
+		t.Fatalf("error = %v, want final serialization error", err)
+	}
+	if attempts != maxTransactionAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, maxTransactionAttempts)
+	}
+}
+
+func TestRetryTransactionStopsWhenContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	_, err := retryTransaction(ctx, func() (struct{}, error) {
+		attempts++
+		cancel()
+		return struct{}{}, &pgconn.PgError{Code: "40001"}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }

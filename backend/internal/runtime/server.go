@@ -70,13 +70,25 @@ func Serve(ctx context.Context, options ServerOptions) error {
 
 	profiles := make([]application.Profile, 0, len(options.Profiles.Profiles))
 	for _, profile := range options.Profiles.Advertised() {
+		revision, revisionErr := providerbridge.ProfileRevision(
+			profile,
+			providerbridge.RevisionOptions{
+				ProviderTimeout: options.Config.ProviderTimeout,
+				CodexHome:       options.Config.CodexHome,
+				CodexWorkingDir: options.Config.CodexWorkingDir,
+			},
+		)
+		if revisionErr != nil {
+			return fmt.Errorf("calculate provider profile %q revision: %w", profile.ID, revisionErr)
+		}
 		profiles = append(profiles, application.Profile{
-			ID:              profile.ID,
-			DisplayName:     profile.DisplayName,
-			Languages:       append([]string(nil), profile.Languages...),
-			Default:         profile.IsDefault,
-			ProviderKind:    profile.Kind,
-			ProviderProfile: profile.ID,
+			ID:               profile.ID,
+			DisplayName:      profile.DisplayName,
+			Languages:        append([]string(nil), profile.Languages...),
+			Default:          profile.IsDefault,
+			ProviderKind:     profile.Kind,
+			ProviderProfile:  profile.ID,
+			ProviderRevision: revision,
 		})
 	}
 	// Provider execution is worker-only. In particular, an API process must

@@ -17,7 +17,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** Narrow native boundary between untrusted agent messages and the ASUS RobotAPI. */
-public final class RobotGateway {
+public final class RobotGateway implements RobotOperations {
     public interface ResultCallback {
         void onResult(JSONObject result);
     }

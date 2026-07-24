@@ -9,7 +9,8 @@ import (
 
 const sessionColumns = `
 id::text, device_row_id::text, device_id, protocol_version, state,
-agent_profile, provider_kind, provider_profile, client, context, tool_manifest,
+agent_profile, provider_kind, provider_profile, provider_revision,
+client, context, tool_manifest,
 last_sequence, created_at, updated_at, expires_at, closed_at,
 COALESCE(close_reason, '')`
 
@@ -20,6 +21,7 @@ func scanSession(row rowScanner) (application.Session, error) {
 	err := row.Scan(
 		&value.ID, &value.DeviceRowID, &value.DeviceID, &value.ProtocolVersion, &state,
 		&value.AgentProfile, &value.ProviderKind, &value.ProviderProfile,
+		&value.ProviderRevision,
 		&value.Client, &value.Context, &value.ToolManifest, &lastSequence,
 		&value.CreatedAt, &value.UpdatedAt, &value.ExpiresAt, &value.ClosedAt,
 		&value.CloseReason,
