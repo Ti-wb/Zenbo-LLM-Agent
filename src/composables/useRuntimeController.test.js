@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia';
-import { createRenderer, defineComponent, ref } from 'vue';
+import { createRenderer, defineComponent, nextTick, ref } from 'vue';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CONNECTION_STATES,
@@ -133,6 +133,28 @@ describe('gateway error recovery state', () => {
 });
 
 describe('runtime authoritative recovery', () => {
+  it('synchronizes playback mouth level into runtime state and returns it to zero', async () => {
+    const initial = {
+      sessionId: 'session-1',
+      activeTurnId: 'turn-1',
+      turnState: TURN_STATES.SPEAKING,
+      lastSequence: 3,
+      transcript: '',
+      assistantText: '',
+    };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, playback, runtime } = await mountController({ transport, conversation: initial });
+
+    playback.mouthLevel.value = 0.64;
+    await nextTick();
+    expect(runtime.mouthLevel).toBe(0.64);
+
+    playback.mouthLevel.value = 0;
+    await nextTick();
+    expect(runtime.mouthLevel).toBe(0);
+    app.unmount();
+  });
+
   it('activates a pending backend emotion only when TTS playback starts and clears it when playback ends', async () => {
     const initial = {
       sessionId: 'session-1',
