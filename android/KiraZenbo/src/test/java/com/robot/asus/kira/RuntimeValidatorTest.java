@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -82,6 +83,136 @@ public class RuntimeValidatorTest {
     }
 
     @Test
+    public void missingSessionAndCursorAheadResponsesResetDurableSessionRecovery() {
+        assertTrue(AgentGatewayClient.shouldResetRemoteSession(404));
+        assertTrue(AgentGatewayClient.shouldResetRemoteSession(409));
+        assertFalse(AgentGatewayClient.shouldResetRemoteSession(401));
+        assertFalse(AgentGatewayClient.shouldResetRemoteSession(426));
+        assertFalse(AgentGatewayClient.shouldResetRemoteSession(500));
+    }
+
+    @Test
+    public void restartResumesOnlySessionsWithoutAnInFlightTurnMarker() {
+        assertTrue(AgentGatewayClient.shouldResumePersistedSession(""));
+        assertTrue(AgentGatewayClient.shouldResumePersistedSession(null));
+        assertFalse(AgentGatewayClient.shouldResumePersistedSession(
+                "44444444-4444-4444-8444-444444444444"
+        ));
+    }
+
+    @Test
+    public void authoritativeSnapshotCannotEraseAPreAcceptanceUploadMarker() {
+        assertTrue(GatewaySettings.shouldPreservePendingUploadMarker(true, ""));
+        assertTrue(GatewaySettings.shouldPreservePendingUploadMarker(true, null));
+        assertFalse(GatewaySettings.shouldPreservePendingUploadMarker(
+                true,
+                "44444444-4444-4444-8444-444444444444"
+        ));
+        assertFalse(GatewaySettings.shouldPreservePendingUploadMarker(false, ""));
+    }
+
+    @Test
+    public void uncertainUploadAbandonsOnlyTheSessionThatIssuedIt() {
+        String uncertainSession = "55555555-5555-4555-8555-555555555555";
+        String replacementSession = "66666666-6666-4666-8666-666666666666";
+        assertTrue(AgentGatewayClient.isSameRemoteSession(
+                uncertainSession,
+                uncertainSession
+        ));
+        assertFalse(AgentGatewayClient.isSameRemoteSession(
+                uncertainSession,
+                replacementSession
+        ));
+        assertFalse(AgentGatewayClient.isSameRemoteSession(null, replacementSession));
+    }
+
+    @Test
+    public void terminalEventClearsOnlyItsCorrelatedActiveTurnMarker() {
+        assertTrue(GatewaySettings.shouldClearActiveTurn(
+                "44444444-4444-4444-8444-444444444444",
+                "44444444-4444-4444-8444-444444444444"
+        ));
+        assertFalse(GatewaySettings.shouldClearActiveTurn(
+                "55555555-5555-4555-8555-555555555555",
+                "44444444-4444-4444-8444-444444444444"
+        ));
+        assertFalse(GatewaySettings.shouldClearActiveTurn(
+                "",
+                "44444444-4444-4444-8444-444444444444"
+        ));
+    }
+
+    @Test
+    public void playbackAllowsAnEmptySuccessfulResponseWithoutWeakeningStrictJsonEndpoints()
+            throws Exception {
+        assertEquals(0, AgentGatewayClient.parseSuccessBody("", true).length());
+        assertEquals(0, AgentGatewayClient.parseSuccessBody("  ", true).length());
+        assertEquals(0, AgentGatewayClient.parseSuccessBody("{}", false).length());
+    }
+
+    @Test(expected = org.json.JSONException.class)
+    public void strictJsonEndpointStillRejectsAnEmptySuccessfulResponse() throws Exception {
+        AgentGatewayClient.parseSuccessBody("", false);
+    }
+
+    @Test
+    public void cancelRequestUsesOnlyTheValidatedWireReason() throws Exception {
+        assertTrue(AgentGatewayClient.isAllowedCancelReason("client_request"));
+        assertTrue(AgentGatewayClient.isAllowedCancelReason("superseded"));
+        assertTrue(AgentGatewayClient.isAllowedCancelReason("timeout"));
+        assertFalse(AgentGatewayClient.isAllowedCancelReason("barge_in"));
+        assertEquals(
+                "superseded",
+                AgentGatewayClient.cancelRequestBody("superseded").getString("reason")
+        );
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void cancelRequestBodyRejectsUnknownReason() {
+        AgentGatewayClient.cancelRequestBody("barge_in");
+    }
+
+    @Test
+    public void durableSessionIdentityChangesWithGatewayTrustAndAgentContext() {
+        String identity = GatewaySettings.gatewayIdentity(
+                "https://gateway.lan/agent/v1",
+                GatewaySettings.SYSTEM_TRUST,
+                "",
+                "device-1",
+                "default",
+                "Zenbo K",
+                "zh-TW"
+        );
+        assertEquals(identity, GatewaySettings.gatewayIdentity(
+                "https://gateway.lan/agent/v1",
+                GatewaySettings.SYSTEM_TRUST,
+                "",
+                "device-1",
+                "default",
+                "Zenbo K",
+                "zh-TW"
+        ));
+        assertNotEquals(identity, GatewaySettings.gatewayIdentity(
+                "https://other-gateway.lan/agent/v1",
+                GatewaySettings.SYSTEM_TRUST,
+                "",
+                "device-1",
+                "default",
+                "Zenbo K",
+                "zh-TW"
+        ));
+        assertNotEquals(identity, GatewaySettings.gatewayIdentity(
+                "https://gateway.lan/agent/v1",
+                GatewaySettings.CONFIRMED_SPKI_PIN,
+                "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "device-1",
+                "hermes",
+                "Zenbo K",
+                "zh-TW"
+        ));
+    }
+
+    @Test
     public void toolCallCannotDispatchBeforeRemoteAcceptanceOrAfterTerminal() {
         ToolCallLifecycle lifecycle = new ToolCallLifecycle();
         String callId = "11111111-1111-4111-8111-111111111111";
@@ -92,6 +223,96 @@ public class RuntimeValidatorTest {
         lifecycle.markTerminal(callId);
         assertFalse(lifecycle.isDispatched(callId));
         assertFalse(lifecycle.beginAcceptance(callId));
+    }
+
+    @Test
+    public void sessionBoundaryTerminalizesAcceptingAndDispatchedToolCalls() {
+        ToolCallLifecycle lifecycle = new ToolCallLifecycle();
+        String accepting = "11111111-1111-4111-8111-111111111111";
+        String dispatched = "22222222-2222-4222-8222-222222222222";
+        String alreadyTerminal = "33333333-3333-4333-8333-333333333333";
+        assertTrue(lifecycle.beginAcceptance(accepting));
+        assertTrue(lifecycle.beginAcceptance(dispatched));
+        assertTrue(lifecycle.markAccepted(dispatched));
+        assertTrue(lifecycle.beginAcceptance(alreadyTerminal));
+        lifecycle.markTerminal(alreadyTerminal);
+
+        assertEquals(
+                new HashSet<>(Arrays.asList(accepting, dispatched)),
+                lifecycle.terminateActiveCalls()
+        );
+        assertFalse(lifecycle.markAccepted(accepting));
+        assertFalse(lifecycle.isDispatched(dispatched));
+        assertFalse(lifecycle.beginAcceptance(accepting));
+        assertFalse(lifecycle.beginAcceptance(dispatched));
+        assertFalse(lifecycle.beginAcceptance(alreadyTerminal));
+        assertTrue(lifecycle.terminateActiveCalls().isEmpty());
+    }
+
+    @Test
+    public void authoritativeSnapshotClearsRecoveryWhenItHasNoActiveTurn() {
+        String active = "44444444-4444-4444-8444-444444444444";
+        assertTrue(RemoteSessionCoordinator.shouldResetRecoveryForSnapshot(active, null));
+        assertTrue(RemoteSessionCoordinator.shouldResetRecoveryForSnapshot(null, null));
+        assertTrue(RemoteSessionCoordinator.shouldResetRecoveryForSnapshot(
+                active,
+                "55555555-5555-4555-8555-555555555555"
+        ));
+        assertFalse(RemoteSessionCoordinator.shouldResetRecoveryForSnapshot(active, active));
+    }
+
+    @Test
+    public void terminalEventClassificationCoversTurnAndSessionBoundaries() {
+        assertTrue(RemoteSessionCoordinator.isTurnTerminalEvent("turn.completed"));
+        assertTrue(RemoteSessionCoordinator.isTurnTerminalEvent("turn.error"));
+        assertTrue(RemoteSessionCoordinator.isTurnTerminalEvent("turn.cancelled"));
+        assertFalse(RemoteSessionCoordinator.isTurnTerminalEvent("tool.call"));
+        assertTrue(RemoteSessionCoordinator.isSessionTerminalEvent("session.expired"));
+        assertTrue(RemoteSessionCoordinator.isSessionTerminalEvent("session.closed"));
+        assertFalse(RemoteSessionCoordinator.isSessionTerminalEvent("turn.completed"));
+    }
+
+    @Test
+    public void uploadCallbacksRequireBothGenerationAndClientTurnCorrelation() {
+        String clientTurnId = "66666666-6666-4666-8666-666666666666";
+        assertTrue(RemoteSessionCoordinator.isCurrentUploadCallback(
+                7L,
+                7L,
+                clientTurnId,
+                clientTurnId
+        ));
+        assertFalse(RemoteSessionCoordinator.isCurrentUploadCallback(
+                6L,
+                7L,
+                clientTurnId,
+                clientTurnId
+        ));
+        assertFalse(RemoteSessionCoordinator.isCurrentUploadCallback(
+                7L,
+                7L,
+                clientTurnId,
+                "77777777-7777-4777-8777-777777777777"
+        ));
+        assertFalse(RemoteSessionCoordinator.isCurrentUploadCallback(
+                7L,
+                7L,
+                null,
+                clientTurnId
+        ));
+    }
+
+    @Test
+    public void stalePhysicalToolReleaseCannotClearANewerOwner() {
+        AtomicReference<String> owner = new AtomicReference<>();
+        String firstCall = "88888888-8888-4888-8888-888888888888";
+        String secondCall = "99999999-9999-4999-8999-999999999999";
+        assertTrue(RemoteSessionCoordinator.tryClaimPhysicalTool(owner, firstCall));
+        assertFalse(RemoteSessionCoordinator.tryClaimPhysicalTool(owner, secondCall));
+        RemoteSessionCoordinator.releasePhysicalTool(owner, secondCall);
+        assertEquals(firstCall, owner.get());
+        RemoteSessionCoordinator.releasePhysicalTool(owner, firstCall);
+        assertEquals(null, owner.get());
+        assertTrue(RemoteSessionCoordinator.tryClaimPhysicalTool(owner, secondCall));
     }
 
     @Test
@@ -329,6 +550,23 @@ public class RuntimeValidatorTest {
 
         assertEquals(set("doa"), set(findTool(tools, "look_at_user").requiredInputs.toArray(new String[0])));
         assertEquals(set("emotion"), set(findTool(tools, "show_emotion").requiredInputs.toArray(new String[0])));
+        ToolManifestSpec.Property emotionInput =
+                findProperty(findTool(tools, "show_emotion").inputProperties, "emotion");
+        ToolManifestSpec.Property durationInput =
+                findProperty(findTool(tools, "show_emotion").inputProperties, "durationMs");
+        ToolManifestSpec.Property emotionResult =
+                findProperty(findTool(tools, "show_emotion").resultProperties, "emotion");
+        ToolManifestSpec.Property durationResult =
+                findProperty(findTool(tools, "show_emotion").resultProperties, "durationMs");
+        List<String> emotions = Arrays.asList(
+                "NEUTRAL", "HAPPY", "CURIOUS", "CONCERNED", "EXCITED"
+        );
+        assertEquals(emotions, emotionInput.allowedValues);
+        assertEquals(emotions, emotionResult.allowedValues);
+        assertEquals(0, durationInput.minimum.intValue());
+        assertEquals(30_000, durationInput.maximum.intValue());
+        assertEquals(0, durationResult.minimum.intValue());
+        assertEquals(30_000, durationResult.maximum.intValue());
         for (ToolManifestSpec.Definition tool : tools) {
             assertEquals(propertyNames(tool.resultProperties), new HashSet<>(tool.requiredResults));
         }
@@ -363,6 +601,16 @@ public class RuntimeValidatorTest {
         Set<String> names = new HashSet<>();
         for (ToolManifestSpec.Property property : properties) names.add(property.name);
         return names;
+    }
+
+    private static ToolManifestSpec.Property findProperty(
+            List<ToolManifestSpec.Property> properties,
+            String name
+    ) {
+        for (ToolManifestSpec.Property property : properties) {
+            if (name.equals(property.name)) return property;
+        }
+        throw new AssertionError("Missing property: " + name);
     }
 
     private static Set<String> set(String... values) {

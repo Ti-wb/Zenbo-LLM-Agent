@@ -143,15 +143,15 @@ export function useRuntimeController(options = {}) {
       additionalProperties: false,
       properties: {
         ok: { type: 'boolean' },
-        emotion: { type: 'string' },
-        durationMs: { type: 'integer' },
+        emotion: { type: 'string', enum: [...SUPPORTED_EMOTIONS] },
+        durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
       },
     },
     sideEffect: 'ui',
     idempotent: true,
     requiresConfirmation: false,
     handler: ({ emotion, durationMs = 0 }) => {
-      runtime.setEmotion(emotion, durationMs);
+      runtime.queueEmotion(emotion, durationMs);
       return { ok: true, emotion, durationMs };
     },
   });
@@ -251,6 +251,7 @@ export function useRuntimeController(options = {}) {
       await vad.pause();
       await playback.play(blob, {
         onStarted: () => {
+          runtime.activatePendingEmotion();
           runtime.transition('playback_started', { turnId });
           startedReport = reportPlayback('started');
         },
@@ -260,6 +261,7 @@ export function useRuntimeController(options = {}) {
           if (!runtime.sleeping) scheduleListeningResume();
         },
         onInterrupted: (reason) => {
+          runtime.resetEmotion();
           const reasons = {
             'barge-in': 'barge_in',
             sleep: 'screen_off',
@@ -672,6 +674,7 @@ export function useRuntimeController(options = {}) {
       }),
       transport.on('event', handleRuntimeEvent),
       transport.on('error', (error) => {
+        runtime.resetEmotion();
         if (runtime.connectionState !== CONNECTION_STATES.DEGRADED) runtime.error = error.message;
       }),
     );

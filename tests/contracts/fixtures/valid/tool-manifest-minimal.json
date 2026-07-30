@@ -6,24 +6,30 @@
       "name": "show_emotion",
       "owner": "web",
       "version": "1.0.0",
-      "description": "Display one allowlisted robot expression.",
+      "description": "Display one allowlisted robot emotion.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "expression": {
+          "emotion": {
             "type": "string",
-            "enum": ["DEFAULT", "HAPPY", "HIDEFACE"]
-          }
+            "enum": ["NEUTRAL", "HAPPY", "CURIOUS", "CONCERNED", "EXCITED"]
+          },
+          "durationMs": { "type": "integer", "minimum": 0, "maximum": 30000 }
         },
-        "required": ["expression"],
+        "required": ["emotion"],
         "additionalProperties": false
       },
       "resultSchema": {
         "type": "object",
         "properties": {
-          "applied": { "type": "boolean" }
+          "ok": { "type": "boolean" },
+          "emotion": {
+            "type": "string",
+            "enum": ["NEUTRAL", "HAPPY", "CURIOUS", "CONCERNED", "EXCITED"]
+          },
+          "durationMs": { "type": "integer", "minimum": 0, "maximum": 30000 }
         },
-        "required": ["applied"],
+        "required": ["ok", "emotion", "durationMs"],
         "additionalProperties": false
       },
       "sideEffect": "ui",

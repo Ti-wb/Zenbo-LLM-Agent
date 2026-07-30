@@ -55,6 +55,47 @@ const fixtureToolManifest = {
     },
   ],
 };
+const emotionToolManifest = {
+  protocolVersion: '1.0',
+  manifestVersion: 'fake-gateway-emotion-1',
+  tools: [
+    {
+      name: 'show_emotion',
+      owner: 'web',
+      version: '1.0.0',
+      description: 'Display one allowlisted robot emotion.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          emotion: {
+            type: 'string',
+            enum: ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'],
+          },
+          durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
+        },
+        required: ['emotion'],
+        additionalProperties: false,
+      },
+      resultSchema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          emotion: {
+            type: 'string',
+            enum: ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'],
+          },
+          durationMs: { type: 'integer', minimum: 0, maximum: 30000 },
+        },
+        required: ['ok', 'emotion', 'durationMs'],
+        additionalProperties: false,
+      },
+      sideEffect: 'ui',
+      idempotent: true,
+      requiresConfirmation: false,
+      timeoutMs: 5000,
+    },
+  ],
+};
 
 function authHeaders(overrides = {}) {
   return {
@@ -194,6 +235,88 @@ test('TLS CLI/config requires a certificate and private key as an atomic pair', 
   );
   assert.equal(cli.status, 1);
   assert.match(cli.stderr, /--tls-cert and --tls-key must be provided together/);
+});
+
+test('show_emotion uses the canonical emotion and durationMs tool roundtrip', async () => {
+  await withGateway({}, async (gateway) => {
+    const legacyManifest = {
+      ...emotionToolManifest,
+      manifestVersion: 'legacy-expression',
+      tools: [
+        {
+          ...emotionToolManifest.tools[0],
+          inputSchema: {
+            type: 'object',
+            properties: { expression: { type: 'string' } },
+            required: ['expression'],
+            additionalProperties: false,
+          },
+        },
+      ],
+    };
+    const rejected = await jsonRequest(`${gateway.apiBaseUrl}/sessions`, {
+      method: 'POST',
+      body: sessionRequest({ toolManifest: legacyManifest }),
+      headers: { 'Idempotency-Key': '10000000-0000-4000-8000-000000000040' },
+    });
+    assert.equal(rejected.status, 400);
+
+    const session = await createSession(
+      gateway,
+      '10000000-0000-4000-8000-000000000041',
+      sessionRequest({ toolManifest: emotionToolManifest }),
+    );
+    const events = await openWebSocket(
+      `${gateway.apiBaseUrl}/sessions/${session.sessionId}/events`,
+    );
+    await events.client.take(1);
+    const turnResponse = await jsonRequest(
+      `${gateway.apiBaseUrl}/sessions/${session.sessionId}/turns`,
+      {
+        method: 'POST',
+        body: {
+          clientTurnId: '20000000-0000-4000-8000-000000000041',
+          text: '請用開心的表情回答',
+          language: 'zh-TW',
+        },
+        headers: { 'Idempotency-Key': '30000000-0000-4000-8000-000000000041' },
+      },
+    );
+    assert.equal(turnResponse.status, 202);
+    const firstEvents = await events.client.take(4);
+    const toolCall = firstEvents[3];
+    assert.equal(toolCall.type, 'tool.call');
+    assert.equal(toolCall.data.toolName, 'show_emotion');
+    assert.deepEqual(toolCall.data.arguments, { emotion: 'HAPPY', durationMs: 0 });
+
+    const invalidResult = await jsonRequest(
+      `${gateway.apiBaseUrl}/sessions/${session.sessionId}/tool-calls/${toolCall.data.callId}`,
+      {
+        method: 'PUT',
+        body: {
+          status: 'succeeded',
+          updatedAt: new Date().toISOString(),
+          output: { ok: true, emotion: 'HAPPY', durationMs: 30001 },
+        },
+      },
+    );
+    assert.equal(invalidResult.status, 422);
+
+    const validResult = await jsonRequest(
+      `${gateway.apiBaseUrl}/sessions/${session.sessionId}/tool-calls/${toolCall.data.callId}`,
+      {
+        method: 'PUT',
+        body: {
+          status: 'succeeded',
+          updatedAt: new Date().toISOString(),
+          output: { ok: true, emotion: 'HAPPY', durationMs: 0 },
+        },
+      },
+    );
+    assert.equal(validResult.status, 200);
+    await events.client.take(3);
+    events.client.destroy();
+  });
 });
 
 test('happy path covers capabilities, tool result, TTS artifact, playback, replay, and delete', async () => {

@@ -1,5 +1,14 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import {
+  THINKING_TURN_STATES,
+  interpolateFaceFrames,
+  interpolateSleepFrames,
+  normalizeEmotion,
+  renderFace,
+  resolveFaceFrame,
+  resolveSpeechTransitionMouth,
+} from './pixelFaceModel.js';
 
 const props = defineProps({
   emotion: { type: String, default: 'NEUTRAL' },
@@ -8,108 +17,137 @@ const props = defineProps({
   turnState: { type: String, default: 'IDLE' },
 });
 
+const EMOTION_LABELS = Object.freeze({
+  neutral: '中性',
+  happy: '開心',
+  curious: '好奇',
+  concerned: '擔心',
+  excited: '興奮',
+  sleeping: '休眠',
+});
+
+const TURN_STATE_LABELS = Object.freeze({
+  IDLE: '待機',
+  LISTENING: '聆聽',
+  SPEAKING: '說話',
+  ERROR: '需要幫忙',
+});
+
 const canvas = ref(null);
 const reducedMotion = ref(false);
-const emotionKey = computed(() => String(props.emotion || 'NEUTRAL').toLowerCase());
-const isThinking = computed(() =>
-  ['UPLOADING', 'TRANSCRIBING', 'THINKING', 'AWAITING_TOOL', 'SYNTHESIZING'].includes(
-    props.turnState,
-  ),
-);
-const palette = computed(() => ({
-  happy: '#68ffd1',
-  curious: '#6ce8ff',
-  concerned: '#ff7f91',
-  excited: '#ffdf6c',
-}[emotionKey.value] || '#76f4ff'));
+const ariaLabel = computed(() => {
+  const turnState = String(props.turnState || 'IDLE').toUpperCase();
+  const emotion = props.sleeping
+    ? 'sleeping'
+    : turnState === 'LISTENING'
+      ? 'curious'
+      : normalizeEmotion(props.emotion);
+  const state = props.sleeping
+    ? '休眠'
+    : THINKING_TURN_STATES.includes(turnState)
+      ? '思考'
+      : TURN_STATE_LABELS[turnState] || '待機';
+  return `Zenbo 像素臉：${EMOTION_LABELS[emotion]}；狀態：${state}`;
+});
 
-const motion = {
-  gazeX: 0,
-  gazeY: 0,
-  eyeOpen: 1,
-  eyeCurve: 0,
-  mouthOpen: 0,
-  mouthCurve: 0,
-};
+const FRAME_INTERVAL = 1000 / 30;
+const EMOTION_TRANSITION_MS = 200;
+const SPEECH_ENTRY_MS = 100;
+const SPEECH_EXIT_MS = 180;
 
 let animationFrame = 0;
 let startedAt = 0;
 let lastDrawAt = 0;
-const FRAME_INTERVAL = 1000 / 30;
+let motionQuery = null;
+let displayedFrame = null;
+let resolvedEmotion = null;
+let previousSleeping = false;
+let emotionTransition = null;
+let speechTransition = null;
+let wasSpeaking = false;
+let previousEqualizerBand;
 
-function approach(current, target, amount = 0.22) {
-  return current + (target - current) * amount;
+function withMouth(frame, mouth) {
+  return { ...frame, mouth };
 }
 
-function pixelRect(context, x, y, width, height, color) {
-  context.fillStyle = color;
-  context.fillRect(Math.round(x), Math.round(y), Math.round(width), Math.round(height));
-}
-
-function targetMotion(elapsed) {
-  const emotionTargets = {
-    neutral: { gazeX: 0, gazeY: 0, eyeCurve: 0, mouthCurve: 0 },
-    happy: { gazeX: 0, gazeY: -0.1, eyeCurve: 0.8, mouthCurve: 1 },
-    curious: { gazeX: 0.55, gazeY: -0.15, eyeCurve: 0.1, mouthCurve: 0.15 },
-    concerned: { gazeX: -0.3, gazeY: 0.2, eyeCurve: -0.75, mouthCurve: -1 },
-    excited: { gazeX: 0, gazeY: -0.2, eyeCurve: 0.25, mouthCurve: 0.75 },
-  };
-  const target = emotionTargets[emotionKey.value] || emotionTargets.neutral;
-  const thinkingDrift = isThinking.value && !reducedMotion.value ? Math.sin(elapsed / 850) * 0.2 : 0;
-  const blinkPhase = elapsed % 5200;
-  const blinking = !props.sleeping && blinkPhase > 5050;
-  const level = Math.max(0, Math.min(1, props.mouthLevel));
-
-  return {
-    gazeX: props.sleeping ? 0 : target.gazeX + thinkingDrift,
-    gazeY: props.sleeping ? 0 : target.gazeY,
-    eyeOpen: props.sleeping || blinking ? 0.05 : emotionKey.value === 'excited' ? 1 : 0.78,
-    eyeCurve: props.sleeping ? 1 : target.eyeCurve,
-    mouthOpen: props.sleeping ? 0 : Math.max(level, emotionKey.value === 'excited' ? 0.42 : 0),
-    mouthCurve: props.sleeping ? 0 : target.mouthCurve,
-  };
-}
-
-function updateMotion(target) {
-  motion.gazeX = approach(motion.gazeX, target.gazeX, 0.18);
-  motion.gazeY = approach(motion.gazeY, target.gazeY, 0.18);
-  motion.eyeOpen = approach(motion.eyeOpen, target.eyeOpen, 0.36);
-  motion.eyeCurve = approach(motion.eyeCurve, target.eyeCurve, 0.2);
-  motion.mouthOpen = approach(motion.mouthOpen, target.mouthOpen, 0.34);
-  motion.mouthCurve = approach(motion.mouthCurve, target.mouthCurve, 0.2);
-}
-
-function drawEye(context, centerX, centerY, color) {
-  const width = 25;
-  const height = Math.max(2, Math.round(3 + motion.eyeOpen * 19));
-  const curve = Math.round(motion.eyeCurve * 4);
-  const pupilX = Math.round(motion.gazeX * 4);
-  const pupilY = Math.round(motion.gazeY * 3);
-
-  pixelRect(context, centerX - width / 2, centerY - height / 2 + curve, 6, height - 2, color);
-  pixelRect(context, centerX - width / 2 + 6, centerY - height / 2, width - 12, height, color);
-  pixelRect(context, centerX + width / 2 - 6, centerY - height / 2 + curve, 6, height - 2, color);
-
-  if (height > 8) {
-    pixelRect(context, centerX - 3 + pupilX, centerY - 3 + pupilY, 7, 7, '#07141d');
-    pixelRect(context, centerX - 2 + pupilX, centerY - 2 + pupilY, 2, 2, '#efffff');
+function transitionEmotion(frame, time) {
+  const sleepingChanged = props.sleeping !== previousSleeping;
+  if (frame.emotion !== resolvedEmotion) {
+    if (
+      resolvedEmotion !== null &&
+      displayedFrame &&
+      !reducedMotion.value
+    ) {
+      emotionTransition = {
+        startedAt: time,
+        from: displayedFrame,
+        phase: sleepingChanged
+          ? props.sleeping
+            ? 'sleeping'
+            : 'waking'
+          : 'emotion',
+      };
+    } else {
+      emotionTransition = null;
+    }
+    resolvedEmotion = frame.emotion;
   }
-}
+  previousSleeping = props.sleeping;
 
-function drawMouth(context, centerX, centerY, color) {
-  const width = 29;
-  const opening = Math.round(motion.mouthOpen * 14);
-  const curve = Math.round(motion.mouthCurve * 5);
-
-  if (opening > 2) {
-    pixelRect(context, centerX - width / 2, centerY - opening / 2, width, opening + 3, color);
-    pixelRect(context, centerX - width / 2 + 5, centerY - opening / 2 + 4, width - 10, Math.max(2, opening - 5), '#07141d');
-    return;
+  if (reducedMotion.value || !emotionTransition) {
+    emotionTransition = null;
+    return frame;
   }
 
-  pixelRect(context, centerX - width / 2, centerY - curve, 6, 3, color);
-  pixelRect(context, centerX - width / 2 + 6, centerY, width - 12, 3, color);
-  pixelRect(context, centerX + width / 2 - 6, centerY - curve, 6, 3, color);
+  const progress = (time - emotionTransition.startedAt) / EMOTION_TRANSITION_MS;
+  if (progress >= 1) {
+    emotionTransition = null;
+    return frame;
+  }
+  if (emotionTransition.phase !== 'emotion') {
+    return interpolateSleepFrames(
+      emotionTransition.from,
+      frame,
+      progress,
+      emotionTransition.phase,
+    );
+  }
+  return interpolateFaceFrames(emotionTransition.from, frame, progress);
+}
+
+function transitionSpeech(frame, time) {
+  if (frame.speaking !== wasSpeaking) {
+    speechTransition = {
+      phase: frame.speaking ? 'entering' : 'leaving',
+      startedAt: time,
+      fromMouth: displayedFrame?.mouth || frame.speechClosedMouth,
+    };
+    wasSpeaking = frame.speaking;
+  }
+
+  if (reducedMotion.value || props.sleeping || !speechTransition) {
+    speechTransition = null;
+    return frame;
+  }
+
+  const elapsed = time - speechTransition.startedAt;
+  const transitionFinished =
+    (speechTransition.phase === 'entering' && elapsed >= SPEECH_ENTRY_MS) ||
+    (speechTransition.phase === 'leaving' && elapsed >= SPEECH_EXIT_MS);
+  if (transitionFinished) {
+    speechTransition = null;
+    return frame;
+  }
+  return withMouth(
+    frame,
+    resolveSpeechTransitionMouth({
+      ...speechTransition,
+      elapsedMs: elapsed,
+      closedMouth: frame.speechClosedMouth,
+      targetMouth: frame.mouth,
+    }),
+  );
 }
 
 function draw(time) {
@@ -119,26 +157,56 @@ function draw(time) {
 
   const context = canvas.value?.getContext('2d');
   if (!context) return;
-  const elapsed = time - startedAt;
-  updateMotion(targetMotion(elapsed));
 
-  context.imageSmoothingEnabled = false;
-  context.clearRect(0, 0, 160, 100);
-  context.fillStyle = '#061018';
-  context.fillRect(0, 0, 160, 100);
+  let frame = resolveFaceFrame({
+    emotion: props.emotion,
+    mouthLevel: props.mouthLevel,
+    sleeping: props.sleeping,
+    turnState: props.turnState,
+    elapsedMs: time - startedAt,
+    reducedMotion: reducedMotion.value,
+    previousEqualizerBand,
+  });
 
-  drawEye(context, 48, 43, palette.value);
-  drawEye(context, 112, 43, palette.value);
-  drawMouth(context, 80, 72, palette.value);
+  previousEqualizerBand = frame.speaking ? frame.equalizerBand : undefined;
+  frame = transitionEmotion(frame, time);
+  frame = transitionSpeech(frame, time);
+  displayedFrame = frame;
+  renderFace(context, frame);
+}
+
+function updateReducedMotion(event) {
+  reducedMotion.value = Boolean(event.matches);
+  if (reducedMotion.value) {
+    emotionTransition = null;
+    speechTransition = null;
+  }
 }
 
 onMounted(() => {
-  reducedMotion.value = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  motionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)') || null;
+  if (motionQuery) {
+    reducedMotion.value = motionQuery.matches;
+    if (typeof motionQuery.addEventListener === 'function') {
+      motionQuery.addEventListener('change', updateReducedMotion);
+    } else {
+      motionQuery.addListener?.(updateReducedMotion);
+    }
+  }
+
   startedAt = performance.now();
+  previousSleeping = props.sleeping;
   animationFrame = requestAnimationFrame(draw);
 });
 
-onBeforeUnmount(() => cancelAnimationFrame(animationFrame));
+onBeforeUnmount(() => {
+  cancelAnimationFrame(animationFrame);
+  if (typeof motionQuery?.removeEventListener === 'function') {
+    motionQuery.removeEventListener('change', updateReducedMotion);
+  } else {
+    motionQuery?.removeListener?.(updateReducedMotion);
+  }
+});
 </script>
 
 <template>
@@ -148,7 +216,7 @@ onBeforeUnmount(() => cancelAnimationFrame(animationFrame));
     width="160"
     height="100"
     role="img"
-    :aria-label="`Zenbo 表情：${emotion}；視線會依目前狀態移動`"
+    :aria-label="ariaLabel"
   />
 </template>
 
@@ -160,6 +228,5 @@ onBeforeUnmount(() => cancelAnimationFrame(animationFrame));
   aspect-ratio: 8 / 5;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  filter: drop-shadow(0 0 28px rgb(69 227 255 / 18%));
 }
 </style>

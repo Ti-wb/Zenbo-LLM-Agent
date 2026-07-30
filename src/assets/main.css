@@ -44,6 +44,11 @@ context {
 }
 
 .face-shell {
+  --face-safe-top: max(12px, env(safe-area-inset-top, 0px));
+  --face-top-bar-height: calc(var(--face-safe-top) + 56px);
+  --face-stage-top: calc(var(--face-top-bar-height) + 8px);
+  --face-stage-bottom: 20px;
+  --face-copy-reserve: 144px;
   position: relative;
   width: 100%;
   height: 100%;
@@ -58,7 +63,7 @@ context {
   width: 100%;
   align-items: center;
   gap: 10px;
-  padding: max(12px, env(safe-area-inset-top)) 16px 8px;
+  padding: var(--face-safe-top) 16px 8px;
   color: rgb(223 250 255 / 72%);
 }
 
@@ -147,7 +152,22 @@ context {
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  padding: 56px 16px 30px;
+  padding: var(--face-stage-top) 16px var(--face-stage-bottom);
+}
+
+.face-shell .face-stage > .face-control > .pixel-face {
+  width: auto;
+  height:
+    min(
+      57.5vw,
+      calc(100vh - var(--face-stage-top) - var(--face-stage-bottom) - var(--face-copy-reserve))
+    );
+  height:
+    min(
+      57.5vw,
+      calc(100dvh - var(--face-stage-top) - var(--face-stage-bottom) - var(--face-copy-reserve))
+    );
+  aspect-ratio: 8 / 5;
 }
 
 .face-control {
@@ -260,8 +280,9 @@ context {
 }
 
 @media (max-height: 420px) {
-  .face-stage {
-    padding-top: 38px;
+  .face-shell {
+    --face-stage-bottom: 12px;
+    --face-copy-reserve: 58px;
   }
 
   .status-label,

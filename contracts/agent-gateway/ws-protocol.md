@@ -66,6 +66,26 @@ level.
 - A sequence gap or invalid envelope is a protocol error. The client MUST stop
   dispatching events, preserve its last good cursor, and reconnect; it MUST NOT
   guess past the gap.
+- Native durably stores the session ID, cursor, gateway identity, and in-flight
+  turn marker as one state. A normal in-process network reconnect resumes that
+  state. A service/process restart resumes only when the marker is empty; if a
+  turn was in flight, Native abandons the old session and creates a new one.
+  The interrupted answer is therefore aborted safely rather than reconstructed
+  from incomplete Native coordinator state, and device tools or audio are not
+  replayed into a fresh coordinator.
+- A turn upload whose HTTP outcome is ambiguous is not treated as an ordinary
+  reconnect. Native atomically discards that session's durable state, detaches
+  its event stream, and creates a fresh session before accepting another turn.
+  Each upload callback is also correlated with a Native generation token, so a
+  callback from an abandoned session cannot affect a retried client turn even
+  when it reuses the same `clientTurnId`. An authoritative snapshot cannot
+  erase a pre-acceptance upload marker.
+- A settings reload or terminal turn/session event revokes local execution
+  authority before replacing the remote transport. Native cancels pending tool
+  work, stops physical commands, and clears audio recovery mappings so a late
+  callback cannot execute or report into a replacement session. An
+  authoritative snapshot with no active turn likewise clears stale recovery
+  mappings while leaving a pre-acceptance durable upload marker intact.
 
 The first frame on every successful connection is the non-retained
 `session.ready` control event. Its `sequence` and `data.resumedAfter` both

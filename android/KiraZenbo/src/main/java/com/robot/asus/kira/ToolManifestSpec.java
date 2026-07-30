@@ -78,7 +78,11 @@ final class ToolManifestSpec {
                                     "NEUTRAL", "HAPPY", "CURIOUS", "CONCERNED", "EXCITED"),
                             property("durationMs", "integer", 0, 30_000)),
                     names("emotion"),
-                    properties(OK, property("emotion", "string"), property("durationMs", "integer")),
+                    properties(
+                            OK,
+                            property("emotion", "string", null, null,
+                                    "NEUTRAL", "HAPPY", "CURIOUS", "CONCERNED", "EXCITED"),
+                            property("durationMs", "integer", 0, 30_000)),
                     names("ok", "emotion", "durationMs")),
             definition("go_to_sleep", "web", "ui", true,
                     properties(), names(),

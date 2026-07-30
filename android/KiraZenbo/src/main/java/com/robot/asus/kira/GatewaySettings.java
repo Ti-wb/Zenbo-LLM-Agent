@@ -6,6 +6,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Locale;
 import java.util.UUID;
 
 /** App-private, non-secret configuration for the native Agent Gateway client. */
@@ -26,11 +29,34 @@ public final class GatewaySettings {
             "session_create_remote_session_id";
     private static final String KEY_SESSION_CREATE_CONFLICT_RECOVERED =
             "session_create_conflict_recovered";
+    private static final String KEY_REMOTE_SESSION_ID = "remote_session_id";
+    private static final String KEY_SESSION_GATEWAY_IDENTITY = "session_gateway_identity";
+    private static final String KEY_ACTIVE_REMOTE_TURN_ID = "active_remote_turn_id";
+    private static final String KEY_REMOTE_TURN_UPLOAD_PENDING = "remote_turn_upload_pending";
 
     public static final String SYSTEM_TRUST = "SYSTEM_TRUST";
     public static final String CONFIRMED_SPKI_PIN = "CONFIRMED_SPKI_PIN";
 
     private final PreferenceStore preferences;
+
+    static final class RemoteSessionState {
+        final String sessionId;
+        final long cursor;
+        final String activeTurnId;
+        final boolean uploadPending;
+
+        RemoteSessionState(
+                String sessionId,
+                long cursor,
+                String activeTurnId,
+                boolean uploadPending
+        ) {
+            this.sessionId = sessionId;
+            this.cursor = cursor;
+            this.activeTurnId = activeTurnId;
+            this.uploadPending = uploadPending;
+        }
+    }
 
     public GatewaySettings(Context context) {
         this(new SharedPreferenceStore(
@@ -42,6 +68,7 @@ public final class GatewaySettings {
         this.preferences = preferences;
         PreferenceStore.Editor editor = preferences.edit();
         boolean changed = false;
+        boolean createMetadataReset = false;
         if (!preferences.contains(KEY_DEVICE_ID)) {
             editor.putString(KEY_DEVICE_ID, UUID.randomUUID().toString());
             changed = true;
@@ -58,6 +85,7 @@ public final class GatewaySettings {
                     .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
                     .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false);
             changed = true;
+            createMetadataReset = true;
         } else {
             String fingerprint = preferences.getString(KEY_SESSION_CREATE_FINGERPRINT, "");
             String remoteSessionId =
@@ -70,7 +98,11 @@ public final class GatewaySettings {
                         .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
                         .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false);
                 changed = true;
+                createMetadataReset = true;
             }
+        }
+        if (createMetadataReset) {
+            clearRemoteSessionState(editor);
         }
         if (changed && !editor.commit()) {
             throw new IllegalStateException("Could not persist Gateway identity settings");
@@ -113,6 +145,231 @@ public final class GatewaySettings {
         return preferences.getString(KEY_LANGUAGE, "zh-TW");
     }
 
+    synchronized RemoteSessionState loadRemoteSessionState() {
+        String sessionId = preferences.getString(KEY_REMOTE_SESSION_ID, "");
+        String storedIdentity = preferences.getString(KEY_SESSION_GATEWAY_IDENTITY, "");
+        String activeTurnId = preferences.getString(KEY_ACTIVE_REMOTE_TURN_ID, "");
+        boolean uploadPending = preferences.getBoolean(KEY_REMOTE_TURN_UPLOAD_PENDING, false);
+        long cursor = preferences.getLong(KEY_CURSOR, 0L);
+        if (sessionId == null || sessionId.isEmpty()) {
+            if (cursor != 0L
+                    || (storedIdentity != null && !storedIdentity.isEmpty())
+                    || (activeTurnId != null && !activeTurnId.isEmpty())
+                    || uploadPending) {
+                clearRemoteSessionState();
+            }
+            return null;
+        }
+        if (!isUuid(sessionId)
+                || !sessionId.equals(getSessionCreateRemoteSessionId())
+                || cursor < 0L
+                || (activeTurnId != null
+                        && !activeTurnId.isEmpty()
+                        && !isUuid(activeTurnId))
+                || (uploadPending && (activeTurnId == null || activeTurnId.isEmpty()))
+                || !getGatewayIdentity().equals(storedIdentity)) {
+            clearRemoteSessionState();
+            return null;
+        }
+        return new RemoteSessionState(
+                sessionId,
+                cursor,
+                activeTurnId == null ? "" : activeTurnId,
+                uploadPending
+        );
+    }
+
+    synchronized void persistRemoteSessionState(String sessionId, long cursor) {
+        persistRemoteSessionState(sessionId, cursor, "");
+    }
+
+    synchronized void persistRemoteSessionState(
+            String sessionId,
+            long cursor,
+            String activeTurnId
+    ) {
+        persistRemoteSessionState(sessionId, cursor, activeTurnId, false);
+    }
+
+    synchronized void persistRemoteSessionState(
+            String sessionId,
+            long cursor,
+            String activeTurnId,
+            boolean uploadPending
+    ) {
+        if (!isUuid(sessionId)) {
+            throw new IllegalArgumentException("Remote session ID is invalid");
+        }
+        if (cursor < 0L) {
+            throw new IllegalArgumentException("Remote session cursor must be non-negative");
+        }
+        String normalizedTurnId = activeTurnId == null ? "" : activeTurnId;
+        if (!normalizedTurnId.isEmpty() && !isUuid(normalizedTurnId)) {
+            throw new IllegalArgumentException("Remote turn ID is invalid");
+        }
+        if (uploadPending && normalizedTurnId.isEmpty()) {
+            throw new IllegalArgumentException("A pending upload requires a client turn marker");
+        }
+        if (!sessionId.equals(getSessionCreateRemoteSessionId())) {
+            throw new IllegalStateException(
+                    "Remote session state does not match the durable create binding"
+            );
+        }
+        if (!putRemoteSessionState(
+                preferences.edit(),
+                sessionId,
+                cursor,
+                normalizedTurnId,
+                uploadPending
+        ).commit()) {
+            throw new IllegalStateException("Could not persist remote session state");
+        }
+    }
+
+    synchronized void commitRemoteEvent(
+            String sessionId,
+            long cursor,
+            String eventType,
+            String eventTurnId
+    ) {
+        RemoteSessionState state = loadRemoteSessionState();
+        if (state == null || !state.sessionId.equals(sessionId)) {
+            throw new IllegalStateException("Remote session state does not match the active session");
+        }
+        String activeTurnId = state.activeTurnId;
+        boolean uploadPending = state.uploadPending;
+        if ("turn.accepted".equals(eventType)) {
+            activeTurnId = eventTurnId;
+            uploadPending = false;
+        }
+        if ("turn.completed".equals(eventType)
+                || "turn.error".equals(eventType)
+                || "turn.cancelled".equals(eventType)) {
+            if (shouldClearActiveTurn(activeTurnId, eventTurnId)) {
+                activeTurnId = "";
+                uploadPending = false;
+            }
+        }
+        if (cursor > state.cursor) {
+            persistRemoteSessionState(sessionId, cursor, activeTurnId, uploadPending);
+        }
+    }
+
+    static boolean shouldClearActiveTurn(String activeTurnId, String terminalTurnId) {
+        return activeTurnId != null
+                && !activeTurnId.isEmpty()
+                && activeTurnId.equals(terminalTurnId);
+    }
+
+    synchronized void replaceRemoteSessionSnapshot(
+            String sessionId,
+            long cursor,
+            String activeTurnId
+    ) {
+        RemoteSessionState state = loadRemoteSessionState();
+        if (state == null || !state.sessionId.equals(sessionId)) {
+            throw new IllegalStateException("Remote session state does not match the active session");
+        }
+        String snapshotTurnId = activeTurnId == null ? "" : activeTurnId;
+        boolean keepPendingUpload = shouldPreservePendingUploadMarker(
+                state.uploadPending,
+                snapshotTurnId
+        );
+        persistRemoteSessionState(
+                sessionId,
+                cursor,
+                keepPendingUpload ? state.activeTurnId : snapshotTurnId,
+                keepPendingUpload
+        );
+    }
+
+    static boolean shouldPreservePendingUploadMarker(
+            boolean uploadPending,
+            String snapshotActiveTurnId
+    ) {
+        return uploadPending
+                && (snapshotActiveTurnId == null || snapshotActiveTurnId.isEmpty());
+    }
+
+    synchronized void markRemoteTurnInFlight(String sessionId, String turnId) {
+        RemoteSessionState state = loadRemoteSessionState();
+        if (state == null || !state.sessionId.equals(sessionId)) {
+            throw new IllegalStateException("Remote session state does not match the active session");
+        }
+        persistRemoteSessionState(sessionId, state.cursor, turnId, true);
+    }
+
+    synchronized boolean replaceRemoteTurnMarker(
+            String sessionId,
+            String expectedTurnId,
+            String remoteTurnId
+    ) {
+        RemoteSessionState state = loadRemoteSessionState();
+        if (state == null || !state.sessionId.equals(sessionId)) return false;
+        if ((state.uploadPending && state.activeTurnId.equals(expectedTurnId))
+                || (!state.uploadPending && state.activeTurnId.equals(remoteTurnId))) {
+            persistRemoteSessionState(sessionId, state.cursor, remoteTurnId, false);
+            return true;
+        }
+        return false;
+    }
+
+    synchronized void clearRemoteTurnMarker(String sessionId, String expectedTurnId) {
+        RemoteSessionState state = loadRemoteSessionState();
+        if (state == null || !state.sessionId.equals(sessionId)) return;
+        if (state.uploadPending && state.activeTurnId.equals(expectedTurnId)) {
+            persistRemoteSessionState(sessionId, state.cursor, "");
+        }
+    }
+
+    synchronized void clearRemoteSessionState() {
+        if (!clearRemoteSessionState(preferences.edit()).commit()) {
+            throw new IllegalStateException("Could not clear remote session state");
+        }
+    }
+
+    synchronized String getGatewayIdentity() {
+        return gatewayIdentity(
+                getGatewayUrl(),
+                getTrustMode(),
+                getCertificatePin(),
+                getDeviceId(),
+                getAgentProfile(),
+                getRobotName(),
+                getLanguage()
+        );
+    }
+
+    static String gatewayIdentity(
+            String gatewayUrl,
+            String trustMode,
+            String certificatePin,
+            String deviceId,
+            String agentProfile,
+            String robotName,
+            String language
+    ) {
+        String material =
+                (gatewayUrl == null ? "" : gatewayUrl.trim()) + "\n"
+                        + (trustMode == null ? "" : trustMode) + "\n"
+                        + (certificatePin == null ? "" : certificatePin) + "\n"
+                        + (deviceId == null ? "" : deviceId) + "\n"
+                        + (agentProfile == null ? "" : agentProfile) + "\n"
+                        + (robotName == null ? "" : robotName) + "\n"
+                        + (language == null ? "" : language);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(material.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                result.append(String.format(Locale.US, "%02x", value & 0xff));
+            }
+            return result.toString();
+        } catch (Exception error) {
+            throw new IllegalStateException("SHA-256 is unavailable", error);
+        }
+    }
+
     public synchronized String getSessionCreateIdempotencyKey() {
         String value = preferences.getString(KEY_SESSION_CREATE_IDEMPOTENCY, "");
         if (!isUuid(value)) throw new IllegalStateException("Session create idempotency key is invalid");
@@ -121,12 +378,12 @@ public final class GatewaySettings {
 
     public synchronized String rotateSessionCreateIdempotencyKey() {
         String value = UUID.randomUUID().toString();
-        if (!preferences.edit()
+        PreferenceStore.Editor editor = preferences.edit()
                 .putString(KEY_SESSION_CREATE_IDEMPOTENCY, value)
                 .putString(KEY_SESSION_CREATE_FINGERPRINT, "")
                 .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
-                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false)
-                .commit()) {
+                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false);
+        if (!clearRemoteSessionState(editor).commit()) {
             throw new IllegalStateException("Could not persist session create idempotency key");
         }
         return value;
@@ -157,12 +414,12 @@ public final class GatewaySettings {
         }
 
         String rotatedKey = UUID.randomUUID().toString();
-        if (!preferences.edit()
+        PreferenceStore.Editor editor = preferences.edit()
                 .putString(KEY_SESSION_CREATE_IDEMPOTENCY, rotatedKey)
                 .putString(KEY_SESSION_CREATE_FINGERPRINT, fingerprint)
                 .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
-                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false)
-                .commit()) {
+                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false);
+        if (!clearRemoteSessionState(editor).commit()) {
             throw new IllegalStateException("Could not rotate changed session create request");
         }
         return rotatedKey;
@@ -180,6 +437,7 @@ public final class GatewaySettings {
         if (!getSessionCreateIdempotencyKey().equals(requestKey)
                 || !fingerprint.equals(getSessionCreateFingerprint())
                 || !getSessionCreateRemoteSessionId().isEmpty()
+                || !preferences.getString(KEY_REMOTE_SESSION_ID, "").isEmpty()
                 || preferences.getBoolean(
                         KEY_SESSION_CREATE_CONFLICT_RECOVERED,
                         false
@@ -187,12 +445,12 @@ public final class GatewaySettings {
             return false;
         }
         String rotatedKey = UUID.randomUUID().toString();
-        if (!preferences.edit()
+        PreferenceStore.Editor editor = preferences.edit()
                 .putString(KEY_SESSION_CREATE_IDEMPOTENCY, rotatedKey)
                 .putString(KEY_SESSION_CREATE_FINGERPRINT, fingerprint)
                 .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
-                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, true)
-                .commit()) {
+                .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, true);
+        if (!clearRemoteSessionState(editor).commit()) {
             throw new IllegalStateException("Could not recover Gateway create conflict");
         }
         return true;
@@ -216,13 +474,22 @@ public final class GatewaySettings {
         }
         String existingRemoteSessionId =
                 preferences.getString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "");
+        long cursor = remoteSessionId.equals(existingRemoteSessionId)
+                ? Math.max(0L, getCursor())
+                : lastSequence;
         if (remoteSessionId.equals(existingRemoteSessionId)) {
-            return true;
+            String durableSessionId = preferences.getString(KEY_REMOTE_SESSION_ID, "");
+            String durableIdentity =
+                    preferences.getString(KEY_SESSION_GATEWAY_IDENTITY, "");
+            if (remoteSessionId.equals(durableSessionId)
+                    && getGatewayIdentity().equals(durableIdentity)) {
+                return true;
+            }
         }
-        if (!preferences.edit()
-                .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, remoteSessionId)
-                .putLong(KEY_CURSOR, lastSequence)
-                .commit()) {
+        PreferenceStore.Editor editor = preferences.edit()
+                .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, remoteSessionId);
+        putRemoteSessionState(editor, remoteSessionId, cursor, "", false);
+        if (!editor.commit()) {
             throw new IllegalStateException("Could not persist Gateway session binding");
         }
         return true;
@@ -248,6 +515,15 @@ public final class GatewaySettings {
 
     public synchronized void update(JSONObject input) throws JSONException {
         PreferenceStore.Editor editor = preferences.edit();
+        boolean invalidatesRemoteSession =
+                input.has("gatewayUrl")
+                        || input.has("certificatePin")
+                        || input.has("trustMode")
+                        || input.has("tlsTrust")
+                        || input.has("agentProfile")
+                        || input.has("context")
+                        || input.has("robotName")
+                        || input.has("language");
         if (input.has("gatewayUrl")) {
             String url = input.optString("gatewayUrl", "").trim();
             validateGatewayUrl(url);
@@ -304,6 +580,13 @@ public final class GatewaySettings {
         if (input.has("enabled")) {
             editor.putBoolean(KEY_ENABLED, input.optBoolean("enabled", false));
         }
+        if (invalidatesRemoteSession) {
+            editor.putString(KEY_SESSION_CREATE_IDEMPOTENCY, UUID.randomUUID().toString())
+                    .putString(KEY_SESSION_CREATE_FINGERPRINT, "")
+                    .putString(KEY_SESSION_CREATE_REMOTE_SESSION_ID, "")
+                    .putBoolean(KEY_SESSION_CREATE_CONFLICT_RECOVERED, false);
+            clearRemoteSessionState(editor);
+        }
         if (!editor.commit()) throw new JSONException("Could not persist Gateway settings");
     }
 
@@ -339,7 +622,23 @@ public final class GatewaySettings {
                                 false
                         )
                 )
-                .put("cursor", getCursor());
+                .put("cursor", getCursor())
+                .put(
+                        "remoteSessionId",
+                        preferences.getString(KEY_REMOTE_SESSION_ID, "")
+                )
+                .put(
+                        "sessionGatewayIdentity",
+                        preferences.getString(KEY_SESSION_GATEWAY_IDENTITY, "")
+                )
+                .put(
+                        "activeRemoteTurnId",
+                        preferences.getString(KEY_ACTIVE_REMOTE_TURN_ID, "")
+                )
+                .put(
+                        "remoteTurnUploadPending",
+                        preferences.getBoolean(KEY_REMOTE_TURN_UPLOAD_PENDING, false)
+                );
     }
 
     synchronized void restore(JSONObject snapshot) throws JSONException {
@@ -371,8 +670,50 @@ public final class GatewaySettings {
                         snapshot.optBoolean("sessionCreateConflictRecovered", false)
                 )
                 .putLong(KEY_CURSOR, snapshot.optLong("cursor", 0L))
+                .putString(
+                        KEY_REMOTE_SESSION_ID,
+                        snapshot.optString("remoteSessionId", "")
+                )
+                .putString(
+                        KEY_SESSION_GATEWAY_IDENTITY,
+                        snapshot.optString("sessionGatewayIdentity", "")
+                )
+                .putString(
+                        KEY_ACTIVE_REMOTE_TURN_ID,
+                        snapshot.optString("activeRemoteTurnId", "")
+                )
+                .putBoolean(
+                        KEY_REMOTE_TURN_UPLOAD_PENDING,
+                        snapshot.optBoolean("remoteTurnUploadPending", false)
+                )
                 .commit();
         if (!committed) throw new JSONException("Could not roll back Gateway settings");
+    }
+
+    private PreferenceStore.Editor putRemoteSessionState(
+            PreferenceStore.Editor editor,
+            String sessionId,
+            long cursor,
+            String activeTurnId,
+            boolean uploadPending
+    ) {
+        return editor
+                .putString(KEY_REMOTE_SESSION_ID, sessionId)
+                .putLong(KEY_CURSOR, cursor)
+                .putString(KEY_SESSION_GATEWAY_IDENTITY, getGatewayIdentity())
+                .putString(KEY_ACTIVE_REMOTE_TURN_ID, activeTurnId)
+                .putBoolean(KEY_REMOTE_TURN_UPLOAD_PENDING, uploadPending);
+    }
+
+    private static PreferenceStore.Editor clearRemoteSessionState(
+            PreferenceStore.Editor editor
+    ) {
+        return editor
+                .putString(KEY_REMOTE_SESSION_ID, "")
+                .putString(KEY_SESSION_GATEWAY_IDENTITY, "")
+                .putString(KEY_ACTIVE_REMOTE_TURN_ID, "")
+                .putBoolean(KEY_REMOTE_TURN_UPLOAD_PENDING, false)
+                .putLong(KEY_CURSOR, 0L);
     }
 
     public static void validateGatewayUrl(String value) throws JSONException {

@@ -8,6 +8,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -16,6 +17,7 @@ public class GatewaySettingsTest {
     private static final String FINGERPRINT_B = "b".repeat(64);
     private static final String SESSION_A = "11111111-1111-4111-8111-111111111111";
     private static final String SESSION_B = "22222222-2222-4222-8222-222222222222";
+    private static final String TURN_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
     @Test
     public void sessionCreateIdempotencyKeySurvivesProcessRestart() {
@@ -90,6 +92,121 @@ public class GatewaySettingsTest {
 
         assertEquals(SESSION_B, settings.getSessionCreateRemoteSessionId());
         assertEquals(2L, settings.getCursor());
+    }
+
+    @Test
+    public void acceptedCreatePersistsAResumableRemoteSessionAcrossRestart() {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 3L));
+
+        GatewaySettings.RemoteSessionState restored =
+                new GatewaySettings(preferences).loadRemoteSessionState();
+
+        assertEquals(SESSION_A, restored.sessionId);
+        assertEquals(3L, restored.cursor);
+        assertEquals("", restored.activeTurnId);
+        assertTrue(!restored.uploadPending);
+    }
+
+    @Test
+    public void rotatingCreateIdentityAtomicallyClearsRemoteTurnRecovery() {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 4L));
+        settings.markRemoteTurnInFlight(SESSION_A, TURN_A);
+
+        settings.rotateSessionCreateIdempotencyKey();
+
+        assertEquals("", settings.getSessionCreateRemoteSessionId());
+        assertEquals(0L, settings.getCursor());
+        assertNull(settings.loadRemoteSessionState());
+    }
+
+    @Test
+    public void replayRepairsMissingResumeMetadataWithoutRewindingCursor() {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 3L));
+        settings.setCursor(7L);
+        preferences.values.put("remote_session_id", "");
+        preferences.values.put("session_gateway_identity", "");
+
+        GatewaySettings restarted = new GatewaySettings(preferences);
+        assertTrue(restarted.acceptSessionCreateResponse(key, SESSION_A, 99L));
+        GatewaySettings.RemoteSessionState restored = restarted.loadRemoteSessionState();
+
+        assertEquals(SESSION_A, restored.sessionId);
+        assertEquals(7L, restored.cursor);
+    }
+
+    @Test
+    public void rollbackSnapshotRestoresBothCreateAndRemoteSessionMetadata()
+            throws Exception {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 5L));
+        settings.markRemoteTurnInFlight(SESSION_A, TURN_A);
+        JSONObject snapshot = settings.snapshotForRollback();
+
+        settings.rotateSessionCreateIdempotencyKey();
+        settings.restore(snapshot);
+        GatewaySettings.RemoteSessionState restored = settings.loadRemoteSessionState();
+
+        assertEquals(key, settings.getSessionCreateIdempotencyKey());
+        assertEquals(SESSION_A, settings.getSessionCreateRemoteSessionId());
+        assertEquals(SESSION_A, restored.sessionId);
+        assertEquals(5L, restored.cursor);
+        assertEquals(TURN_A, restored.activeTurnId);
+        assertTrue(restored.uploadPending);
+    }
+
+    @Test
+    public void identityChangeAtomicallyRotatesCreateKeyAndClearsRemoteRecovery()
+            throws Exception {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 5L));
+        settings.markRemoteTurnInFlight(SESSION_A, TURN_A);
+
+        settings.update(new JSONObject().put("gatewayUrl", "https://new.example"));
+
+        assertNotEquals(key, settings.getSessionCreateIdempotencyKey());
+        assertEquals("", settings.getSessionCreateFingerprint());
+        assertEquals("", settings.getSessionCreateRemoteSessionId());
+        assertEquals(0L, settings.getCursor());
+        assertNull(settings.loadRemoteSessionState());
+    }
+
+    @Test
+    public void failedIdentityChangePreservesBothCreateAndRemoteRecovery()
+            throws Exception {
+        InMemoryPreferenceStore preferences = new InMemoryPreferenceStore();
+        GatewaySettings settings = new GatewaySettings(preferences);
+        String key = settings.prepareSessionCreate(FINGERPRINT_A);
+        assertTrue(settings.acceptSessionCreateResponse(key, SESSION_A, 5L));
+        settings.markRemoteTurnInFlight(SESSION_A, TURN_A);
+        preferences.failNextCommit = true;
+
+        assertThrows(
+                org.json.JSONException.class,
+                () -> settings.update(
+                        new JSONObject().put("gatewayUrl", "https://new.example")
+                )
+        );
+        GatewaySettings.RemoteSessionState restored = settings.loadRemoteSessionState();
+
+        assertEquals(key, settings.getSessionCreateIdempotencyKey());
+        assertEquals(FINGERPRINT_A, settings.getSessionCreateFingerprint());
+        assertEquals(SESSION_A, settings.getSessionCreateRemoteSessionId());
+        assertEquals(SESSION_A, restored.sessionId);
+        assertEquals(TURN_A, restored.activeTurnId);
+        assertTrue(restored.uploadPending);
     }
 
     @Test
