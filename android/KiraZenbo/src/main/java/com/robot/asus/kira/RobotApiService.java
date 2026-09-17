@@ -46,6 +46,8 @@ public class RobotApiService extends Service {
     private static final String TAG = "RobotApiService";
     private static final int NOTIFICATION_ID = 1;
     private static final String CHANNEL_ID = "RobotApiServiceChannel";
+    // API 23 CYPRESS firmware also reports completed quick taps as type 1.
+    private static final int FIRMWARE_QUICK_HEAD_TOUCH = 1;
     private static volatile boolean localRuntimeReady;
     private static volatile LocalRuntimeServer activeLocalRuntime;
     private static volatile RobotApiService activeRobotService;
@@ -151,7 +153,7 @@ public class RobotApiService extends Service {
                 displayHandler.post(() -> {
                     if (activeRobotService != RobotApiService.this) return;
                     robotApiInitialized = true;
-                    hideStockFaceForRenderer();
+                    configureRendererForeground();
                 });
                 sendEvent("initComplete", new JSONObject());
             }
@@ -295,8 +297,6 @@ public class RobotApiService extends Service {
         try {
             robotAPI = new RobotAPI(getApplicationContext(), robotCallback);
             robotAPI.robot.registerListenCallback(listenCallback);
-            robotAPI.robot.setPressOnHeadAction(false);
-            robotAPI.robot.setVoiceTrigger(false);
             registerHeadTouchSensor();
         } catch (Throwable error) {
             Log.e(TAG, "RobotAPI initialization failed; local runtime remains available", error);
@@ -316,9 +316,8 @@ public class RobotApiService extends Service {
         }
         headTouchListener = new SensorEventListener() {
             @Override public void onSensorChanged(SensorEvent event) {
-                if (event.values.length == 0) return;
-                int pressType = Math.round(event.values[0]);
-                if (pressType == 1 || pressType == Utility.CapEventType.CAP_EVENT_SHORT) {
+                if (!rendererForeground || event.values.length == 0) return;
+                if (isHeadInteraction(event.values[0])) {
                     sendEvent("HeadPress", new JSONObject());
                 }
             }
@@ -330,6 +329,13 @@ public class RobotApiService extends Service {
             Log.w(TAG, "Could not register Zenbo capacity touch listener");
             headTouchListener = null;
         }
+    }
+
+    static boolean isHeadInteraction(float eventType) {
+        // Each classified touch arrives with its duration; dispatch only once from this listener.
+        return eventType == FIRMWARE_QUICK_HEAD_TOUCH
+                || eventType == Utility.CapEventType.CAP_EVENT_SHORT
+                || eventType == Utility.CapEventType.CAP_EVENT_MEDIUM;
     }
 
     /**
@@ -427,16 +433,19 @@ public class RobotApiService extends Service {
     public static void setRendererForeground(boolean foreground) {
         rendererForeground = foreground;
         RobotApiService service = activeRobotService;
-        if (service != null && foreground) service.displayHandler.post(service::hideStockFaceForRenderer);
+        if (service != null && foreground) service.displayHandler.post(service::configureRendererForeground);
     }
 
-    private void hideStockFaceForRenderer() {
+    private void configureRendererForeground() {
         if (activeRobotService != this || !rendererForeground || !robotApiInitialized || robotAPI == null) return;
         try {
+            // ASUS requires commands after initComplete/onResume, not beside the RobotAPI constructor.
+            robotAPI.robot.setPressOnHeadAction(false);
+            robotAPI.robot.setVoiceTrigger(false);
             // ASUS's custom-UI lifecycle API only hides its expression window, without speech or motion.
             robotAPI.robot.setExpression(RobotFace.HIDEFACE);
         } catch (RuntimeException error) {
-            Log.w(TAG, "Could not release the stock face overlay for the renderer", error);
+            Log.w(TAG, "Could not configure the foreground renderer's robot UI", error);
         }
     }
 
