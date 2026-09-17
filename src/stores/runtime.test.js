@@ -55,6 +55,7 @@ describe('runtime store', () => {
     const store = useRuntimeStore();
     store.lastSequence = 2;
     const snapshot = {
+      protocolVersion: '2.0',
       type: 'session.snapshot',
       sequence: 12,
       data: {
@@ -82,7 +83,8 @@ describe('runtime store', () => {
 
     expect(
       store.applyEnvelope({
-        type: 'session.snapshot',
+        protocolVersion: '2.0',
+      type: 'session.snapshot',
         sequence: 9,
         data: { lastSequence: 12 },
       }),
@@ -90,30 +92,37 @@ describe('runtime store', () => {
     expect(store.error).toContain('authoritative cursor');
   });
 
-  it('advances only contiguous retained events and ignores session.ready for the cursor', () => {
+  it('advances the Native cursor for session events and local controls', () => {
     const store = useRuntimeStore();
-    const ready = { type: 'session.ready', sequence: 0, data: { resumedAfter: 0 } };
-
+    const ready = { protocolVersion: '2.0', type: 'session.ready', sequence: 1, data: { resumedAfter: 0 } };
     expect(store.applyEnvelope(ready)).toBe(true);
     store.commitEnvelope(ready);
-    expect(store.lastSequence).toBe(0);
-
-    expect(store.applyEnvelope({ type: 'stt.final', sequence: 1 })).toBe(true);
-    store.commitEnvelope({ type: 'stt.final', sequence: 1 });
     expect(store.lastSequence).toBe(1);
-    expect(store.applyEnvelope({ type: 'stt.final', sequence: 1 })).toBe(false);
-    expect(store.applyEnvelope({ type: 'agent.thinking', sequence: 3 })).toBe(false);
-    expect(store.error).toContain('預期 2');
+    const robot = { protocolVersion: '2.0', type: 'local.robot.state', sequence: 2, data: { ready: true, moving: false } };
+    expect(store.applyEnvelope(robot)).toBe(true);
+    store.commitEnvelope(robot);
+    expect(store.lastSequence).toBe(2);
+    expect(store.applyEnvelope(robot)).toBe(false);
+    expect(store.applyEnvelope({ protocolVersion: '2.0', type: 'agent.thinking', sequence: 4 })).toBe(false);
+    expect(store.error).toContain('預期 3');
+  });
+
+  it('rejects legacy and unversioned event envelopes', () => {
+    const store = useRuntimeStore();
+    for (const protocolVersion of [undefined, '1.0']) {
+      expect(store.applyEnvelope({ protocolVersion, type: 'stt.final', sequence: 1 })).toBe(false);
+    }
+    expect(store.lastSequence).toBe(0);
   });
 
   it('never admits device or session tokens into Pinia state', () => {
     const store = useRuntimeStore();
     store.setSession({ sessionId: 'local-session', sessionToken: 'local-token' });
-    store.patchSettings({ deviceToken: 'device-secret', robotName: 'Kira' });
+    store.patchSettings({ apiKey: 'device-secret', robotName: 'Kira' });
 
     expect(store.sessionId).toBe('local-session');
     expect(store).not.toHaveProperty('sessionToken');
-    expect(store.settings).not.toHaveProperty('deviceToken');
+    expect(store.settings).not.toHaveProperty('apiKey');
     expect(store.settings.robotName).toBe('Kira');
   });
 

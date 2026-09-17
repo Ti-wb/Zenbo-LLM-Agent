@@ -1,5 +1,5 @@
 export const DEFAULT_RUNTIME_ORIGIN = 'http://127.0.0.1:8787';
-export const LOCAL_API_PREFIX = '/api/v1';
+export const LOCAL_API_PREFIX = '/api/v2';
 const CLIENT_VERSION = '0.1.0';
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_VOICE_BYTES = 2 * 1024 * 1024;
@@ -157,6 +157,9 @@ export class RuntimeTransport {
       method: 'POST',
       body: JSON.stringify({ clientVersion: CLIENT_VERSION, bootstrapToken }),
     });
+    if (payload?.protocolVersion !== '2.0') {
+      throw new Error('Local Runtime protocol version must be 2.0.');
+    }
     this.bootstrapped = true;
     return payload;
   }
@@ -199,8 +202,8 @@ export class RuntimeTransport {
 
   async getConversation() {
     const payload = await this.request(`${LOCAL_API_PREFIX}/conversation`, { method: 'GET' });
-    if (payload?.sessionId || payload?.remoteSessionId) {
-      this.sessionId = payload.sessionId || payload.remoteSessionId;
+    if (payload?.sessionId) {
+      this.sessionId = payload.sessionId;
     }
     this.cursor = Number(payload?.lastSequence || 0);
     return payload || {};

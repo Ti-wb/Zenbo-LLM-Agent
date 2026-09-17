@@ -55,9 +55,10 @@ public final class TlsTrust {
 
     public static void probe(String gatewayUrl, String deviceId, ProbeCallback callback) {
         try {
-            HttpUrl baseUrl = AgentGatewayClient.apiBaseUrl(gatewayUrl);
+            HttpUrl baseUrl = new HermesEndpoints(gatewayUrl).base();
             OkHttpClient client = pinnedBuilder(baseUrl.host(), "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
                     .certificatePinner(new CertificatePinner.Builder().build())
+                    .followRedirects(false).followSslRedirects(false)
                     .connectTimeout(10, TimeUnit.SECONDS)
                     .readTimeout(10, TimeUnit.SECONDS)
                     .build();
@@ -69,8 +70,9 @@ public final class TlsTrust {
 
     public static void probeSystemTrust(String gatewayUrl, String deviceId, ProbeCallback callback) {
         try {
-            HttpUrl baseUrl = AgentGatewayClient.apiBaseUrl(gatewayUrl);
+            HttpUrl baseUrl = new HermesEndpoints(gatewayUrl).base();
             OkHttpClient client = new OkHttpClient.Builder()
+                    .followRedirects(false).followSslRedirects(false)
                     .connectTimeout(10, TimeUnit.SECONDS)
                     .readTimeout(10, TimeUnit.SECONDS)
                     .build();
@@ -89,8 +91,7 @@ public final class TlsTrust {
         Request request = new Request.Builder()
                 .url(baseUrl.newBuilder().addPathSegment("capabilities").build())
                 .header("X-Zenbo-Device-Id", deviceId)
-                .header("X-Zenbo-Protocol", "1.0")
-                .get()
+                                .get()
                 .build();
         client.newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException error) {
@@ -120,88 +121,91 @@ public final class TlsTrust {
     }
 
     public static void testCapabilities(
-            String gatewayUrl,
-            String trustMode,
-            String confirmedPin,
-            String deviceId,
-            String transientToken,
-            String agentProfile,
-            CapabilityCallback callback
+            String gatewayUrl, String trustMode, String confirmedPin, String deviceId,
+            String apiKey, CapabilityCallback callback
     ) {
-        long startedAt = System.currentTimeMillis();
+        final long startedAt = System.currentTimeMillis();
         try {
-            if (transientToken == null || transientToken.length() < 16 || transientToken.length() > 4096) {
-                throw new IllegalArgumentException("A device token containing 16 to 4096 characters is required");
-            }
-            HttpUrl baseUrl = AgentGatewayClient.apiBaseUrl(gatewayUrl);
+            HermesEndpoints endpoints = new HermesEndpoints(gatewayUrl);
             OkHttpClient.Builder builder = GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode)
-                    ? pinnedBuilder(baseUrl.host(), confirmedPin)
-                    : new OkHttpClient.Builder();
-            OkHttpClient client = builder
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .readTimeout(10, TimeUnit.SECONDS)
-                    .build();
-            Request request = new Request.Builder()
-                    .url(baseUrl.newBuilder().addPathSegment("capabilities").build())
-                    .header("Authorization", "Bearer " + transientToken)
-                    .header("X-Zenbo-Device-Id", deviceId)
-                    .header("X-Zenbo-Protocol", "1.0")
-                    .get()
-                    .build();
-            client.newCall(request).enqueue(new Callback() {
-            @Override public void onFailure(Call call, IOException error) {
-                    callback.onError(networkErrorCode(error), error.getMessage());
-                }
-
-                @Override public void onResponse(Call call, Response response) {
-                    try (Response closeable = response) {
-                        if (closeable.code() == 401 || closeable.code() == 403) {
-                            callback.onError("GATEWAY_AUTH", "Gateway rejected the device credential");
-                            return;
-                        }
-                        if (closeable.code() == 426) {
-                            callback.onError("GATEWAY_INCOMPATIBLE", "Gateway protocol 1.0 is not supported");
-                            return;
-                        }
-                        ResponseBody body = closeable.body();
-                        if (!closeable.isSuccessful() || body == null) {
-                            callback.onError("GATEWAY_OFFLINE", "Gateway returned HTTP " + closeable.code());
-                            return;
-                        }
-                        JSONObject capabilities = new JSONObject(body.string());
-                        String protocolVersion = capabilities.optString("protocolVersion", "");
-                        if (!"1.0".equals(protocolVersion)) {
-                            callback.onError("GATEWAY_INCOMPATIBLE", "Gateway protocol 1.0 is required");
-                            return;
-                        }
-                        boolean profileFound = false;
-                        org.json.JSONArray profiles = capabilities.optJSONArray("agentProfiles");
-                        for (int index = 0; profiles != null && index < profiles.length(); index++) {
-                            JSONObject profile = profiles.optJSONObject(index);
-                            if (profile != null && agentProfile.equals(profile.optString("id", ""))) profileFound = true;
-                        }
-                        if (!profileFound) {
-                            callback.onError("GATEWAY_INCOMPATIBLE", "Configured agent profile is unavailable");
-                            return;
-                        }
-                        String fingerprint = certificatePin(closeable.handshake());
-                        callback.onSuccess(new JSONObject()
-                                .put("reachable", true)
-                                .put("tlsTrusted", true)
-                                .put("latencyMs", Math.max(0L, System.currentTimeMillis() - startedAt))
-                                .put("protocolVersion", protocolVersion)
-                                .put("confirmationRequired", false)
-                                .put("fingerprint", fingerprint.isEmpty() ? JSONObject.NULL : fingerprint)
-                                .put("authenticated", true)
-                                .put("capabilitiesReceived", true));
-                    } catch (Exception error) {
-                        callback.onError("GATEWAY_INCOMPATIBLE", error.getMessage());
-                    }
-                }
-            });
+                    ? pinnedBuilder(endpoints.base().host(), confirmedPin) : new OkHttpClient.Builder();
+            OkHttpClient client = builder.followRedirects(false).followSslRedirects(false)
+                    .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build();
+            testCapabilities(client, endpoints, deviceId, apiKey, startedAt, callback);
         } catch (Exception error) {
-            callback.onError("GATEWAY_TLS", error.getMessage());
+            callback.onError("GATEWAY_INCOMPATIBLE", "Invalid Hermes endpoint, API key or TLS configuration");
         }
+    }
+
+    static void testCapabilities(OkHttpClient client, HermesEndpoints endpoints, String deviceId,
+                                 String apiKey, long startedAt, CapabilityCallback callback) {
+        Request models = HermesClient.authorizedRequest(endpoints.models(), apiKey, deviceId).get().build();
+        HermesClient.executeJson(client, models, new HermesTransport.ResultCallback() {
+            @Override public void onSuccess(JSONObject result) {
+                org.json.JSONArray entries = result.optJSONArray("data");
+                if (entries == null || entries.length() == 0) {
+                    callback.onError("GATEWAY_INCOMPATIBLE", "This Hermes profile advertises no configured model");
+                    return;
+                }
+                HermesClient.executeJson(client,
+                        HermesClient.authorizedRequest(endpoints.capabilities(), apiKey, deviceId).get().build(),
+                        new HermesTransport.ResultCallback() {
+                            @Override public void onSuccess(JSONObject capabilities) {
+                                JSONObject features = capabilities.optJSONObject("features");
+                                if (features == null || !features.optBoolean("run_submission")
+                                        || !features.optBoolean("run_status") || !features.optBoolean("run_events_sse")
+                                        || !features.optBoolean("run_stop")) {
+                                    callback.onError("GATEWAY_INCOMPATIBLE", "Hermes Runs, SSE and stop support are required");
+                                    return;
+                                }
+                                JSONObject idempotency = features.optJSONObject("runs_idempotency");
+                                if (idempotency == null || !idempotency.optBoolean("supported")
+                                        || !idempotency.optBoolean("durable")
+                                        || idempotency.optLong("retention_seconds", 0L) < 86400L) {
+                                    callback.onError("GATEWAY_INCOMPATIBLE", "Hermes durable run idempotency with 24-hour retention is required");
+                                    return;
+                                }
+                                HermesClient.executeJson(client,
+                                        HermesClient.authorizedRequest(endpoints.pluginCapabilities(), apiKey, deviceId).get().build(),
+                                        new HermesTransport.ResultCallback() {
+                                            @Override public void onSuccess(JSONObject plugin) {
+                                                if (!"1.0".equals(plugin.optString("pluginVersion")) || !hasSixTools(plugin)) {
+                                                    callback.onError("GATEWAY_INCOMPATIBLE", "The Zenbo plugin does not provide the six device tools");
+                                                    return;
+                                                }
+                                                try {
+                                                    plugin.put("available", true);
+                                                    callback.onSuccess(new JSONObject()
+                                                            .put("reachable", true).put("tlsTrusted", true)
+                                                            .put("authenticated", true).put("capabilitiesReceived", true)
+                                                            .put("latencyMs", Math.max(0L, System.currentTimeMillis() - startedAt))
+                                                            .put("confirmationRequired", false).put("fingerprint", JSONObject.NULL)
+                                                            .put("profile", endpoints.profile())
+                                                            .put("capabilities", capabilities).put("plugin", plugin));
+                                                } catch (JSONException error) {
+                                                    callback.onError("GATEWAY_INCOMPATIBLE", "Invalid Hermes capabilities");
+                                                }
+                                            }
+                                            @Override public void onError(String code, String message) {
+                                                callback.onError("HERMES_NOT_FOUND".equals(code) ? "HERMES_PLUGIN_UNAVAILABLE" : code,
+                                                        "The Hermes Zenbo plugin is unavailable");
+                                            }
+                                        });
+                            }
+                            @Override public void onError(String code, String message) { callback.onError(code, message); }
+                        });
+            }
+            @Override public void onError(String code, String message) { callback.onError(code, message); }
+        });
+    }
+
+    private static boolean hasSixTools(JSONObject plugin) {
+        org.json.JSONArray array = plugin.optJSONArray("tools");
+        if (array == null || array.length() != 6) return false;
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (int i = 0; i < array.length(); i++) names.add(array.optString(i));
+        return names.containsAll(java.util.Arrays.asList("get_system_status", "start_robot_following",
+                "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep"));
     }
 
     private static String certificatePin(Handshake handshake) {

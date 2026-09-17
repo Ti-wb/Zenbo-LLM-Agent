@@ -1,18 +1,16 @@
-# Agent Gateway contract checks
+# Local Runtime 2.0 and Hermes Zenbo contract checks
 
-Run the dependency-free validation from the repository root:
+Run `npm run test:contracts` from the repository root. No running service,
+credentials, device or installed Python package is required.
 
-```sh
-node tests/contracts/validate-contracts.mjs
-```
+The validator checks the loopback-only v2 route, cookie and origin boundary,
+write-only Hermes settings, Native-owned event sequence, ordered audio metadata,
+six strict tool schemas, and positive/negative HTTP/event fixtures. It resolves
+local schema references and separately checks PIN/fingerprint confirmation and
+one-use bootstrap token rejection. Old Agent Gateway contracts are not inputs.
 
-The script parses both Agent Gateway and Local Runtime OpenAPI documents,
-resolves contract `$ref` targets, checks each required route/auth/header/cookie
-surface, validates positive and negative fixtures against the supported JSON
-Schema 2020-12 keywords, and applies semantic checks such as tool-name
-uniqueness, one-time bootstrap-token replay rejection, PIN/fingerprint
-confirmation equality, redacted settings responses, and canonical local
-Gateway/turn state vocabularies.
-
-Files under `fixtures/valid/` must pass. Files under `fixtures/invalid/` must
-fail for at least one schema or semantic reason.
+`schema-validator.mjs` implements the JSON Schema keywords used here; it is a
+small fixture validator, not a production request validator or a general-purpose
+JSON Schema implementation. The separate `npm run test:hermes` covers recorded
+Hermes response shapes and plugin channel/audio boundaries. Plugin and Native
+runtime tests exercise actual lifecycle and safety implementation.

@@ -158,74 +158,36 @@ public final class LocalRuntimeServer {
             ));
         });
 
-        registerSessionRoute("/api/v1/bootstrap$");
-        registerStatusRoute("/api/v1/status$");
-        registerConversationRoute("/api/v1/conversation$");
-        registerMultipartTurnRoute("/api/v1/conversation/turns$");
+        registerSessionRoute("/api/v2/bootstrap$");
+        registerStatusRoute("/api/v2/status$");
+        registerConversationRoute("/api/v2/conversation$");
+        registerMultipartTurnRoute("/api/v2/conversation/turns$");
 
-        server.get("/api/v1/settings$", (request, response) -> {
+        server.get("/api/v2/settings$", (request, response) -> {
             if (!requireSession(request, response)) return;
             sendJson(response, 200, settingsJson());
         });
-        server.addAction("PUT", "/api/v1/settings$", this::updateSettings, headers -> new JSONObjectBody());
-        server.post("/api/v1/settings/setup$", (request, response) -> {
+        server.addAction("PUT", "/api/v2/settings$", this::updateSettings, headers -> new JSONObjectBody());
+        server.post("/api/v2/settings/setup$", (request, response) -> {
             if (!requireSession(request, response)) return;
             JSONObject body = readJson(request);
             if (adminPinStore.isConfigured()) {
                 sendError(response, 409, "CONFLICT", "Admin PIN is already configured");
                 return;
             }
-            JSONObject settingsSnapshot = null;
-            String previousCredential = null;
             try {
-                requireOnlyKeys(body, "pin", "confirmPin", "gatewayUrl", "deviceToken",
-                        "trustMode", "certificatePin", "confirmedFingerprint",
-                        "agentProfile", "context");
-                requirePairedFields(body, "certificatePin", "confirmedFingerprint");
-                String setupPin = body.optString("pin", "");
-                AdminPinStore.validatePin(setupPin);
-                if (!setupPin.equals(body.optString("confirmPin", ""))) throw new IllegalArgumentException("PIN confirmation does not match");
-                String deviceToken = body.optString("deviceToken", "").trim();
-                if (deviceToken.length() < 16 || deviceToken.length() > 4096) {
-                    throw new IllegalArgumentException("A device token containing 16 to 4096 characters is required");
-                }
-                JSONObject context = body.optJSONObject("context");
-                if (context == null) throw new IllegalArgumentException("Initial robot context is required");
-                requireOnlyKeys(context, "robotName", "language");
-                JSONObject initialSettings = new JSONObject()
-                        .put("gatewayUrl", body.optString("gatewayUrl", ""))
-                        .put("trustMode", body.optString("trustMode", ""))
-                        .put("agentProfile", body.optString("agentProfile", ""))
-                        .put("context", context)
-                        .put("enabled", true);
-                if (body.has("certificatePin")) initialSettings.put("certificatePin", body.optString("certificatePin", ""));
-                if (body.has("confirmedFingerprint")) initialSettings.put("confirmedFingerprint", body.optString("confirmedFingerprint", ""));
-
-                settingsSnapshot = settings.snapshotForRollback();
-                previousCredential = credentialStore.load();
-                settings.update(initialSettings);
-                credentialStore.save(deviceToken);
-                adminPinStore.setup(setupPin);
+                InitialSetup.configure(settings, credentialStore, adminPinStore, body);
                 failedPinAttempts = 0;
                 nextPinAttemptAt = 0L;
                 unlockExpiresAt = System.currentTimeMillis() + 15L * 60L * 1000L;
                 coordinator.reloadGateway();
                 sendJson(response, 200, settingsJson());
             } catch (Exception error) {
-                adminPinStore.clear();
-                if (settingsSnapshot != null) {
-                    try {
-                        settings.restore(settingsSnapshot);
-                        if (previousCredential == null) credentialStore.clear(); else credentialStore.save(previousCredential);
-                    } catch (Exception rollbackError) {
-                        Log.e(TAG, "Could not fully roll back failed initial setup", rollbackError);
-                    }
-                }
-                sendError(response, 400, "INVALID_REQUEST", error.getMessage());
+                sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
             }
         });
 
-        server.post("/api/v1/settings/unlock$", (request, response) -> {
+        server.post("/api/v2/settings/unlock$", (request, response) -> {
             if (!requireSession(request, response)) return;
             long now = System.currentTimeMillis();
             if (!adminPinStore.isConfigured()) {
@@ -256,7 +218,7 @@ public final class LocalRuntimeServer {
             }
         });
 
-        server.post("/api/v1/settings/test$", (request, response) -> {
+        server.post("/api/v2/settings/test$", (request, response) -> {
             if (!requireSession(request, response)) return;
             if (adminPinStore.isConfigured() && !isUnlocked()) {
                 sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
@@ -265,21 +227,17 @@ public final class LocalRuntimeServer {
             JSONObject body = readJson(request);
             String gatewayUrl = body.optString("gatewayUrl", "").trim();
             String trustMode = body.optString("trustMode", "");
-            String agentProfile = body.optString("agentProfile", "").trim();
             try {
-                requireOnlyKeys(body, "gatewayUrl", "trustMode", "agentProfile", "deviceToken");
+                requireOnlyKeys(body, "gatewayUrl", "trustMode", "apiKey");
                 GatewaySettings.validateGatewayUrl(gatewayUrl);
                 if (!(GatewaySettings.SYSTEM_TRUST.equals(trustMode)
                         || GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode))) {
                     throw new IllegalArgumentException("trustMode is invalid");
                 }
-                if (!agentProfile.matches("[A-Za-z0-9._-]{1,64}")) {
-                    throw new IllegalArgumentException("agentProfile is invalid");
-                }
-                if (body.has("deviceToken")) {
-                    String suppliedToken = body.optString("deviceToken", "");
+                if (body.has("apiKey")) {
+                    String suppliedToken = body.optString("apiKey", "");
                     if (suppliedToken.length() < 16 || suppliedToken.length() > 4096) {
-                        throw new IllegalArgumentException("deviceToken must contain 16 to 4096 characters");
+                        throw new IllegalArgumentException("apiKey must contain 16 to 4096 characters");
                     }
                 }
             } catch (Exception error) {
@@ -314,10 +272,10 @@ public final class LocalRuntimeServer {
             }
 
             String transientToken = GatewaySettings.SYSTEM_TRUST.equals(trustMode)
-                    ? body.optString("deviceToken", "")
-                    : body.optString("deviceToken", "").isEmpty()
+                    ? body.optString("apiKey", "")
+                    : body.optString("apiKey", "").isEmpty()
                     ? credentialStore.load()
-                    : body.optString("deviceToken", "");
+                    : body.optString("apiKey", "");
             if (GatewaySettings.SYSTEM_TRUST.equals(trustMode) && transientToken.isEmpty()) {
                 long probeStartedAt = System.currentTimeMillis();
                 TlsTrust.probeSystemTrust(gatewayUrl, settings.getDeviceId(), new TlsTrust.ProbeCallback() {
@@ -346,7 +304,6 @@ public final class LocalRuntimeServer {
                     savedPinConfirmed ? settings.getCertificatePin() : "",
                     settings.getDeviceId(),
                     transientToken,
-                    agentProfile,
                     new TlsTrust.CapabilityCallback() {
                         @Override public void onSuccess(JSONObject result) { sendJson(response, 200, result); }
                         @Override public void onError(String code, String message) { sendError(response, 502, code, message); }
@@ -354,7 +311,7 @@ public final class LocalRuntimeServer {
             );
         });
 
-        server.post("/api/v1/conversation/cancel$", (request, response) -> {
+        server.post("/api/v2/conversation/cancel$", (request, response) -> {
             if (!requireSession(request, response)) return;
             String operationKey = requireIdempotencyKey(request, response, "cancel");
             if (operationKey == null || sendCachedOperation(operationKey, response, 202)) return;
@@ -379,10 +336,10 @@ public final class LocalRuntimeServer {
             coordinator.cancelActiveTurn(turnId, reason, idempotentJsonResponse(response, 202, operationKey));
         });
 
-        server.get("/api/v1/conversation/audio/([^/]+)$", (request, response) -> {
+        server.get("/api/v2/conversation/audio/([^/]+)$", (request, response) -> {
             if (!requireSession(request, response)) return;
             String artifactId = request.getMatcher().group(1);
-            coordinator.downloadAudio(artifactId, new AgentGatewayClient.BinaryCallback() {
+            coordinator.downloadAudio(artifactId, new HermesClient.BinaryCallback() {
                 @Override public void onSuccess(byte[] bytes, String contentType, String digest, String expiresAt) {
                     response.code(200);
                     response.getHeaders().set("Cache-Control", "no-store");
@@ -400,7 +357,7 @@ public final class LocalRuntimeServer {
             });
         });
 
-        server.addAction("PUT", "/api/v1/conversation/tool-calls/([^/]+)$", (request, response) -> {
+        server.addAction("PUT", "/api/v2/conversation/tool-calls/([^/]+)$", (request, response) -> {
             if (!requireSession(request, response)) return;
             String callId = request.getMatcher().group(1);
             JSONObject body = readJson(request);
@@ -419,7 +376,7 @@ public final class LocalRuntimeServer {
             coordinator.reportToolResult(callId, body, jsonResponse(response));
         }, headers -> new JSONObjectBody());
 
-        server.post("/api/v1/conversation/playback$", (request, response) -> {
+        server.post("/api/v2/conversation/playback$", (request, response) -> {
             if (!requireSession(request, response)) return;
             String operationKey = requireIdempotencyKey(request, response, "playback");
             if (operationKey == null || sendCachedOperation(operationKey, response, 202)) return;
@@ -466,7 +423,7 @@ public final class LocalRuntimeServer {
             coordinator.reportPlayback(body, idempotentJsonResponse(response, 202, operationKey));
         });
 
-        registerWebSocket("/api/v1/events");
+        registerWebSocket("/api/v2/events");
         server.get("/(.+)$", (request, response) -> serveAppAsset(request, response));
     }
 
@@ -518,10 +475,10 @@ public final class LocalRuntimeServer {
             unlockExpiresAt = 0L;
             response.getHeaders().set(
                     "Set-Cookie",
-                    SESSION_COOKIE + "=" + rendererToken + "; HttpOnly; SameSite=Strict; Path=/api/v1; Max-Age=" + SESSION_MAX_AGE_SECONDS
+                    SESSION_COOKIE + "=" + rendererToken + "; HttpOnly; SameSite=Strict; Path=/api/v2; Max-Age=" + SESSION_MAX_AGE_SECONDS
             );
             sendJson(response, 200, json(
-                    "protocolVersion", "1.0",
+                    "protocolVersion", "2.0",
                     "expiresAt", isoTime(rendererTokenExpiresAt)
             ));
         });
@@ -552,12 +509,12 @@ public final class LocalRuntimeServer {
         server.get(path, (request, response) -> {
             if (!requireSession(request, response)) return;
             JSONObject coordinatorStatus = coordinator.getStatus();
-            Object activeSessionId = coordinatorStatus.isNull("remoteSessionId")
-                    ? JSONObject.NULL
-                    : coordinatorStatus.optString("remoteSessionId", "");
+            Object activeSessionId = coordinator.getSessionId();
             String activeTurnId = coordinator.getActiveTurnId();
             sendJson(response, 200, json(
                     "runtimeReady", started,
+                    "protocolVersion", "2.0",
+                    "lastSequence", coordinator.getLastSequence(),
                     "setupRequired", !adminPinStore.isConfigured()
                             || !credentialStore.hasCredential()
                             || settings.getGatewayUrl().isEmpty(),
@@ -573,7 +530,7 @@ public final class LocalRuntimeServer {
     private void registerConversationRoute(String path) {
         server.get(path, (request, response) -> {
             if (!requireSession(request, response)) return;
-            sendJson(response, 200, coordinator.getConversationSnapshot(settings.getCursor()));
+            sendJson(response, 200, coordinator.getConversationSnapshot(coordinator.getLastSequence()));
         });
     }
 
@@ -639,7 +596,8 @@ public final class LocalRuntimeServer {
                 cacheOperation(operationKey, accepted);
                 sendJson(response, 202, accepted);
             } catch (JSONException error) {
-                sendError(response, 400, "invalid_turn", error.getMessage());
+                sendError(response, "TURN_BUSY".equals(error.getMessage()) ? 409 : 400,
+                        "TURN_BUSY".equals(error.getMessage()) ? "TURN_BUSY" : "INVALID_REQUEST", error.getMessage());
             }
         }, headers -> {
             String contentType = headers.get("Content-Type");
@@ -666,14 +624,15 @@ public final class LocalRuntimeServer {
                 webSocket.close();
                 return;
             }
-            if (after < 0L || after > settings.getCursor()) {
+            if (after < 0L || after > coordinator.getLastSequence()) {
                 webSocket.close();
                 return;
             }
             webSocket.setClosedCallback(error -> clients.remove(webSocket));
             webSocket.setEndCallback(error -> clients.remove(webSocket));
-            synchronized (clients) {
-                clients.add(webSocket);
+            // Match the coordinator -> client lock order used by event publication.
+            // Subscription and retained-history selection are atomic with native sequencing.
+            synchronized (coordinator) {
                 JSONArray retained = coordinator.getConversation();
                 long earliestRetainedSequence = Long.MAX_VALUE;
                 for (int index = 0; index < retained.length(); index++) {
@@ -681,12 +640,12 @@ public final class LocalRuntimeServer {
                     long sequence = event != null ? event.optLong("sequence", 0L) : 0L;
                     if (sequence > 0L) earliestRetainedSequence = Math.min(earliestRetainedSequence, sequence);
                 }
-                long currentCursor = settings.getCursor();
+                long currentCursor = coordinator.getLastSequence();
                 boolean stale = currentCursor > after
                         && (earliestRetainedSequence == Long.MAX_VALUE || after + 1L < earliestRetainedSequence);
-                JSONArray events = stale
-                        ? coordinator.getLocalRecoveryFrames()
-                        : retained;
+                // Recovery controls are broadcast to existing clients before this socket joins.
+                JSONArray events = stale ? coordinator.getLocalRecoveryFrames() : retained;
+                synchronized (clients) { clients.add(webSocket); }
                 for (int index = 0; index < events.length(); index++) {
                     JSONObject event = events.optJSONObject(index);
                     if (event != null && (stale || event.optLong("sequence", 0L) > after)) {
@@ -709,17 +668,17 @@ public final class LocalRuntimeServer {
             }
             snapshot = settings.snapshotForRollback();
             previousCredential = credentialStore.load();
-            requireOnlyKeys(body, "gatewayUrl", "deviceToken", "trustMode",
-                    "certificatePin", "confirmedFingerprint", "agentProfile", "context");
+            requireOnlyKeys(body, "gatewayUrl", "apiKey", "trustMode",
+                    "certificatePin", "confirmedFingerprint", "context");
             requirePairedFields(body, "certificatePin", "confirmedFingerprint");
             if (!body.has("trustMode")) throw new IllegalArgumentException("trustMode is required");
             JSONObject context = body.optJSONObject("context");
             if (context != null) requireOnlyKeys(context, "robotName", "language");
             settings.update(body);
-            if (body.has("deviceToken")) {
-                String token = body.optString("deviceToken", "").trim();
+            if (body.has("apiKey")) {
+                String token = body.optString("apiKey", "").trim();
                 if (token.length() < 16 || token.length() > 4096) {
-                    throw new IllegalArgumentException("Device credential must contain 16 to 4096 characters");
+                    throw new IllegalArgumentException("API key must contain 16 to 4096 characters");
                 }
                 credentialStore.save(token);
             }
@@ -959,7 +918,7 @@ public final class LocalRuntimeServer {
         String normalized = value == null ? "" : value.toUpperCase(java.util.Locale.US).replaceAll("[^A-Z0-9_]", "_");
         Set<String> allowed = new HashSet<>(Arrays.asList(
                 "INVALID_REQUEST", "UNAUTHORIZED", "FORBIDDEN_ORIGIN", "RATE_LIMITED", "NOT_FOUND",
-                "CONFLICT", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE", "GATEWAY_UNCONFIGURED",
+                "CONFLICT", "TURN_BUSY", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE", "GATEWAY_UNCONFIGURED",
                 "GATEWAY_AUTH", "GATEWAY_TLS", "GATEWAY_INCOMPATIBLE", "GATEWAY_OFFLINE",
                 "SESSION_EXPIRED", "TURN_CANCELLED", "ROBOT_INITIALIZING", "ROBOT_UNAVAILABLE",
                 "TOOL_REJECTED", "TIMEOUT", "ARTIFACT_EXPIRED", "INTERNAL_ERROR",
@@ -983,6 +942,7 @@ public final class LocalRuntimeServer {
     }
 
     private static boolean isRetryable(String code) {
+        if ("TURN_BUSY".equals(code)) return true;
         return "RATE_LIMITED".equals(code)
                 || "GATEWAY_OFFLINE".equals(code)
                 || "ROBOT_INITIALIZING".equals(code)
@@ -1003,8 +963,8 @@ public final class LocalRuntimeServer {
         return "application/octet-stream";
     }
 
-    private static AgentGatewayClient.ResultCallback jsonResponse(AsyncHttpServerResponse response) {
-        return new AgentGatewayClient.ResultCallback() {
+    private static HermesClient.ResultCallback jsonResponse(AsyncHttpServerResponse response) {
+        return new HermesClient.ResultCallback() {
             @Override public void onSuccess(JSONObject result) { sendJson(response, 200, result); }
             @Override public void onError(String code, String message) {
                 sendError(response, statusForCallbackError(code), code, message);
@@ -1012,12 +972,12 @@ public final class LocalRuntimeServer {
         };
     }
 
-    private AgentGatewayClient.ResultCallback idempotentJsonResponse(
+    private HermesClient.ResultCallback idempotentJsonResponse(
             AsyncHttpServerResponse response,
             int successCode,
             String operationKey
     ) {
-        return new AgentGatewayClient.ResultCallback() {
+        return new HermesClient.ResultCallback() {
             @Override public void onSuccess(JSONObject result) {
                 cacheOperation(operationKey, result);
                 sendJson(response, successCode, result);
@@ -1046,6 +1006,7 @@ public final class LocalRuntimeServer {
                 return 403;
             case "NOT_FOUND":
                 return 404;
+            case "TURN_BUSY":
             case "CONFLICT":
             case "TOOL_REJECTED":
             case "TURN_CANCELLED":

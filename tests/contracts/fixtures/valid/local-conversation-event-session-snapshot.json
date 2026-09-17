@@ -1,0 +1,14 @@
+{
+  "protocolVersion": "2.0",
+  "eventId": "10000000-0000-4000-8000-000000000002",
+  "sequence": 1,
+  "sessionId": "20000000-0000-4000-8000-000000000001",
+  "turnId": null,
+  "type": "session.snapshot",
+  "timestamp": "2026-07-17T08:00:01.000Z",
+  "data": {
+    "state": "active",
+    "lastSequence": 0,
+    "activeTurnId": null
+  }
+}

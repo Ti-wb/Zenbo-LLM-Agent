@@ -3,6 +3,7 @@ export function createRuntimeTimers(options = {}) {
   const clearTimeoutImpl = options.clearTimeoutImpl || globalThis.clearTimeout?.bind(globalThis);
   let resumeTimer = null;
   let inactivityTimer = null;
+  let turnRetryTimer = null;
 
   function replace(current, callback, delay) {
     if (current !== null) clearTimeoutImpl?.(current);
@@ -10,6 +11,16 @@ export function createRuntimeTimers(options = {}) {
   }
 
   return {
+    scheduleTurnRetry(callback) {
+      turnRetryTimer = replace(turnRetryTimer, () => {
+        turnRetryTimer = null;
+        callback();
+      }, 500);
+    },
+    clearTurnRetry() {
+      if (turnRetryTimer !== null) clearTimeoutImpl?.(turnRetryTimer);
+      turnRetryTimer = null;
+    },
     scheduleResume(callback) {
       resumeTimer = replace(resumeTimer, () => {
         resumeTimer = null;
@@ -33,6 +44,7 @@ export function createRuntimeTimers(options = {}) {
     clearAll() {
       this.clearResume();
       this.clearInactivity();
+      this.clearTurnRetry();
     },
   };
 }

@@ -25,6 +25,7 @@ const localErrorCodes = new Set([
   'GATEWAY_OFFLINE',
   'SESSION_EXPIRED',
   'TURN_CANCELLED',
+  'TURN_BUSY',
   'ROBOT_INITIALIZING',
   'ROBOT_UNAVAILABLE',
   'TOOL_REJECTED',
@@ -39,7 +40,7 @@ const localErrorCodes = new Set([
   'INVALID_SETTINGS',
 ]);
 
-const envelopeKeys = new Set(['protocolVersion', 'eventId', 'type', 'timestamp', 'data']);
+const envelopeKeys = new Set(['protocolVersion', 'eventId', 'type', 'timestamp', 'sequence', 'data']);
 
 function hasExactKeys(value, required, optional = []) {
   const allowed = new Set([...required, ...optional]);
@@ -70,7 +71,8 @@ export function decodeLocalControl(envelope) {
     !envelope ||
     typeof envelope !== 'object' ||
     Object.keys(envelope).some((key) => !envelopeKeys.has(key)) ||
-    envelope.protocolVersion !== '1.0' ||
+    envelope.protocolVersion !== '2.0' ||
+    !Number.isInteger(envelope.sequence) || envelope.sequence < 1 ||
     !isUuid(envelope.eventId) ||
     !isDateTime(envelope.timestamp) ||
     !envelope.data ||

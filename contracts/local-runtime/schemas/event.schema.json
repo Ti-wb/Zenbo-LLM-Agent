@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zenbo-k.local/contracts/local-runtime/event.schema.json",
   "title": "Zenbo Local Runtime WebSocket event",
-  "description": "Either an unchanged replayable Agent Gateway envelope or an ephemeral local control envelope.",
+  "description": "Native-owned conversation or control event. Every frame advances the local sequence.",
   "oneOf": [
     {
-      "$ref": "../../agent-gateway/schemas/ws-envelope.schema.json"
+      "$ref": "./conversation-event.schema.json"
     },
     {
       "$ref": "#/$defs/localControlEnvelope"
@@ -15,10 +15,22 @@
     "localControlEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocolVersion", "eventId", "type", "timestamp", "data"],
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "sequence",
+        "type",
+        "timestamp",
+        "data"
+      ],
       "properties": {
-        "protocolVersion": { "const": "1.0" },
-        "eventId": { "type": "string", "format": "uuid" },
+        "protocolVersion": {
+          "const": "2.0"
+        },
+        "eventId": {
+          "type": "string",
+          "format": "uuid"
+        },
         "type": {
           "enum": [
             "local.gateway.state",
@@ -27,32 +39,57 @@
             "local.interaction"
           ]
         },
-        "timestamp": { "type": "string", "format": "date-time" },
-        "data": { "type": "object" }
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "data": {
+          "type": "object"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "oneOf": [
         {
           "properties": {
-            "type": { "const": "local.gateway.state" },
-            "data": { "$ref": "#/$defs/gatewayState" }
+            "type": {
+              "const": "local.gateway.state"
+            },
+            "data": {
+              "$ref": "#/$defs/gatewayState"
+            }
           }
         },
         {
           "properties": {
-            "type": { "const": "local.robot.state" },
-            "data": { "$ref": "#/$defs/robotState" }
+            "type": {
+              "const": "local.robot.state"
+            },
+            "data": {
+              "$ref": "#/$defs/robotState"
+            }
           }
         },
         {
           "properties": {
-            "type": { "const": "local.screen.state" },
-            "data": { "$ref": "#/$defs/screenState" }
+            "type": {
+              "const": "local.screen.state"
+            },
+            "data": {
+              "$ref": "#/$defs/screenState"
+            }
           }
         },
         {
           "properties": {
-            "type": { "const": "local.interaction" },
-            "data": { "$ref": "#/$defs/interaction" }
+            "type": {
+              "const": "local.interaction"
+            },
+            "data": {
+              "$ref": "#/$defs/interaction"
+            }
           }
         }
       ]
@@ -60,36 +97,63 @@
     "gatewayState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state"],
+      "required": [
+        "state"
+      ],
       "properties": {
-        "state": { "$ref": "../openapi.json#/components/schemas/GatewayState" },
-        "detail": { "type": "string", "maxLength": 512 },
-        "errorCode": { "$ref": "../openapi.json#/components/schemas/LocalErrorCode" }
+        "state": {
+          "$ref": "../openapi.json#/components/schemas/GatewayState"
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "errorCode": {
+          "$ref": "../openapi.json#/components/schemas/LocalErrorCode"
+        }
       }
     },
     "robotState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ready", "moving"],
+      "required": [
+        "ready",
+        "moving"
+      ],
       "properties": {
-        "ready": { "type": "boolean" },
-        "moving": { "type": "boolean" }
+        "ready": {
+          "type": "boolean"
+        },
+        "moving": {
+          "type": "boolean"
+        }
       }
     },
     "screenState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state"],
+      "required": [
+        "state"
+      ],
       "properties": {
-        "state": { "enum": ["ON", "OFF"] }
+        "state": {
+          "enum": [
+            "ON",
+            "OFF"
+          ]
+        }
       }
     },
     "interaction": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
-        "kind": { "const": "HEAD_PRESS" }
+        "kind": {
+          "const": "HEAD_PRESS"
+        }
       }
     }
   }

@@ -3,7 +3,8 @@ import { decodeLocalControl } from './localControl';
 
 function localControl(type, data, extra = {}) {
   return {
-    protocolVersion: '1.0',
+    protocolVersion: '2.0',
+    sequence: 1,
     eventId: '00000000-0000-4000-8000-000000000001',
     type,
     timestamp: '2026-07-17T08:00:00.000Z',
@@ -22,13 +23,13 @@ describe('decodeLocalControl', () => {
     ['local.robot.state', { ready: true, moving: false }, { kind: 'robot', ready: true, moving: false }],
     ['local.screen.state', { state: 'OFF' }, { kind: 'screen', state: 'OFF' }],
     ['local.interaction', { kind: 'HEAD_PRESS' }, { kind: 'interaction', interaction: 'HEAD_PRESS' }],
-  ])('decodes %s without touching the remote cursor', (type, data, expected) => {
+  ])('decodes %s with the Native cursor', (type, data, expected) => {
     expect(decodeLocalControl(localControl(type, data))).toEqual(expected);
   });
 
-  it('rejects cursor-bearing or malformed local controls', () => {
+  it('rejects missing cursors and malformed local controls', () => {
     expect(
-      decodeLocalControl(localControl('local.screen.state', { state: 'OFF' }, { sequence: 4 })),
+      decodeLocalControl(localControl('local.screen.state', { state: 'OFF' }, { sequence: undefined })),
     ).toMatchObject({ kind: 'invalid' });
     expect(decodeLocalControl(localControl('local.interaction', { kind: 'CLICK' }))).toMatchObject(
       { kind: 'invalid' },
@@ -40,7 +41,7 @@ describe('decodeLocalControl', () => {
     ).toMatchObject({ kind: 'invalid' });
   });
 
-  it('leaves canonical Gateway envelopes to the remote validator', () => {
+  it('leaves Native conversation envelopes to the conversation validator', () => {
     expect(decodeLocalControl({ type: 'stt.final', sequence: 3, data: {} })).toBeNull();
   });
 });

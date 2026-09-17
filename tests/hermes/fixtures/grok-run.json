@@ -1,0 +1,131 @@
+{
+  "kind": "recorded-anonymized-live-run",
+  "source": "https://hermes.internal.c3land.org/hermes-api/p/grok",
+  "recordedAt": "2026-09-17T05:25:10Z",
+  "normalization": "Only session/run identifiers and session title replaced consistently; no Authorization headers recorded. Input is a deliberately non-personal echo marker.",
+  "modelSelection": "request model omitted; selected Hermes profile manages model",
+  "sessionDeleted": true,
+  "steps": [
+    {
+      "label": "session-create",
+      "method": "POST",
+      "path": "/api/sessions",
+      "http_status": 201,
+      "content_type": "application/json; charset=utf-8",
+      "request_body": {
+        "id": "zenbo-fixture-session",
+        "title": "zenbo-fixture-session",
+        "source": "api_server"
+      },
+      "response": {
+        "object": "hermes.session",
+        "session": {
+          "id": "zenbo-fixture-session",
+          "source": "api_server",
+          "user_id": null,
+          "model": null,
+          "title": "zenbo-fixture-session",
+          "started_at": 1789622710.3628716,
+          "ended_at": null,
+          "end_reason": null,
+          "message_count": 0,
+          "tool_call_count": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "estimated_cost_usd": null,
+          "actual_cost_usd": null,
+          "api_call_count": 0,
+          "parent_session_id": null,
+          "pinned": false,
+          "archived": false,
+          "hidden": false,
+          "has_system_prompt": false,
+          "has_model_config": false
+        }
+      }
+    },
+    {
+      "label": "echo-submit",
+      "method": "POST",
+      "path": "/v1/runs",
+      "http_status": 202,
+      "content_type": "application/json; charset=utf-8",
+      "request_body": {
+        "input": "Return exactly HERMES_ZENBO_RUNS_SMOKE_OK.",
+        "session_id": "zenbo-fixture-session",
+        "instructions": "This is a pure text echo transport test. Do not use tools, run commands, access files, call services, send messages, or perform physical actions. Return only the exact marker requested."
+      },
+      "response": {
+        "run_id": "run_fixture_completed",
+        "status": "started",
+        "replayed": false
+      }
+    },
+    {
+      "label": "echo-events",
+      "method": "GET",
+      "path": "/v1/runs/run_fixture_completed/events",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "request_body": null,
+      "response": "data: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.31609, \"delta\": \"HER\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.3171184, \"delta\": \"MES\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.3572571, \"delta\": \"_\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.357866, \"delta\": \"ZEN\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.358261, \"delta\": \"BO\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.3598514, \"delta\": \"_\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4160447, \"delta\": \"RUN\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4179835, \"delta\": \"S\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4185295, \"delta\": \"_\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4199243, \"delta\": \"SMO\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.456693, \"delta\": \"KE\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4573805, \"delta\": \"_\"}\n\ndata: {\"event\": \"message.delta\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.4578607, \"delta\": \"OK\"}\n\ndata: {\"event\": \"reasoning.available\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.7101543, \"text\": \"HERMES_ZENBO_RUNS_SMOKE_OK\"}\n\ndata: {\"event\": \"run.completed\", \"run_id\": \"run_fixture_completed\", \"timestamp\": 1789622712.7402077, \"output\": \"HERMES_ZENBO_RUNS_SMOKE_OK\", \"usage\": {\"input_tokens\": 13391, \"output_tokens\": 56, \"total_tokens\": 13447}}\n\n: stream closed\n\n"
+    },
+    {
+      "label": "echo-status-01",
+      "method": "GET",
+      "path": "/v1/runs/run_fixture_completed",
+      "http_status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "request_body": null,
+      "response": {
+        "object": "hermes.run",
+        "run_id": "run_fixture_completed",
+        "status": "completed",
+        "updated_at": 1789622712.7394378,
+        "created_at": 1789622710.4316068,
+        "session_id": "zenbo-fixture-session",
+        "model": "hermes-agent",
+        "last_event": "run.completed",
+        "output": "HERMES_ZENBO_RUNS_SMOKE_OK",
+        "usage": {
+          "input_tokens": 13391,
+          "output_tokens": 56,
+          "total_tokens": 13447
+        }
+      }
+    },
+    {
+      "label": "echo-idempotent-replay",
+      "method": "POST",
+      "path": "/v1/runs",
+      "http_status": 202,
+      "content_type": "application/json; charset=utf-8",
+      "request_body": {
+        "input": "Return exactly HERMES_ZENBO_RUNS_SMOKE_OK.",
+        "session_id": "zenbo-fixture-session",
+        "instructions": "This is a pure text echo transport test. Do not use tools, run commands, access files, call services, send messages, or perform physical actions. Return only the exact marker requested."
+      },
+      "response": {
+        "run_id": "run_fixture_completed",
+        "status": "completed",
+        "replayed": true
+      }
+    },
+    {
+      "label": "session-delete",
+      "method": "DELETE",
+      "path": "/api/sessions/zenbo-fixture-session",
+      "http_status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "request_body": null,
+      "response": {
+        "object": "hermes.session.deleted",
+        "id": "zenbo-fixture-session",
+        "deleted": true
+      }
+    }
+  ]
+}

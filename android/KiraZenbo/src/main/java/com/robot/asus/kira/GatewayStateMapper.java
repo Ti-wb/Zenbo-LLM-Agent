@@ -15,6 +15,7 @@ final class GatewayStateMapper {
     }
 
     static String normalize(String state) {
+        if ("NOT_CONFIGURED".equals(state)) return "UNCONFIGURED";
         return STATES.contains(state) ? state : "OFFLINE";
     }
 }

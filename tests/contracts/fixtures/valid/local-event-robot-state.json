@@ -1,10 +1,11 @@
 {
-  "protocolVersion": "1.0",
+  "protocolVersion": "2.0",
   "eventId": "90000000-0000-4000-8000-000000000002",
   "type": "local.robot.state",
   "timestamp": "2026-07-17T08:00:01.000Z",
   "data": {
     "ready": true,
     "moving": true
-  }
+  },
+  "sequence": 1
 }

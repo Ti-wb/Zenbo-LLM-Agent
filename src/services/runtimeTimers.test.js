@@ -2,6 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeTimers } from './runtimeTimers';
 
 describe('createRuntimeTimers', () => {
+  it('retries a busy turn after 500 ms and cancels pending retries with all activity', () => {
+    vi.useFakeTimers();
+    const timers = createRuntimeTimers();
+    const retried = vi.fn();
+    timers.scheduleTurnRetry(retried);
+    vi.advanceTimersByTime(499);
+    expect(retried).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(retried).toHaveBeenCalledOnce();
+    timers.scheduleTurnRetry(retried);
+    timers.clearAll();
+    vi.advanceTimersByTime(500);
+    expect(retried).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
   it('replaces timers and releases every pending callback during teardown', () => {
     vi.useFakeTimers();
     const timers = createRuntimeTimers();

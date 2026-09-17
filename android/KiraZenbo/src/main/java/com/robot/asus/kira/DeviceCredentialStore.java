@@ -22,12 +22,12 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
-/** Stores one device-scoped bearer credential encrypted by Android Keystore. */
+/** Stores the Hermes bearer API key encrypted by Android Keystore. */
 public final class DeviceCredentialStore {
     private static final String TAG = "DeviceCredentialStore";
-    private static final String KEY_ALIAS = "zenbo.agent.gateway.device.v1";
+    private static final String KEY_ALIAS = "zenbo.hermes.api.key.v1";
     private static final String ANDROID_KEY_STORE = "AndroidKeyStore";
-    private static final String FILE_NAME = "gateway-credential-v1.json";
+    private static final String FILE_NAME = "hermes-api-key-v1.json";
 
     private final File credentialFile;
     private final AtomicFile atomicCredentialFile;
@@ -45,8 +45,8 @@ public final class DeviceCredentialStore {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             throw new IllegalStateException("Android Keystore AES-GCM requires API 23");
         }
-        if (token == null || token.trim().isEmpty()) {
-            throw new IllegalArgumentException("Device token must not be empty");
+        if (token == null || token.length() < 16 || token.length() > 4096 || !token.matches("[!-~]+")) {
+            throw new IllegalArgumentException("Hermes API key must contain 16 to 4096 printable ASCII characters");
         }
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey());
@@ -79,14 +79,14 @@ public final class DeviceCredentialStore {
             cipher.init(Cipher.DECRYPT_MODE, getExistingKey(), new GCMParameterSpec(128, iv));
             return new String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8);
         } catch (Exception error) {
-            Log.e(TAG, "Encrypted gateway credential is unavailable; re-pairing is required", error);
+            Log.e(TAG, "Encrypted Hermes API key is unavailable; configuration is required", error);
             return null;
         }
     }
 
     public synchronized void clear() {
         if (credentialFile.exists() && !credentialFile.delete()) {
-            Log.w(TAG, "Could not delete gateway credential file");
+            Log.w(TAG, "Could not delete Hermes API key file");
         }
     }
 
@@ -95,7 +95,7 @@ public final class DeviceCredentialStore {
         keyStore.load(null);
         KeyStore.Entry entry = keyStore.getEntry(KEY_ALIAS, null);
         if (!(entry instanceof KeyStore.SecretKeyEntry)) {
-            throw new IllegalStateException("Gateway key is missing");
+            throw new IllegalStateException("Hermes key is missing");
         }
         return ((KeyStore.SecretKeyEntry) entry).getSecretKey();
     }

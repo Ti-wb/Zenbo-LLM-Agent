@@ -100,28 +100,28 @@ public class RobotApiService extends Service {
         createNotificationChannel();
         registerScreenEventReceiver();
 
-        // Build a high-priority foreground notification with a full-screen intent
-        // to bring MainActivity (GeckoView UI) to the foreground when the service starts.
-        Intent fullScreenIntent = new Intent(this, MainActivity.class);
-        fullScreenIntent.setAction(Intent.ACTION_MAIN);
-        fullScreenIntent.addCategory(Intent.CATEGORY_LAUNCHER);
-        fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        // Keep the runtime alive without a call-style overlay covering the device UI.
+        Intent contentIntent = new Intent(this, MainActivity.class);
+        contentIntent.setAction(Intent.ACTION_MAIN);
+        contentIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+        contentIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
 
-        PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
+        PendingIntent contentPendingIntent = PendingIntent.getActivity(
                 this,
                 0,
-                fullScreenIntent,
+                contentIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
         );
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Zenbo API Service")
                 .setContentText("Robot API server is running.")
-                .setSmallIcon(R.mipmap.ic_launcher) // Replace with your app's icon
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setFullScreenIntent(fullScreenPendingIntent, true)
-                .setContentIntent(fullScreenPendingIntent)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(contentPendingIntent)
                 .build();
 
         startForeground(NOTIFICATION_ID, notification);
@@ -371,7 +371,7 @@ public class RobotApiService extends Service {
             NotificationChannel serviceChannel = new NotificationChannel(
                     CHANNEL_ID,
                     "Robot API Service Channel",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_LOW
             );
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(serviceChannel);

@@ -1,0 +1,16 @@
+{
+  "protocolVersion": "2.0",
+  "eventId": "10000000-0000-4000-8000-000000000008",
+  "sequence": 7,
+  "sessionId": "20000000-0000-4000-8000-000000000001",
+  "turnId": "40000000-0000-4000-8000-000000000001",
+  "type": "turn.error",
+  "timestamp": "2026-07-17T08:00:07.000Z",
+  "data": {
+    "error": {
+      "code": "PROVIDER_TIMEOUT",
+      "message": "The agent provider did not respond in time.",
+      "retryable": true
+    }
+  }
+}

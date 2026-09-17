@@ -31,7 +31,7 @@ export const Emotion = Object.freeze({
   EXCITED: 'EXCITED',
 });
 
-export const GatewayEventType = Object.freeze({
+export const RuntimeEventType = Object.freeze({
   SESSION_READY: 'session.ready',
   SESSION_SNAPSHOT: 'session.snapshot',
   TURN_ACCEPTED: 'turn.accepted',
@@ -45,9 +45,13 @@ export const GatewayEventType = Object.freeze({
   TURN_CANCELLED: 'turn.cancelled',
   SESSION_EXPIRED: 'session.expired',
   SESSION_CLOSED: 'session.closed',
+  LOCAL_GATEWAY_STATE: 'local.gateway.state',
+  LOCAL_ROBOT_STATE: 'local.robot.state',
+  LOCAL_SCREEN_STATE: 'local.screen.state',
+  LOCAL_INTERACTION: 'local.interaction',
 });
 
-const gatewayEventTypes = new Set(Object.values(GatewayEventType));
+const runtimeEventTypes = new Set(Object.values(RuntimeEventType));
 
 // Upper-case aliases keep state-machine call sites terse while exporting named enums.
 export const GATEWAY_STATES = GatewayState;
@@ -57,10 +61,10 @@ export const TURN_STATES = TurnState;
 export const SUPPORTED_EMOTIONS = Object.freeze(Object.values(Emotion));
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  gatewayUrl: '',
+  gatewayUrl: 'https://hermes.internal.c3land.org/hermes-api/p/grok/v1',
   trustMode: 'SYSTEM_TRUST',
   certificatePin: '',
-  agentProfile: 'default',
+  hasApiKey: false,
   robotName: 'Zenbo K',
   language: 'zh-TW',
   onboardingComplete: false,
@@ -101,6 +105,8 @@ export const useRuntimeStore = defineStore('runtime', {
     mouthLevel: 0,
     sleeping: false,
     micEnabled: false,
+    waitingForPreviousTurn: false,
+    recoveryNotice: '',
     settingsOpen: false,
     error: '',
     settings: { ...DEFAULT_SETTINGS },
@@ -127,6 +133,10 @@ export const useRuntimeStore = defineStore('runtime', {
 
     statusLabel(state) {
       if (state.sleeping) return '休眠中';
+      if (state.waitingForPreviousTurn) return '等待前一個回合結束';
+      if (state.recoveryNotice && [TURN_STATES.IDLE, TURN_STATES.LISTENING].includes(state.turnState)) {
+        return state.recoveryNotice;
+      }
       const labels = {
         [TURN_STATES.IDLE]: '準備好了',
         [TURN_STATES.LISTENING]: '我在聽',
@@ -144,8 +154,10 @@ export const useRuntimeStore = defineStore('runtime', {
 
   actions: {
     transition(event, payload = {}) {
+      if (['speech_started', 'wake', 'failed'].includes(event)) this.recoveryNotice = '';
       if (['reset', 'speech_started', 'failed', 'wake'].includes(event)) {
         this.resetEmotion();
+        this.waitingForPreviousTurn = false;
       }
       this.turnState = nextTurnState(this.turnState, event);
       if (payload.turnId !== undefined) this.activeTurnId = payload.turnId || '';
@@ -163,28 +175,22 @@ export const useRuntimeStore = defineStore('runtime', {
     },
 
     setSession(session = {}) {
-      if (session.sessionId !== undefined || session.remoteSessionId !== undefined) {
-        this.sessionId = session.sessionId || session.remoteSessionId || '';
+      if (session.sessionId !== undefined) {
+        this.sessionId = session.sessionId || '';
       }
     },
 
     applyEnvelope(envelope) {
-      if (!gatewayEventTypes.has(envelope?.type)) {
-        this.error = `不支援的 Gateway 事件：${envelope?.type || '(missing)'}`;
+      if (envelope?.protocolVersion !== '2.0') {
+        this.error = 'Native 事件必須使用 Local Runtime 2.0。';
+        return false;
+      }
+      if (!runtimeEventTypes.has(envelope?.type)) {
+        this.error = `不支援的 Native 事件：${envelope?.type || '(missing)'}`;
         return false;
       }
       const sequence = envelope?.sequence;
-      if (envelope.type === GatewayEventType.SESSION_READY) {
-        const resumedAfter = envelope?.data?.resumedAfter;
-        const valid =
-          Number.isInteger(sequence) &&
-          sequence === this.lastSequence &&
-          Number.isInteger(resumedAfter) &&
-          resumedAfter === this.lastSequence;
-        if (!valid) this.error = 'session.ready 與本機事件游標不一致';
-        return valid;
-      }
-      if (envelope.type === GatewayEventType.SESSION_SNAPSHOT) {
+      if (envelope.type === RuntimeEventType.SESSION_SNAPSHOT) {
         const snapshotSequence = envelope?.data?.lastSequence;
         const valid =
           Number.isInteger(sequence) &&
@@ -207,10 +213,7 @@ export const useRuntimeStore = defineStore('runtime', {
     },
 
     commitEnvelope(envelope) {
-      if (
-        envelope?.type === GatewayEventType.SESSION_READY ||
-        envelope?.type === GatewayEventType.SESSION_SNAPSHOT
-      ) return;
+      if (envelope?.type === RuntimeEventType.SESSION_SNAPSHOT) return;
       const sequence = envelope?.sequence;
       if (sequence > this.lastSequence) this.lastSequence = sequence;
     },

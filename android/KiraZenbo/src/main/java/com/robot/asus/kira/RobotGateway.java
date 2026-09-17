@@ -17,10 +17,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** Narrow native boundary between untrusted agent messages and the ASUS RobotAPI. */
-public final class RobotGateway {
-    public interface ResultCallback {
-        void onResult(JSONObject result);
-    }
+public final class RobotGateway implements RobotOperations {
 
     private static final Set<String> ALLOWED_TOOLS = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
             "get_system_status",
@@ -213,8 +210,8 @@ public final class RobotGateway {
         }
         JSONObject manifest = new JSONObject();
         try {
-            manifest.put("protocolVersion", "1.0");
-            manifest.put("manifestVersion", "native-1");
+            manifest.put("protocolVersion", "2.0");
+            manifest.put("manifestVersion", "hermes-zenbo-1");
             manifest.put("tools", tools);
         } catch (JSONException ignored) {
         }

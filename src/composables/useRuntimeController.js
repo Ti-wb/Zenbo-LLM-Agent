@@ -10,7 +10,7 @@ import { publicSettings, runtimeSettingsBody } from '../services/runtimeSettings
 import { ToolOwner, toolOwner } from '../services/toolOwnership';
 import {
   CONNECTION_STATES,
-  GatewayEventType,
+  RuntimeEventType,
   SUPPORTED_EMOTIONS,
   TURN_STATES,
   useRuntimeStore,
@@ -77,14 +77,47 @@ export function useRuntimeController(options = {}) {
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
   let speechTurnId = '';
+  let activePlaylist = null;
+  let pendingVoiceTurn = null;
 
-  const vad = options.vad || useVAD({
+  async function submitPendingVoiceTurn(pending) {
+    if (pendingVoiceTurn !== pending || runtime.sleeping) return;
+    try {
+      const response = await transport.uploadVoiceTurn({
+        turnId: pending.turnId,
+        audio: pending.blob,
+        language: runtime.settings.language,
+      });
+      if (pendingVoiceTurn !== pending || runtime.sleeping) return;
+      pendingVoiceTurn = null;
+      runtime.waitingForPreviousTurn = false;
+      if (response?.type) await handleRuntimeEvent(response);
+      else if (runtime.activeTurnId === pending.turnId && runtime.turnState === TURN_STATES.UPLOADING) {
+        runtime.transition('transcription_started', { turnId: pending.turnId });
+      }
+    } catch (error) {
+      if (pendingVoiceTurn !== pending || runtime.sleeping) return;
+      if (error.code === 'TURN_BUSY') {
+        runtime.waitingForPreviousTurn = true;
+        timers.scheduleTurnRetry(() => { void submitPendingVoiceTurn(pending); });
+        return;
+      }
+      pendingVoiceTurn = null;
+      runtime.waitingForPreviousTurn = false;
+      if (runtime.activeTurnId === pending.turnId &&
+          [TURN_STATES.UPLOADING, TURN_STATES.TRANSCRIBING].includes(runtime.turnState)) {
+        runtime.transition('failed', { turnId: '', error: error.message });
+      } else {
+        runtime.error = error.message;
+      }
+    }
+  }
+
+  const vad = options.vad || (options.createVAD || useVAD)({
     onSpeechStart: async () => {
       if (runtime.sleeping) return;
       timers.clearInactivity();
-      if (playback.isPlaying.value) {
-        await playback.stop('barge-in');
-      }
+      if (playback.isPlaying.value) await stopResponse('barge-in');
       if (runtime.activeTurnId) await transport.cancelTurn(runtime.activeTurnId, 'barge_in');
       speechTurnId = createId();
       runtime.transition('speech_started', { turnId: speechTurnId, error: '' });
@@ -96,29 +129,8 @@ export function useRuntimeController(options = {}) {
       speechTurnId = '';
       await vad.pause();
       runtime.transition('upload_started', { turnId });
-      try {
-        const response = await transport.uploadVoiceTurn({
-          turnId,
-          audio: blob,
-          language: runtime.settings.language,
-        });
-        if (response?.type) await handleRuntimeEvent(response);
-        else if (
-          runtime.activeTurnId === turnId &&
-          runtime.turnState === TURN_STATES.UPLOADING
-        ) {
-          runtime.transition('transcription_started', { turnId });
-        }
-      } catch (error) {
-        if (
-          runtime.activeTurnId === turnId &&
-          [TURN_STATES.UPLOADING, TURN_STATES.TRANSCRIBING].includes(runtime.turnState)
-        ) {
-          runtime.transition('failed', { turnId: '', error: error.message });
-        } else {
-          runtime.error = error.message;
-        }
-      }
+      pendingVoiceTurn = { turnId, blob };
+      await submitPendingVoiceTurn(pendingVoiceTurn);
     },
     onError: (error) => runtime.transition('failed', { error: error.message }),
   });
@@ -127,7 +139,7 @@ export function useRuntimeController(options = {}) {
     name: 'show_emotion',
     owner: 'web',
     version: '1.0.0',
-    description: 'Show an allow-listed emotion on the local Zenbo face.',
+    description: 'Queue an allow-listed emotion for the next local speech playlist.',
     inputSchema: {
       type: 'object',
       required: ['emotion'],
@@ -159,7 +171,7 @@ export function useRuntimeController(options = {}) {
   async function convergeTurnError(message = 'Agent turn failed.') {
     timers.clearAll();
     speechTurnId = '';
-    await Promise.allSettled([vad.pause(), playback.stop('turn-error')]);
+    await Promise.allSettled([vad.pause(), stopResponse('turn-error')]);
     runtime.transition('failed', {
       turnId: '',
       error: message || 'Agent turn failed.',
@@ -167,6 +179,9 @@ export function useRuntimeController(options = {}) {
   }
 
   async function applyAuthoritativeConversation(conversation = {}, errorMessage = '') {
+    if (activePlaylist || pendingVoiceTurn) {
+      await Promise.allSettled([stopResponse('runtime-recovery'), vad.pause()]);
+    }
     runtime.applyConversationSnapshot(conversation);
     transport.resetCursor(runtime.lastSequence);
     if (runtime.turnState === TURN_STATES.ERROR) {
@@ -212,81 +227,156 @@ export function useRuntimeController(options = {}) {
     idempotent: true,
     requiresConfirmation: false,
     handler: async () => {
-      await enterSleep('sleep');
+      // The tool result must be acknowledged before cancelling its parent turn.
+      // Native stops robot motion when it accepts this tool.
+      await enterSleep('sleep', { skipCancel: true });
       return { ok: true, sleeping: true };
     },
   });
 
+  async function stopResponse(reason = 'client-cancelled') {
+    pendingVoiceTurn = null;
+    timers.clearTurnRetry();
+    runtime.waitingForPreviousTurn = false;
+    const playlist = activePlaylist;
+    activePlaylist = null;
+    if (playlist) playlist.cancelled = true;
+    await playback.stop(reason);
+    if (playlist?.current) await playlist.current.interrupt(reason);
+    runtime.mouthLevel = 0;
+    runtime.resetEmotion();
+  }
+
   async function playResponse(envelope) {
     const payload = eventPayload(envelope);
-    const audioPayload = payload;
-    const turnId = envelope.turnId || payload.turnId || runtime.activeTurnId;
-    const playbackMetadata = {
-      artifactId: audioPayload.artifactId,
-    };
-    const reportPlayback = (status, extra = {}) =>
-      transport.sendPlayback(status, turnId, { ...playbackMetadata, ...extra }).catch((error) => {
-        runtime.error = `播放狀態回報失敗：${error.message}`;
-      });
-    let startedReport = Promise.resolve();
-    let terminalReport = null;
-    let failureHandled = false;
-    const reportTerminal = (status, extra = {}) => {
-      if (!terminalReport) {
-        terminalReport = startedReport.then(() => reportPlayback(status, extra));
-      }
-      return terminalReport;
-    };
-    const failPlayback = async (error) => {
-      if (failureHandled) return;
-      failureHandled = true;
-      await reportTerminal('interrupted', { reason: 'playback_error' });
-      runtime.transition('failed', { turnId: '', error: error.message });
-      if (!runtime.sleeping) scheduleListeningResume();
-    };
+    const turnId = envelope.turnId || runtime.activeTurnId;
+    const artifacts = payload.artifacts;
+    if (!Array.isArray(artifacts) || !artifacts.length ||
+        artifacts.some((artifact) => !artifact?.artifactId)) {
+      await convergeTurnError('Native 未提供有效的語音播放清單。');
+      return;
+    }
+    if (activePlaylist) {
+      await convergeTurnError('Native 重複送出同一回合的語音播放清單。');
+      return;
+    }
+    const playlist = { turnId, artifacts, cancelled: false, started: false, current: null };
+    activePlaylist = playlist;
+    const isCurrent = () => activePlaylist === playlist && !playlist.cancelled;
     runtime.transition('synthesis_started', { turnId });
     timers.clearAll();
-    try {
-      const blob = await transport.resolveAudio(audioPayload);
-      await vad.pause();
-      await playback.play(blob, {
-        onStarted: () => {
-          runtime.activatePendingEmotion();
-          runtime.transition('playback_started', { turnId });
-          startedReport = reportPlayback('started');
-        },
-        onEnded: async () => {
-          await reportTerminal('completed');
-          runtime.transition('reset', { turnId: '' });
-          if (!runtime.sleeping) scheduleListeningResume();
-        },
-        onInterrupted: (reason) => {
-          runtime.resetEmotion();
-          const reasons = {
-            'barge-in': 'barge_in',
-            sleep: 'screen_off',
-            'screen-off': 'screen_off',
-          };
-          void reportTerminal('interrupted', {
-            reason: reasons[reason] || 'client_cancelled',
+
+    async function playSegment(index) {
+      if (!isCurrent()) return;
+      const artifact = artifacts[index];
+      let startedReport = Promise.resolve();
+      let terminalReport = null;
+      let segmentTerminal = false;
+      const reportPlayback = (status, extra = {}) =>
+        transport.sendPlayback(status, turnId, { artifactId: artifact.artifactId, ...extra })
+          .catch((error) => {
+            if (isCurrent()) runtime.error = `播放狀態回報失敗：${error.message}`;
           });
-        },
-        onError: (error) => void failPlayback(error),
-      });
-    } catch (error) {
-      await failPlayback(error);
+      const reportTerminal = (status, extra = {}) => {
+        if (!terminalReport) {
+          terminalReport = startedReport.then(() => reportPlayback(status, extra));
+        }
+        return terminalReport;
+      };
+      const interrupt = async (reason) => {
+        segmentTerminal = true;
+        const reasons = {
+          'barge-in': 'barge_in',
+          sleep: 'screen_off',
+          'screen-off': 'screen_off',
+        };
+        await reportTerminal('interrupted', {
+          reason: reasons[reason] || 'client_cancelled',
+        });
+      };
+      playlist.current = { interrupt };
+      const failPlayback = async (error) => {
+        if (!isCurrent() || segmentTerminal) return;
+        segmentTerminal = true;
+        await reportTerminal('interrupted', { reason: 'playback_error' });
+        if (!isCurrent()) return;
+        activePlaylist = null;
+        playlist.cancelled = true;
+        await playback.stop('playback-error');
+        runtime.transition('failed', { turnId: '', error: error.message });
+      };
+      try {
+        const blob = await transport.resolveAudio(artifact);
+        if (!isCurrent()) return;
+        await vad.pause();
+        if (!isCurrent()) return;
+        await playback.play(blob, {
+          onStarted: () => {
+            if (!isCurrent() || segmentTerminal) return;
+            if (!playlist.started) {
+              playlist.started = true;
+              runtime.activatePendingEmotion();
+            }
+            runtime.transition('playback_started', { turnId });
+            startedReport = reportPlayback('started');
+          },
+          onEnded: async () => {
+            if (!isCurrent() || segmentTerminal) return;
+            segmentTerminal = true;
+            await reportTerminal('completed');
+            if (!isCurrent()) return;
+            if (index + 1 < artifacts.length) {
+              await playSegment(index + 1);
+              return;
+            }
+            activePlaylist = null;
+            runtime.transition('reset', { turnId: '' });
+            if (!runtime.sleeping) scheduleListeningResume();
+          },
+          onInterrupted: (reason) => {
+            void interrupt(reason);
+            if (isCurrent()) {
+              activePlaylist = null;
+              playlist.cancelled = true;
+              runtime.resetEmotion();
+            }
+          },
+          onError: (error) => void failPlayback(error),
+        });
+      } catch (error) {
+        await failPlayback(error);
+      }
     }
+    await playSegment(0);
   }
 
   async function handleRuntimeEvent(envelope) {
     if (!envelope) return;
     const localControl = decodeLocalControl(envelope);
     if (localControl) {
-      switch (localControl.kind) {
-        case 'gateway': {
-          await refreshAuthoritativeRuntime(localControl.detail);
-          break;
+      if (localControl.kind === 'invalid') {
+        transport.failProtocol(new Error(localControl.message));
+        return;
+      }
+      if (envelope.sequence <= runtime.lastSequence) return;
+      // Native recovery controls may jump over evicted history. Refresh the
+      // authoritative conversation instead of applying an incomplete sequence.
+      if (localControl.kind === 'gateway' && envelope.sequence !== runtime.lastSequence + 1) {
+        await refreshAuthoritativeRuntime(localControl.detail);
+        if (runtime.connectionState === CONNECTION_STATES.READY) {
+          runtime.recoveryNotice = '連線已恢復，請重新說一次';
         }
+        return;
+      }
+      if (!runtime.applyEnvelope(envelope)) {
+        transport.failProtocol(new Error(runtime.error));
+        return;
+      }
+      switch (localControl.kind) {
+        case 'gateway':
+          runtime.setConnection(localControl.state, localControl.detail);
+          if (localControl.state === CONNECTION_STATES.READY) await enterListening();
+          break;
         case 'robot':
           runtime.robotReady = localControl.ready;
           runtime.robotMoving = localControl.moving;
@@ -297,52 +387,43 @@ export function useRuntimeController(options = {}) {
         case 'interaction':
           await toggleListening();
           break;
-        case 'invalid':
-          transport.failProtocol(new Error(localControl.message));
-          break;
         default:
           break;
       }
+      runtime.commitEnvelope(envelope);
+      transport.acknowledge(envelope.sequence);
       return;
     }
     const payload = eventPayload(envelope);
     const type = envelope.type || '';
     const sequence = Number(envelope.sequence || 0);
-    const supersededSessionReady =
-      type === GatewayEventType.SESSION_READY &&
-      Number.isInteger(sequence) &&
-      sequence >= 0 &&
-      sequence === payload.resumedAfter &&
-      sequence < runtime.lastSequence;
-    if (supersededSessionReady) return;
     if (!runtime.applyEnvelope(envelope)) {
       const isRetainedDuplicate =
-        Object.values(GatewayEventType).includes(envelope.type) &&
-        envelope.type !== GatewayEventType.SESSION_READY &&
-        envelope.type !== GatewayEventType.SESSION_SNAPSHOT &&
+        Object.values(RuntimeEventType).includes(envelope.type) &&
+        envelope.type !== RuntimeEventType.SESSION_SNAPSHOT &&
         Number.isInteger(sequence) &&
         sequence > 0 &&
         sequence <= runtime.lastSequence;
       if (!isRetainedDuplicate) {
         transport.failProtocol(
-          new Error(runtime.error || '收到不合法的 Agent Gateway 事件。'),
+          new Error(runtime.error || '收到不合法的 Native 事件。'),
         );
       }
       return;
     }
-    const turnId = envelope.turnId || payload.turnId || '';
+    const turnId = envelope.turnId || '';
     const toolCallCanRun =
       runtime.turnState === TURN_STATES.THINKING ||
       runtime.turnState === TURN_STATES.AWAITING_TOOL;
     const isCurrentToolCall =
-      type === GatewayEventType.TOOL_CALL &&
+      type === RuntimeEventType.TOOL_CALL &&
       Boolean(turnId) &&
       Boolean(runtime.activeTurnId) &&
       turnId === runtime.activeTurnId &&
       toolCallCanRun;
-    const owner = type === GatewayEventType.TOOL_CALL ? toolOwner(payload.toolName) : null;
+    const owner = type === RuntimeEventType.TOOL_CALL ? toolOwner(payload.toolName) : null;
 
-    if (type === GatewayEventType.TOOL_CALL && owner === ToolOwner.NATIVE) {
+    if (type === RuntimeEventType.TOOL_CALL && owner === ToolOwner.NATIVE) {
       if (isCurrentToolCall) runtime.transition('tool_started', { turnId });
       runtime.commitEnvelope(envelope);
       transport.acknowledge(envelope.sequence);
@@ -350,7 +431,7 @@ export function useRuntimeController(options = {}) {
     }
 
     if (
-      type === GatewayEventType.TOOL_CALL &&
+      type === RuntimeEventType.TOOL_CALL &&
       !isCurrentToolCall
     ) {
       await transport.sendToolResult({
@@ -368,16 +449,11 @@ export function useRuntimeController(options = {}) {
       return;
     }
 
-    const canBindAcceptedTurn =
-      type === GatewayEventType.TURN_ACCEPTED &&
-      Boolean(runtime.activeTurnId) &&
-      [TURN_STATES.UPLOADING, TURN_STATES.TRANSCRIBING].includes(runtime.turnState);
     const currentTurnIsTerminal = [TURN_STATES.IDLE, TURN_STATES.ERROR].includes(
       runtime.turnState,
     );
     if (
       turnId &&
-      !canBindAcceptedTurn &&
       (currentTurnIsTerminal || turnId !== runtime.activeTurnId)
     ) {
       runtime.commitEnvelope(envelope);
@@ -386,7 +462,7 @@ export function useRuntimeController(options = {}) {
     }
 
     switch (type) {
-      case GatewayEventType.SESSION_READY:
+      case RuntimeEventType.SESSION_READY:
         runtime.setConnection(CONNECTION_STATES.READY);
         if (
           !runtime.sleeping &&
@@ -396,60 +472,84 @@ export function useRuntimeController(options = {}) {
           await enterListening();
         }
         break;
-      case GatewayEventType.SESSION_SNAPSHOT:
+      case RuntimeEventType.SESSION_SNAPSHOT:
         await applyAuthoritativeConversation(await transport.getConversation());
         return;
-      case GatewayEventType.TURN_ACCEPTED:
+      case RuntimeEventType.TURN_ACCEPTED:
         runtime.transition('transcription_started', { turnId });
         break;
-      case GatewayEventType.STT_FINAL:
+      case RuntimeEventType.STT_FINAL:
         runtime.transition('thinking_started', {
           turnId,
-          transcript: payload.text || payload.transcript || '',
+          transcript: payload.text || '',
         });
         break;
-      case GatewayEventType.AGENT_THINKING:
+      case RuntimeEventType.AGENT_THINKING:
         runtime.transition('thinking_started', { turnId });
         break;
-      case GatewayEventType.AGENT_TEXT_FINAL:
+      case RuntimeEventType.AGENT_TEXT_FINAL:
         runtime.transition(payload.final === false ? 'thinking_started' : 'synthesis_started', {
           turnId,
-          assistantText: payload.text || payload.output || '',
+          assistantText: payload.text || '',
         });
         break;
-      case GatewayEventType.TOOL_CALL: {
+      case RuntimeEventType.TOOL_CALL: {
         runtime.transition('tool_started', { turnId });
-        const result = await tools.execute(envelope, {
-          onAccepted: (accepted) => transport.sendToolResult(accepted),
-        });
-        await transport.sendToolResult(result);
+        let sleepAccepted = false;
+        try {
+          const result = await tools.execute(envelope, {
+            onAccepted: (accepted) => {
+              sleepAccepted = payload.toolName === 'go_to_sleep';
+              return transport.sendToolResult(accepted);
+            },
+          });
+          await transport.sendToolResult(result);
+        } catch (error) {
+          if (!sleepAccepted) throw error;
+          // An ACK can be lost after Native has committed the result. Do not
+          // send another terminal result; preserve sleep and request safe stop.
+          runtime.error = '已進入休眠，但休眠工具結果回報失敗；已要求停止目前回合。';
+        } finally {
+          if (sleepAccepted) {
+            const localSleep = runtime.sleeping
+              ? Promise.resolve()
+              : enterSleep('sleep', { skipCancel: true });
+            await transport.cancelTurn(turnId, 'sleep');
+            await localSleep;
+          }
+        }
         break;
       }
-      case GatewayEventType.TTS_READY:
-        await playResponse(envelope);
+      case RuntimeEventType.TTS_READY:
+        // Artifact downloads and autoplay promises must not block later Native
+        // cancellation, head-press, or screen-off events in the event queue.
+        void playResponse(envelope).catch((error) => convergeTurnError(error.message));
         break;
-      case GatewayEventType.TURN_COMPLETED:
+      case RuntimeEventType.TURN_COMPLETED:
         runtime.activeTurnId = '';
-        if (!playback.isPlaying.value) {
+        if (!activePlaylist && !playback.isPlaying.value) {
           runtime.transition('reset', { turnId: '' });
           if (!runtime.sleeping) scheduleListeningResume();
         }
         break;
-      case GatewayEventType.TURN_ERROR:
+      case RuntimeEventType.TURN_ERROR:
         await convergeTurnError(
           payload.message || payload.error?.message || payload.error || 'Agent turn failed.',
         );
         break;
-      case GatewayEventType.TURN_CANCELLED:
+      case RuntimeEventType.TURN_CANCELLED:
+        await stopResponse('client-cancelled');
         runtime.transition('reset', { turnId: '' });
         break;
-      case GatewayEventType.SESSION_CLOSED:
-      case GatewayEventType.SESSION_EXPIRED:
+      case RuntimeEventType.SESSION_CLOSED:
+      case RuntimeEventType.SESSION_EXPIRED:
+        await stopResponse('session-closed');
+        await vad.pause();
         runtime.setConnection(
           payload.reason === 'credential_revoked'
             ? CONNECTION_STATES.AUTH_ERROR
             : CONNECTION_STATES.OFFLINE,
-          'Agent session 已結束，請檢查設定後重新連線。',
+          'Native session 已結束，請檢查設定後重新連線。',
         );
         break;
       default:
@@ -505,18 +605,17 @@ export function useRuntimeController(options = {}) {
     try {
       if (runtime.settings.onboardingComplete) await unlockSettings(settings);
       const trustMode = settings.trustMode || 'SYSTEM_TRUST';
-      const deviceToken = String(settings.deviceToken || '').trim();
+      const apiKey = String(settings.apiKey || '').trim();
       settingsTestResult.value = await transport.testRuntimeSettings({
         gatewayUrl: String(settings.gatewayUrl || '').trim(),
         trustMode,
-        agentProfile: String(settings.agentProfile || 'default').trim(),
-        ...(trustMode === 'SYSTEM_TRUST' && deviceToken ? { deviceToken } : {}),
+        ...(trustMode === 'SYSTEM_TRUST' && apiKey ? { apiKey } : {}),
       });
     } catch (error) {
-      runtime.error = `Gateway 測試失敗：${error.message}`;
+      runtime.error = `Hermes 測試失敗：${error.message}`;
     } finally {
       settings.unlockPin = '';
-      settings.deviceToken = '';
+      settings.apiKey = '';
       testingSettings.value = false;
     }
   }
@@ -525,7 +624,7 @@ export function useRuntimeController(options = {}) {
     savingSettings.value = true;
     runtime.error = '';
     const safeSettings = publicSettings(settings);
-    const deviceToken = String(settings.deviceToken || '').trim();
+    const apiKey = String(settings.apiKey || '').trim();
     try {
       const confirmedFingerprint =
         safeSettings.trustMode === 'CONFIRMED_SPKI_PIN'
@@ -537,7 +636,7 @@ export function useRuntimeController(options = {}) {
       ) {
         throw new Error('必須明確確認本次 TLS 測試取得的 SPKI fingerprint。');
       }
-      const settingsBody = runtimeSettingsBody(safeSettings, deviceToken, confirmedFingerprint);
+      const settingsBody = runtimeSettingsBody(safeSettings, apiKey, confirmedFingerprint);
       if (runtime.settings.onboardingComplete) {
         await unlockSettings(settings);
         await transport.putRuntimeSettings(settingsBody);
@@ -550,6 +649,7 @@ export function useRuntimeController(options = {}) {
         await transport.setupRuntimeSettings({ ...settingsBody, pin: setupPin, confirmPin });
       }
       runtime.patchSettings(safeSettings);
+      await loadSettings();
       runtime.settingsOpen = false;
       settingsTestResult.value = null;
     } catch (error) {
@@ -557,7 +657,7 @@ export function useRuntimeController(options = {}) {
       runtime.settingsOpen = true;
       return;
     } finally {
-      settings.deviceToken = '';
+      settings.apiKey = '';
       settings.pin = '';
       settings.confirmPin = '';
       settings.unlockPin = '';
@@ -565,7 +665,7 @@ export function useRuntimeController(options = {}) {
     }
 
     transport.close();
-    await playback.stop('settings changed');
+    await stopResponse('settings changed');
     await vad.pause();
     await connect();
   }
@@ -612,11 +712,11 @@ export function useRuntimeController(options = {}) {
       sleep: 'sleep',
       'client-cancelled': 'user_interaction',
     };
+    const localShutdown = Promise.allSettled([vad.pause(), stopResponse(reason)]);
+    runtime.goToSleep();
     if (!options.skipCancel) {
       await transport.cancelTurn(turnId, cancelReasons[reason] || 'user_interaction');
     }
-    const localShutdown = Promise.allSettled([vad.pause(), playback.stop(reason)]);
-    runtime.goToSleep();
     await localShutdown;
   }
 
@@ -639,7 +739,7 @@ export function useRuntimeController(options = {}) {
     if (action === InteractionAction.CANCEL_AND_LISTEN) {
       const turnId = runtime.activeTurnId;
       if (!safetyCancelled) await transport.cancelTurn(turnId, 'user_interaction');
-      await Promise.allSettled([playback.stop('client-cancelled'), vad.pause()]);
+      await Promise.allSettled([stopResponse('client-cancelled'), vad.pause()]);
       runtime.transition('reset', { turnId: '' });
     }
     await enterListening();
@@ -666,7 +766,11 @@ export function useRuntimeController(options = {}) {
       transport.on('runtimeConnected', async () => {
         if (runtime.connectionState !== CONNECTION_STATES.DEGRADED) return;
         try {
-          await refreshAuthoritativeRuntime();
+          // Preserve the committed cursor so retained tool/audio events replay.
+          // A Native recovery control requests a snapshot if history was evicted.
+          const status = await transport.getRuntimeStatus();
+          const gateway = status?.gateway || status || {};
+          runtime.setConnection(normalizedGatewayState(gateway.state || status?.gatewayState));
         } catch (error) {
           runtime.setConnection(gatewayErrorState(error), error.message);
           throw error;
@@ -705,7 +809,7 @@ export function useRuntimeController(options = {}) {
     timers.clearAll();
     disposers.forEach((dispose) => dispose());
     transport.close();
-    await playback.stop('unmount');
+    await stopResponse('unmount');
     await vad.destroy();
   });
 

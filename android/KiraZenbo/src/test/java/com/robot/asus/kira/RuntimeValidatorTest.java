@@ -59,116 +59,10 @@ public class RuntimeValidatorTest {
     }
 
     @Test
-    public void idempotencyKeysAreStableAndOperationScoped() {
-        String first = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "started");
-        String retry = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "started");
-        String completed = AgentGatewayClient.stableIdempotency("playback", "session", "turn", "artifact", "completed");
-        assertEquals(first, retry);
-        assertNotEquals(first, completed);
-    }
-
-    @Test
     public void gatewayStateNeverLeaksAnUnknownRuntimeState() {
         assertEquals("DEGRADED", GatewayStateMapper.normalize("DEGRADED"));
         assertEquals("OFFLINE", GatewayStateMapper.normalize("RECONNECTING"));
         assertEquals("OFFLINE", GatewayStateMapper.normalize("ERROR"));
-    }
-
-    @Test
-    public void terminalSessionEventsRecreateExceptForRevokedCredentials() {
-        assertTrue(AgentGatewayClient.shouldRecreateSession("session.closed", "policy"));
-        assertTrue(AgentGatewayClient.shouldRecreateSession("session.expired", "idle_timeout"));
-        assertFalse(AgentGatewayClient.shouldRecreateSession("session.expired", "credential_revoked"));
-    }
-
-    @Test
-    public void missingSessionAndCursorAheadResponsesResetDurableSessionRecovery() {
-        assertTrue(AgentGatewayClient.shouldResetRemoteSession(404));
-        assertTrue(AgentGatewayClient.shouldResetRemoteSession(409));
-        assertFalse(AgentGatewayClient.shouldResetRemoteSession(401));
-        assertFalse(AgentGatewayClient.shouldResetRemoteSession(426));
-        assertFalse(AgentGatewayClient.shouldResetRemoteSession(500));
-    }
-
-    @Test
-    public void restartResumesOnlySessionsWithoutAnInFlightTurnMarker() {
-        assertTrue(AgentGatewayClient.shouldResumePersistedSession(""));
-        assertTrue(AgentGatewayClient.shouldResumePersistedSession(null));
-        assertFalse(AgentGatewayClient.shouldResumePersistedSession(
-                "44444444-4444-4444-8444-444444444444"
-        ));
-    }
-
-    @Test
-    public void authoritativeSnapshotCannotEraseAPreAcceptanceUploadMarker() {
-        assertTrue(GatewaySettings.shouldPreservePendingUploadMarker(true, ""));
-        assertTrue(GatewaySettings.shouldPreservePendingUploadMarker(true, null));
-        assertFalse(GatewaySettings.shouldPreservePendingUploadMarker(
-                true,
-                "44444444-4444-4444-8444-444444444444"
-        ));
-        assertFalse(GatewaySettings.shouldPreservePendingUploadMarker(false, ""));
-    }
-
-    @Test
-    public void uncertainUploadAbandonsOnlyTheSessionThatIssuedIt() {
-        String uncertainSession = "55555555-5555-4555-8555-555555555555";
-        String replacementSession = "66666666-6666-4666-8666-666666666666";
-        assertTrue(AgentGatewayClient.isSameRemoteSession(
-                uncertainSession,
-                uncertainSession
-        ));
-        assertFalse(AgentGatewayClient.isSameRemoteSession(
-                uncertainSession,
-                replacementSession
-        ));
-        assertFalse(AgentGatewayClient.isSameRemoteSession(null, replacementSession));
-    }
-
-    @Test
-    public void terminalEventClearsOnlyItsCorrelatedActiveTurnMarker() {
-        assertTrue(GatewaySettings.shouldClearActiveTurn(
-                "44444444-4444-4444-8444-444444444444",
-                "44444444-4444-4444-8444-444444444444"
-        ));
-        assertFalse(GatewaySettings.shouldClearActiveTurn(
-                "55555555-5555-4555-8555-555555555555",
-                "44444444-4444-4444-8444-444444444444"
-        ));
-        assertFalse(GatewaySettings.shouldClearActiveTurn(
-                "",
-                "44444444-4444-4444-8444-444444444444"
-        ));
-    }
-
-    @Test
-    public void playbackAllowsAnEmptySuccessfulResponseWithoutWeakeningStrictJsonEndpoints()
-            throws Exception {
-        assertEquals(0, AgentGatewayClient.parseSuccessBody("", true).length());
-        assertEquals(0, AgentGatewayClient.parseSuccessBody("  ", true).length());
-        assertEquals(0, AgentGatewayClient.parseSuccessBody("{}", false).length());
-    }
-
-    @Test(expected = org.json.JSONException.class)
-    public void strictJsonEndpointStillRejectsAnEmptySuccessfulResponse() throws Exception {
-        AgentGatewayClient.parseSuccessBody("", false);
-    }
-
-    @Test
-    public void cancelRequestUsesOnlyTheValidatedWireReason() throws Exception {
-        assertTrue(AgentGatewayClient.isAllowedCancelReason("client_request"));
-        assertTrue(AgentGatewayClient.isAllowedCancelReason("superseded"));
-        assertTrue(AgentGatewayClient.isAllowedCancelReason("timeout"));
-        assertFalse(AgentGatewayClient.isAllowedCancelReason("barge_in"));
-        assertEquals(
-                "superseded",
-                AgentGatewayClient.cancelRequestBody("superseded").getString("reason")
-        );
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void cancelRequestBodyRejectsUnknownReason() {
-        AgentGatewayClient.cancelRequestBody("barge_in");
     }
 
     @Test
@@ -178,7 +72,6 @@ public class RuntimeValidatorTest {
                 GatewaySettings.SYSTEM_TRUST,
                 "",
                 "device-1",
-                "default",
                 "Zenbo K",
                 "zh-TW"
         );
@@ -187,7 +80,6 @@ public class RuntimeValidatorTest {
                 GatewaySettings.SYSTEM_TRUST,
                 "",
                 "device-1",
-                "default",
                 "Zenbo K",
                 "zh-TW"
         ));
@@ -196,7 +88,6 @@ public class RuntimeValidatorTest {
                 GatewaySettings.SYSTEM_TRUST,
                 "",
                 "device-1",
-                "default",
                 "Zenbo K",
                 "zh-TW"
         ));
@@ -205,7 +96,6 @@ public class RuntimeValidatorTest {
                 GatewaySettings.CONFIRMED_SPKI_PIN,
                 "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 "device-1",
-                "hermes",
                 "Zenbo K",
                 "zh-TW"
         ));
@@ -340,13 +230,6 @@ public class RuntimeValidatorTest {
         authority.revoke(turnId);
         queuedMainThreadWork.run();
         assertFalse(sideEffect[0]);
-    }
-
-    @Test
-    public void reconnectJitterModuloIsApi23SafeAndNonNegative() {
-        assertEquals(0L, AgentGatewayClient.nonNegativeModulo(Long.MIN_VALUE, 4L));
-        assertEquals(3L, AgentGatewayClient.nonNegativeModulo(-1L, 4L));
-        assertEquals(1L, AgentGatewayClient.nonNegativeModulo(5L, 4L));
     }
 
     @Test

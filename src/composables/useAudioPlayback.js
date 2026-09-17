@@ -31,6 +31,8 @@ export function createAudioPlayback(dependencies = {}) {
 
   const closeGraph = async () => {
     stopAnalyser();
+    const closingContext = audioContext;
+    audioContext = null;
     try {
       sourceNode?.disconnect();
       analyser?.disconnect();
@@ -40,14 +42,13 @@ export function createAudioPlayback(dependencies = {}) {
     sourceNode = null;
     analyser = null;
     analyserData = null;
-    if (audioContext && audioContext.state !== 'closed') {
+    if (closingContext && closingContext.state !== 'closed') {
       try {
-        await audioContext.close();
+        await closingContext.close();
       } catch {
         // Some Android audio contexts reject close during teardown.
       }
     }
-    audioContext = null;
   };
 
   const releaseMedia = async () => {
@@ -91,12 +92,14 @@ export function createAudioPlayback(dependencies = {}) {
       throw new Error('Audio playback is not available.');
     }
 
+    const playGeneration = generation + 1;
     await stop('replaced');
-    const playGeneration = generation;
+    if (playGeneration !== generation) return;
     callbacks = options;
     error.value = null;
     objectUrl = createObjectURL(blob);
     audio = new AudioImpl(objectUrl);
+    const playingAudio = audio;
     audio.preload = 'auto';
 
     if (AudioContextImpl) {
@@ -110,11 +113,14 @@ export function createAudioPlayback(dependencies = {}) {
         sourceNode.connect(analyser);
         analyser.connect(audioContext.destination);
         await audioContext.resume?.();
+        if (playGeneration !== generation) return;
       } catch (cause) {
+        if (playGeneration !== generation) return;
         console.warn('Audio analyser unavailable; continuing playback without mouth tracking.', cause);
         await closeGraph();
       }
     }
+    if (playGeneration !== generation) return;
 
     audio.onended = async () => {
       if (playGeneration !== generation) return;
@@ -122,6 +128,7 @@ export function createAudioPlayback(dependencies = {}) {
       const endedCallbacks = callbacks;
       callbacks = {};
       await releaseMedia();
+      if (playGeneration !== generation) return;
       endedCallbacks.onEnded?.();
     };
 
@@ -133,15 +140,21 @@ export function createAudioPlayback(dependencies = {}) {
       const failedCallbacks = callbacks;
       callbacks = {};
       await releaseMedia();
+      if (playGeneration !== generation) return;
       failedCallbacks.onError?.(playbackError);
     };
 
     try {
-      await audio.play();
+      await playingAudio.play();
+      if (playGeneration !== generation) {
+        playingAudio.pause();
+        return;
+      }
       isPlaying.value = true;
       callbacks.onStarted?.();
       updateMouth();
     } catch (cause) {
+      if (playGeneration !== generation) return;
       error.value = cause;
       isPlaying.value = false;
       const failedCallbacks = callbacks;

@@ -1,0 +1,20 @@
+{
+  "protocolVersion": "2.0",
+  "eventId": "10000000-0000-4000-8000-000000000014",
+  "sequence": 4,
+  "sessionId": "20000000-0000-4000-8000-000000000001",
+  "turnId": "40000000-0000-4000-8000-000000000001",
+  "type": "tool.call",
+  "timestamp": "2026-07-17T08:00:04.000Z",
+  "data": {
+    "callId": "30000000-0000-4000-8000-000000000001",
+    "toolName": "show_emotion",
+    "toolVersion": "1.0.0",
+    "arguments": {
+      "emotion": "HAPPY",
+      "durationMs": 0
+    },
+    "timeoutMs": 5000,
+    "deadlineAt": "2026-07-17T08:00:09.000Z"
+  }
+}

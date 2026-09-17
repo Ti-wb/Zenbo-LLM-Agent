@@ -47,10 +47,17 @@ class FakeWebSocket {
 }
 
 describe('RuntimeTransport', () => {
+  it('requires Local Runtime 2.0 at the loopback bootstrap boundary', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ protocolVersion: '1.0' }));
+    const transport = new RuntimeTransport({ fetchImpl });
+    await expect(transport.bootstrap('bootstrap-secret')).rejects.toThrow('2.0');
+    expect(transport.bootstrapped).toBe(false);
+    expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:8787/api/v2/bootstrap');
+  });
   it('exchanges the one-time fragment secret for an HttpOnly cookie session', async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ protocolVersion: '1.0', expiresAt: 1234 }))
+      .mockResolvedValueOnce(jsonResponse({ protocolVersion: '2.0', expiresAt: 1234 }))
       .mockResolvedValueOnce(jsonResponse({ state: 'ready' }))
       .mockResolvedValueOnce(jsonResponse({ sessionId: 'remote-1', lastSequence: 8 }));
     const transport = new RuntimeTransport({ origin: 'http://127.0.0.1:8787/', fetchImpl });
@@ -165,7 +172,7 @@ describe('RuntimeTransport', () => {
     transport.cursor = 7;
 
     transport.connectEvents();
-    expect(FakeWebSocket.instances[0].url).toBe('ws://127.0.0.1:8787/api/v1/events?after=7');
+    expect(FakeWebSocket.instances[0].url).toBe('ws://127.0.0.1:8787/api/v2/events?after=7');
     FakeWebSocket.instances[0].open();
     transport.acknowledge(8);
     FakeWebSocket.instances[0].onclose();
@@ -400,18 +407,17 @@ describe('RuntimeTransport', () => {
       pin: '123456',
       confirmPin: '123456',
       gatewayUrl: 'https://gateway.example',
-      deviceToken: 'fixture-device-token',
+      apiKey: 'fixture-device-token',
       trustMode: 'SYSTEM_TRUST',
-      agentProfile: 'default',
       context: { robotName: 'Zenbo K', language: 'zh-TW' },
     });
     await transport.unlockRuntimeSettings({ pin: '123456' });
     await transport.putRuntimeSettings({ gatewayUrl: 'https://gateway.example' });
 
     expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
-      'http://127.0.0.1:8787/api/v1/settings/setup',
-      'http://127.0.0.1:8787/api/v1/settings/unlock',
-      'http://127.0.0.1:8787/api/v1/settings',
+      'http://127.0.0.1:8787/api/v2/settings/setup',
+      'http://127.0.0.1:8787/api/v2/settings/unlock',
+      'http://127.0.0.1:8787/api/v2/settings',
     ]);
     expect(JSON.parse(fetchImpl.mock.calls[2][1].body)).not.toHaveProperty('pin');
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
@@ -477,7 +483,7 @@ describe('RuntimeTransport', () => {
       transport.resolveAudio({ artifactId: 'artifact-1', mimeType: 'audio/mpeg', byteLength: 3 }),
     ).resolves.toBe(audio);
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://127.0.0.1:8787/api/v1/conversation/audio/artifact-1',
+      'http://127.0.0.1:8787/api/v2/conversation/audio/artifact-1',
       expect.objectContaining({ credentials: 'include' }),
     );
   });

@@ -2,11 +2,10 @@
   "pin": "654321",
   "confirmPin": "654321",
   "gatewayUrl": "https://gateway.example.test/agent/v1",
-  "deviceToken": "fixture-device-token-never-persist",
+  "apiKey": "fixture-device-token-never-persist",
   "trustMode": "CONFIRMED_SPKI_PIN",
   "certificatePin": "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
   "confirmedFingerprint": "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
-  "agentProfile": "zenbo-default",
   "context": {
     "robotName": "Kira",
     "language": "zh-TW"

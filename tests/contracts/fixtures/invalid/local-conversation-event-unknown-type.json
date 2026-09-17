@@ -1,0 +1,10 @@
+{
+  "protocolVersion": "2.0",
+  "eventId": "10000000-0000-4000-8000-000000000009",
+  "sequence": 9,
+  "sessionId": "20000000-0000-4000-8000-000000000001",
+  "turnId": null,
+  "type": "robot.execute_arbitrary_code",
+  "timestamp": "2026-07-17T08:00:09.000Z",
+  "data": {}
+}

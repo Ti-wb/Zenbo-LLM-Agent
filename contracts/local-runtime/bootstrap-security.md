@@ -1,6 +1,6 @@
 # Local renderer bootstrap and security
 
-These requirements are normative for protocol `1.0`.
+These requirements are normative for protocol `2.0`.
 
 ## Loopback boundary
 
@@ -17,7 +17,7 @@ These requirements are normative for protocol `1.0`.
 
 ## Bootstrap cookie
 
-`POST /api/v1/bootstrap` is the only operation that does not yet have a renderer
+`POST /api/v2/bootstrap` is the only operation that does not yet have a renderer
 session cookie. It is still possession-authenticated by a native-generated
 one-time bootstrap token:
 
@@ -28,7 +28,7 @@ one-time bootstrap token:
    the server.
 3. The renderer reads the fragment, immediately removes it from visible/history
    state, and submits it once as `bootstrapToken` in the JSON body of
-   `POST /api/v1/bootstrap`.
+   `POST /api/v2/bootstrap`.
 4. Runtime verifies the token in constant time. Missing, malformed, expired, or
    replayed tokens return `INVALID_BOOTSTRAP_TOKEN`.
 5. Every verification attempt consumes the token, whether it succeeds or
@@ -40,11 +40,11 @@ separate opaque renderer session with at least 256 bits of randomness and sets
 a host-only cookie equivalent to:
 
 ```text
-Set-Cookie: zenbo_local_session=<opaque>; Path=/api/v1; HttpOnly; SameSite=Strict; Max-Age=<bounded>
+Set-Cookie: zenbo_local_session=<opaque>; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=<bounded>
 ```
 
 The cookie MUST omit `Domain`, MUST NOT be returned in JSON, and MUST NOT be
-readable by renderer JavaScript. `Secure` is not asserted in protocol 1.0
+readable by renderer JavaScript. `Secure` is not asserted in protocol 2.0
 because this endpoint is intentionally HTTP loopback; loopback binding and
 strict origin validation are therefore mandatory. The lifetime MUST be no more
 than 24 hours, and Android service restart or application-data reset invalidates
@@ -54,14 +54,13 @@ All other HTTP routes require the cookie. The native WebSocket handshake also
 authenticates with the same HttpOnly cookie. Authentication failures use a
 uniform JSON error for HTTP and reject the WebSocket upgrade with `401`.
 
-Bootstrap is rate-limited and MUST NOT rotate or disclose the external Agent
-Gateway device credential.
+Bootstrap is rate-limited and MUST NOT rotate or disclose the Hermes API credential.
 
 ## Settings lock
 
 - Initial configuration occurs only through `POST /settings/setup` while
   `setupRequired` is true. The request includes the PIN and confirmation,
-  Gateway URL, write-only device token, trust mode, agent profile, and runtime
+  Gateway URL, write-only Hermes API key, trust mode and runtime
   context. Runtime validates and persists the entire request atomically; on any
   failure it stores neither the PIN nor any Gateway setting.
 - PIN verification occurs only through `POST /settings/unlock`; PIN values are
@@ -69,32 +68,32 @@ Gateway device credential.
 - Unlock state is server-side and time-bounded. Updating settings requires a
   currently unlocked renderer session. Testing is allowed either while
   `setupRequired` is true or, after setup, while the renderer is unlocked.
-- `GET /settings` returns redacted `credentialConfigured` and
+- `GET /settings` returns redacted `hasApiKey` and
   `certificatePinConfigured` booleans plus the selected `trustMode`; it never
-  returns the stored device token, certificate pin, or confirmation value.
-- `PUT /settings` may accept a write-only `deviceToken`. The native runtime
+  returns the stored Hermes API key, certificate pin, or confirmation value.
+- `PUT /settings` may accept a write-only `apiKey`. The native runtime
   stores it using the Android credential facility and excludes it from logs,
   events, status, crash messages, and subsequent responses.
 - Selecting `CONFIRMED_SPKI_PIN` during setup or update requires both
   `certificatePin` and `confirmedFingerprint`; they MUST match exactly before
-  any settings are persisted. Neither value substitutes for the device token.
-- Provider credentials are never accepted by any Local Runtime route.
+  any settings are persisted. Neither value substitutes for the Hermes API key.
+- Underlying model-provider credentials are never accepted; apiKey authenticates only the selected Hermes profile.
 
 The runtime applies retry throttling to setup/unlock attempts and returns
 `RATE_LIMITED` with `Retry-After` when the limit is exceeded.
 
 ## Gateway test and trust modes
 
-`POST /api/v1/settings/test` is non-persistent and accepts `gatewayUrl`,
-`trustMode`, `agentProfile`, and an optional write-only `deviceToken`:
+`POST /api/v2/settings/test` is non-persistent and accepts `gatewayUrl`,
+`trustMode` and an optional write-only `apiKey`:
 
-- `SYSTEM_TRUST` uses the platform trust store. If a transient device token is
+- `SYSTEM_TRUST` uses the platform trust store. If a transient Hermes API key is
   supplied, Runtime may authenticate and query gateway capabilities, but MUST
   erase the request value after the probe and MUST NOT save it.
 - `CONFIRMED_SPKI_PIN` without a previously confirmed matching SPKI fingerprint
   performs only the TLS certificate probe. Runtime MUST NOT transmit the
-  supplied device token. It returns `confirmationRequired: true`, the observed
+  supplied Hermes API key. It returns `confirmationRequired: true`, the observed
   `fingerprint`, `authenticated: false`, and `capabilitiesReceived: false`.
 
-Provider API keys are forbidden in this request and every other Local Runtime
-request. Unknown credential fields fail closed as `INVALID_REQUEST`.
+Model-provider API keys are forbidden in this request and every other Local Runtime
+request; the allowed apiKey is the Hermes profile access key. Unknown credential fields fail closed as `INVALID_REQUEST`.

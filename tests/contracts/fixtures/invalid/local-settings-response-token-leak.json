@@ -4,17 +4,16 @@
   "data": {
     "gatewayUrl": "https://gateway.example.test/agent/v1",
     "trustMode": "SYSTEM_TRUST",
-    "agentProfile": "zenbo-default",
     "context": {
       "robotName": "Kira",
       "language": "zh-TW"
     },
-    "credentialConfigured": true,
+    "hasApiKey": true,
     "certificatePinConfigured": false,
     "pinConfigured": true,
     "unlocked": false,
     "unlockExpiresAt": null,
-    "deviceToken": "this-must-never-be-returned"
+    "apiKey": "this-must-never-be-returned"
   },
   "error": null
 }

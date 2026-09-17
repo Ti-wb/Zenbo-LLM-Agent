@@ -12,10 +12,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:contracts": "node tests/contracts/validate-contracts.mjs",
-    "test:gateway": "node --test tests/fake-gateway/server.test.mjs",
     "android": "vite build --outDir android/KiraZenbo/src/main/assets/app",
     "android:watch": "vite build --watch --outDir android/KiraZenbo/src/main/assets/app",
-    "licenses:web": "node scripts/generate-third-party-licenses.mjs"
+    "licenses:web": "node scripts/generate-third-party-licenses.mjs",
+    "test:hermes": "node --test tests/hermes/*.test.mjs"
   },
   "dependencies": {
     "@ricky0123/vad-web": "0.0.30",

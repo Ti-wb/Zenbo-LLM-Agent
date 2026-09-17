@@ -1,40 +1,26 @@
-# Zenbo Local Runtime contract 1.0
+# Zenbo Local Runtime contract 2.0
 
-The Local Runtime is the native Android control plane exposed only to the
-bundled GeckoView renderer. It serves HTTP and WebSocket traffic on
-`127.0.0.1:8787`; it is not a LAN API and is not the external Agent Gateway.
+The bundled GeckoView renderer talks only to the Android Native service on
+`127.0.0.1:8787`. HTTP and WebSocket routes share `/api/v2`; neither is a LAN API.
+Native calls Hermes and owns the local UUIDs, state and sequence. Hermes session
+and run IDs, SSE details, credentials and provider settings never reach the Web.
 
-Normative files:
+- [`openapi.json`](openapi.json): HTTP, settings, recovery, tool-result and
+  playback operations.
+- [`bootstrap-security.md`](bootstrap-security.md): one-use bootstrap token,
+  HttpOnly cookie, origin checks, PIN authorization and credential storage.
+- [`events.md`](events.md): Native-owned events, local replay and recovery.
+- [`schemas/event.schema.json`](schemas/event.schema.json): control and
+  conversation envelopes.
 
-- [`openapi.json`](openapi.json): OpenAPI 3.1 HTTP and WebSocket handshake
-  surface under `/api/v1`.
-- [`bootstrap-security.md`](bootstrap-security.md): renderer bootstrap cookie,
-  origin validation, settings lock, and loopback boundary.
-- [`events.md`](events.md): local WebSocket relay, ordering, resume, and
-  canonical event-envelope rules.
-- [`schemas/event.schema.json`](schemas/event.schema.json): remote envelopes or
-  normalized ephemeral local gateway/robot/screen/interaction events.
+All JSON responses have exactly `ok`, `requestId`, `data`, `error`. Successful
+binary audio downloads are the sole exception. API key is write-only in settings;
+responses expose `hasApiKey` instead. `gatewayUrl` retains the selected Hermes
+profile API base. Model and speech configuration are managed exclusively by that
+Hermes profile; the device has no model setting.
 
-All JSON responses, including errors, use the same four top-level fields:
+Protocol 2.0 is installed together with its renderer in one APK. Old `/api/v1`
+and Agent Gateway settings do not silently fall back or migrate credentials to
+another profile; an operator completes Hermes setup explicitly.
 
-```json
-{
-  "ok": true,
-  "requestId": "00000000-0000-4000-8000-000000000000",
-  "data": {},
-  "error": null
-}
-```
-
-Binary audio downloads are the sole successful-response exception. Their
-error responses still use the JSON envelope.
-
-Web-owned tool results and renderer playback lifecycle updates use the
-correlated HTTP routes in `openapi.json`; the Local Runtime validates them and
-forwards them to the external Agent Gateway.
-
-Validate both Agent Gateway and Local Runtime contracts with:
-
-```sh
-node tests/contracts/validate-contracts.mjs
-```
+Run `npm run test:contracts` to validate schemas, fixtures and boundary invariants.

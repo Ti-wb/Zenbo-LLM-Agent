@@ -64,6 +64,32 @@ function animationFrameHarness() {
 }
 
 describe('createAudioPlayback', () => {
+  it('does not restart audio when a cancelled play promise resolves late', async () => {
+    FakeAudio.instances = [];
+    let finishPlay;
+    class PendingAudio extends FakeAudio {
+      constructor(src) {
+        super(src);
+        this.play = vi.fn(() => new Promise((resolve) => { finishPlay = resolve; }));
+      }
+    }
+    const onStarted = vi.fn();
+    const playback = createAudioPlayback({
+      AudioImpl: PendingAudio,
+      AudioContextImpl: audioContextHarness().AudioContextImpl,
+      createObjectURL: () => 'blob:pending',
+      revokeObjectURL: vi.fn(),
+    });
+    const pending = playback.play(new Blob(['one']), { onStarted });
+    await vi.waitFor(() => expect(finishPlay).toBeTypeOf('function'));
+    await playback.stop('client-cancelled');
+    finishPlay();
+    await pending;
+    expect(onStarted).not.toHaveBeenCalled();
+    expect(playback.isPlaying.value).toBe(false);
+    expect(playback.mouthLevel.value).toBe(0);
+  });
+
   it('owns one audio element at a time and revokes its object URL on stop', async () => {
     FakeAudio.instances = [];
     const revokeObjectURL = vi.fn();

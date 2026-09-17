@@ -4,12 +4,11 @@
   "data": {
     "gatewayUrl": "https://gateway.example.test/agent/v1",
     "trustMode": "CONFIRMED_SPKI_PIN",
-    "agentProfile": "zenbo-default",
     "context": {
       "robotName": "Kira",
       "language": "zh-TW"
     },
-    "credentialConfigured": true,
+    "hasApiKey": true,
     "certificatePinConfigured": true,
     "pinConfigured": true,
     "unlocked": true,

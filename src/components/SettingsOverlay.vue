@@ -1,5 +1,6 @@
 <script setup>
-import { reactive, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
+import { settingsReadiness } from '../services/runtimeSettings';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -14,13 +15,14 @@ const props = defineProps({
 const emit = defineEmits(['close', 'save', 'test']);
 const draft = reactive({});
 const validationError = ref('');
+const readiness = computed(() => settingsReadiness(props.testResult));
 
 watch(
   () => [props.open, props.settings],
   () => {
     for (const key of Object.keys(draft)) delete draft[key];
     Object.assign(draft, props.settings, {
-      deviceToken: '',
+      apiKey: '',
       pin: '',
       confirmPin: '',
       unlockPin: '',
@@ -44,10 +46,9 @@ watch(
 function publicDraft() {
   return {
     gatewayUrl: String(draft.gatewayUrl || '').trim(),
-    deviceToken: String(draft.deviceToken || '').trim(),
+    apiKey: String(draft.apiKey || '').trim(),
     trustMode: draft.trustMode || 'SYSTEM_TRUST',
     certificatePin: String(draft.certificatePin || '').trim(),
-    agentProfile: String(draft.agentProfile || 'default').trim(),
     robotName: String(draft.robotName || 'Zenbo K').trim(),
     language: draft.language || 'zh-TW',
     onboardingComplete: true,
@@ -55,7 +56,7 @@ function publicDraft() {
 }
 
 function clearSensitiveDraft() {
-  draft.deviceToken = '';
+  draft.apiKey = '';
   draft.pin = '';
   draft.confirmPin = '';
   draft.unlockPin = '';
@@ -86,10 +87,10 @@ function save() {
   clearSensitiveDraft();
 }
 
-function testGateway() {
+function testHermes() {
   validationError.value = '';
   if (!draft.gatewayUrl) {
-    validationError.value = '請先輸入 Gateway URL。';
+    validationError.value = '請先輸入 Hermes Profile URL。';
     return;
   }
   if (props.settings.onboardingComplete && !draft.unlockPin) {
@@ -101,7 +102,7 @@ function testGateway() {
     unlockPin: String(draft.unlockPin),
   });
   draft.unlockPin = '';
-  draft.deviceToken = '';
+  draft.apiKey = '';
 }
 </script>
 
@@ -125,35 +126,35 @@ function testGateway() {
       </div>
 
       <p class="intro">
-        語音與表情留在 Zenbo；辨識、LLM 與語音合成由 Agent Gateway 處理。API 金鑰不會存放在瀏覽器。
+        Zenbo 負責聆聽、表情與播放；Hermes Profile 提供對話、語音辨識與合成。API 金鑰由裝置安全保存。
       </p>
 
       <label>
-        <span>Gateway URL</span>
+        <span>Hermes Profile URL</span>
         <input
           v-model="draft.gatewayUrl"
           type="url"
           inputmode="url"
           autocomplete="off"
-          placeholder="https://agent.example.com"
+          placeholder="https://hermes.internal.c3land.org/hermes-api/p/grok/v1"
           pattern="https://.*"
           required
         />
-        <small>由本機 Runtime 連線；Web Renderer 不直接連 Gateway。</small>
+        <small>輸入包含 /hermes-api/p/grok/v1 的完整 Profile 位址。</small>
       </label>
 
       <label>
-        <span>Device token</span>
+        <span>Hermes API key</span>
         <input
-          v-model="draft.deviceToken"
+          v-model="draft.apiKey"
           type="password"
           autocomplete="new-password"
           minlength="16"
           maxlength="4096"
-          :required="!settings.onboardingComplete"
-          :placeholder="settings.onboardingComplete ? '留空以保留既有 token' : '貼上裝置專用 token'"
+          :required="!settings.hasApiKey"
+          :placeholder="settings.hasApiKey ? '留空以保留已儲存的 API key' : '貼上 Hermes API key'"
         />
-        <small>只在這次儲存時送往本機 Runtime，不會寫入 Pinia、localStorage 或讀回畫面。</small>
+        <small>{{ settings.hasApiKey ? '裝置已儲存 API key；' : '' }}送出後會清空欄位，之後不會讀回金鑰。</small>
       </label>
 
       <div v-if="!settings.onboardingComplete" class="field-grid">
@@ -201,25 +202,13 @@ function testGateway() {
         <small>每次更新或測試前都要解鎖；PIN 不會離開本機 Runtime。</small>
       </label>
 
-      <div class="field-grid">
-        <label>
-          <span>TLS trust</span>
-          <select v-model="draft.trustMode">
-            <option value="SYSTEM_TRUST">SYSTEM_TRUST</option>
-            <option value="CONFIRMED_SPKI_PIN">CONFIRMED_SPKI_PIN</option>
-          </select>
-        </label>
-        <label>
-          <span>Agent profile</span>
-          <input
-            v-model="draft.agentProfile"
-            type="text"
-            maxlength="64"
-            pattern="[A-Za-z0-9._-]+"
-            autocomplete="off"
-          />
-        </label>
-      </div>
+      <label>
+        <span>TLS trust</span>
+        <select v-model="draft.trustMode">
+          <option value="SYSTEM_TRUST">SYSTEM_TRUST</option>
+          <option value="CONFIRMED_SPKI_PIN">CONFIRMED_SPKI_PIN</option>
+        </select>
+      </label>
 
       <div v-if="draft.trustMode === 'CONFIRMED_SPKI_PIN'" class="pin-panel">
         <label>
@@ -240,7 +229,7 @@ function testGateway() {
             :true-value="draft.certificatePin"
             false-value=""
           />
-          <span>我已核對並確認這個 Gateway 憑證 fingerprint</span>
+          <span>我已核對並確認這個 Hermes 憑證 fingerprint</span>
         </label>
       </div>
 
@@ -260,11 +249,16 @@ function testGateway() {
         </label>
       </div>
 
-      <p v-if="testResult" class="test-result">
+      <div v-if="testResult" class="test-result" aria-live="polite">
         TLS：{{ testResult.subject || '憑證可用' }}<br />
         <code>{{ testResult.fingerprint }}</code>
         <span v-if="testResult.confirmationRequired"><br />儲存前必須明確確認這個 fingerprint。</span>
-      </p>
+        <p>Hermes Profile：{{ readiness.hermesReachable ? '連線成功' : '尚未驗證' }}</p>
+        <p>Zenbo 插件：{{ readiness.pluginAvailable ? '可用' : '尚未就緒' }}；六個裝置工具：{{ readiness.toolsReady ? '就緒' : '尚未就緒' }}</p>
+        <p v-if="readiness.pluginAvailable && !readiness.toolsReady">缺少工具：{{ readiness.missingTools.join('、') }}</p>
+        <p>語音辨識：{{ readiness.sttConfigured ? '已配置' : '未配置' }}；語音合成：{{ readiness.ttsConfigured ? '已配置' : '未配置' }}</p>
+        <small>語音已配置後，仍需在 Zenbo 實際說話與播放確認。</small>
+      </div>
       <p v-if="validationError || error" class="error-message">{{ validationError || error }}</p>
       <div class="footer-row">
         <span class="runtime-state">本機 Runtime：{{ connectionState }}</span>
@@ -273,9 +267,9 @@ function testGateway() {
             class="secondary-button"
             type="button"
             :disabled="saving || testing"
-            @click="testGateway"
+            @click="testHermes"
           >
-            {{ testing ? '測試中…' : settings.onboardingComplete ? '解鎖並測試 Gateway' : '測試 Gateway' }}
+            {{ testing ? '測試中…' : settings.onboardingComplete ? '解鎖並測試 Hermes' : '測試 Hermes' }}
           </button>
           <button class="primary-button" type="submit" :disabled="saving || testing">
             {{ saving ? '儲存中…' : settings.onboardingComplete ? '解鎖、儲存並重新連線' : '設定 PIN 並啟用' }}

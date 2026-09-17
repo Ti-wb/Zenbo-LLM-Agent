@@ -2,9 +2,8 @@
   "pin": "1234",
   "confirmPin": "1234",
   "gatewayUrl": "https://gateway.example.test/agent/v1",
-  "deviceToken": "fixture-device-token-never-persist",
+  "apiKey": "fixture-device-token-never-persist",
   "trustMode": "SYSTEM_TRUST",
-  "agentProfile": "zenbo-default",
   "context": {
     "robotName": "Kira",
     "language": "zh-TW"

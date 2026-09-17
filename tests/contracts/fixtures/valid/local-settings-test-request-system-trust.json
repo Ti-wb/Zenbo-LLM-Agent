@@ -1,6 +1,5 @@
 {
   "gatewayUrl": "https://gateway.example.test/agent/v1",
   "trustMode": "SYSTEM_TRUST",
-  "agentProfile": "zenbo-default",
-  "deviceToken": "fixture-device-token-never-persist"
+  "apiKey": "fixture-device-token-never-persist"
 }

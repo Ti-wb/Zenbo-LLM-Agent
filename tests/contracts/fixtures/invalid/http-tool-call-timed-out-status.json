@@ -1,9 +1,0 @@
-{
-  "status": "timed_out",
-  "updatedAt": "2026-07-17T08:00:09.000Z",
-  "error": {
-    "code": "TIMEOUT",
-    "message": "The device tool exceeded its deadline.",
-    "retryable": false
-  }
-}

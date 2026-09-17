@@ -1,0 +1,20 @@
+{
+  "source": "https://hermes.internal.c3land.org/hermes-api/p/grok/v1/models",
+  "recordedAt": "2026-09-17T05:20:38.251153+00:00",
+  "httpStatus": 200,
+  "kind": "recorded-read-only-response",
+  "response": {
+    "object": "list",
+    "data": [
+      {
+        "id": "grok",
+        "object": "model",
+        "created": 1789622438,
+        "owned_by": "hermes",
+        "permission": [],
+        "root": "grok",
+        "parent": null
+      }
+    ]
+  }
+}

@@ -1,13 +1,13 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Zenbo Local Runtime",
-    "version": "0.1.0",
-    "description": "Loopback-only HTTP and WebSocket contract between the native Android runtime and the bundled GeckoView renderer."
+    "title": "Zenbo Native Local Runtime 2.0",
+    "version": "2.0.0",
+    "description": "Native-owned loopback API for the bundled renderer. Hermes runs, credentials and remote IDs remain Native concerns."
   },
   "servers": [
     {
-      "url": "http://127.0.0.1:8787/api/v1",
+      "url": "http://127.0.0.1:8787/api/v2",
       "description": "Fixed IPv4 loopback endpoint",
       "x-loopback-only": true
     }
@@ -25,13 +25,17 @@
         "description": "Consumes a native-generated one-time 256-bit bootstrap token after constant-time verification. The token expires after 60 seconds and is consumed on success or failure.",
         "security": [],
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/BootstrapRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
             }
           }
         },
@@ -41,19 +45,29 @@
             "headers": {
               "Set-Cookie": {
                 "required": true,
-                "description": "Host-only cookie: zenbo_local_session=<opaque>; Path=/api/v1; HttpOnly; SameSite=Strict; Max-Age=<bounded>. Domain is forbidden.",
-                "schema": { "type": "string" }
+                "description": "Host-only cookie: zenbo_local_session=<opaque>; Path=/api/v2; HttpOnly; SameSite=Strict; Max-Age=<bounded>. Domain is forbidden.",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/BootstrapResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
@@ -66,11 +80,15 @@
             "description": "Current runtime status",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/StatusResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/ErrorResponse" }
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -83,24 +101,32 @@
             "description": "Redacted settings",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SettingsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/ErrorResponse" }
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       },
       "put": {
         "operationId": "updateSettings",
-        "summary": "Update unlocked runtime settings and optional write-only device token",
+        "summary": "Update unlocked runtime settings and optional write-only Hermes API key",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SettingsUpdateRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdateRequest"
+              }
             }
           }
         },
@@ -109,14 +135,24 @@
             "description": "Updated redacted settings",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SettingsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "423": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "423": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -126,13 +162,17 @@
         "summary": "Atomically configure the initial PIN, Gateway, token, trust, profile, and context",
         "description": "Available only while setupRequired is true. Validation and persistence are atomic: a failure stores neither the PIN nor any Gateway setting.",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SettingsSetupRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SettingsSetupRequest"
+              }
             }
           }
         },
@@ -141,15 +181,27 @@
             "description": "Initial configuration stored and returned with secrets redacted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SettingsResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
@@ -158,13 +210,17 @@
         "operationId": "unlockSettings",
         "summary": "Verify the admin PIN and create a time-bounded unlock lease",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SettingsUnlockRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUnlockRequest"
+              }
             }
           }
         },
@@ -173,14 +229,24 @@
             "description": "Settings unlocked",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UnlockResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/UnlockResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "429": { "$ref": "#/components/responses/RateLimited" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
         }
       }
     },
@@ -190,13 +256,17 @@
         "summary": "Probe gateway URL, TLS, credential, and protocol without persisting changes",
         "description": "Allowed while initial setup is required, or after setup only while the renderer has a current settings unlock lease.",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SettingsTestRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SettingsTestRequest"
+              }
             }
           }
         },
@@ -205,15 +275,27 @@
             "description": "Probe completed; reachability is represented in data",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/SettingsTestResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsTestResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "423": { "$ref": "#/components/responses/ErrorResponse" },
-          "502": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "423": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "502": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -226,11 +308,15 @@
             "description": "Current conversation state and retained canonical events",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ConversationResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/ErrorResponse" }
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -239,19 +325,29 @@
         "operationId": "createConversationTurn",
         "summary": "Submit one text turn or completed WAV voice turn",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/TextTurnRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/TextTurnRequest"
+              }
             },
             "multipart/form-data": {
-              "schema": { "$ref": "#/components/schemas/VoiceTurnRequest" },
+              "schema": {
+                "$ref": "#/components/schemas/VoiceTurnRequest"
+              },
               "encoding": {
-                "audio": { "contentType": "audio/wav" }
+                "audio": {
+                  "contentType": "audio/wav"
+                }
               }
             }
           }
@@ -261,18 +357,36 @@
             "description": "Turn accepted for asynchronous processing",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/TurnAcceptedResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/TurnAcceptedResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" },
-          "413": { "$ref": "#/components/responses/ErrorResponse" },
-          "415": { "$ref": "#/components/responses/ErrorResponse" },
-          "429": { "$ref": "#/components/responses/RateLimited" },
-          "503": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "413": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "415": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -281,14 +395,20 @@
         "operationId": "cancelConversationTurn",
         "summary": "Cancel the turn identified in the JSON request body",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CancelTurnRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/CancelTurnRequest"
+              }
             }
           }
         },
@@ -297,15 +417,27 @@
             "description": "Cancellation accepted or the turn was already terminal",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/CancelResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "404": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -313,36 +445,54 @@
       "put": {
         "operationId": "putWebToolCallResult",
         "summary": "Report an accepted or terminal result for a correlated Web-owned tool call",
-        "description": "The native runtime validates ownership and forwards the correlated update to the Agent Gateway. Repeating an identical terminal result is idempotent.",
+        "description": "Native validates web ownership, deadline and correlation before submitting the result to the Hermes Zenbo plugin. Repeating an identical local terminal receipt is idempotent.",
         "parameters": [
-          { "$ref": "#/components/parameters/CallId" },
-          { "$ref": "#/components/parameters/RendererOrigin" }
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "../agent-gateway/openapi.json#/components/schemas/ToolCallUpdate"
+                "$ref": "#/components/schemas/ToolCallUpdate"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Correlated tool-call update stored for forwarding",
+            "description": "Correlated tool-call update accepted by Native",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ToolCallReceiptResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ToolCallReceiptResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "404": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" },
-          "413": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "413": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -350,44 +500,62 @@
       "post": {
         "operationId": "reportRendererPlayback",
         "summary": "Report renderer audio playback lifecycle for one turn artifact",
-        "description": "The native runtime forwards started, completed, or interrupted to the Agent Gateway without changing vocabulary.",
+        "description": "Native records playback locally. Only the final ordered artifact completion ends the turn; no remote playback endpoint exists.",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "../agent-gateway/openapi.json#/components/schemas/PlaybackUpdate"
+                "$ref": "#/components/schemas/PlaybackUpdate"
               }
             }
           }
         },
         "responses": {
           "202": {
-            "description": "Playback update accepted for forwarding",
+            "description": "Playback update accepted locally",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/PlaybackReceiptResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackReceiptResponse"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ErrorResponse" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "404": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" }
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
     "/conversation/audio/{artifactId}": {
       "get": {
         "operationId": "getConversationAudio",
-        "summary": "Download one locally cached gateway audio artifact",
+        "summary": "Download one locally cached verified Hermes audio artifact",
         "parameters": [
-          { "$ref": "#/components/parameters/ArtifactId" }
+          {
+            "$ref": "#/components/parameters/ArtifactId"
+          }
         ],
         "responses": {
           "200": {
@@ -395,7 +563,9 @@
             "headers": {
               "Digest": {
                 "required": true,
-                "schema": { "type": "string" }
+                "schema": {
+                  "type": "string"
+                }
               },
               "Content-Length": {
                 "required": true,
@@ -408,21 +578,35 @@
               "Expires": {
                 "required": true,
                 "description": "HTTP-date after which the local artifact is unavailable.",
-                "schema": { "type": "string" }
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
               "audio/mpeg": {
-                "schema": { "type": "string", "contentEncoding": "binary" }
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "binary"
+                }
               },
               "audio/wav": {
-                "schema": { "type": "string", "contentEncoding": "binary" }
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "binary"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "404": { "$ref": "#/components/responses/ErrorResponse" },
-          "410": { "$ref": "#/components/responses/ErrorResponse" }
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "410": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     },
@@ -433,20 +617,33 @@
         "x-websocket": true,
         "x-message-schema": "./schemas/event.schema.json",
         "parameters": [
-          { "$ref": "#/components/parameters/RendererOrigin" },
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          },
           {
             "name": "after",
             "in": "query",
             "required": false,
-            "schema": { "type": "integer", "minimum": 0 },
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
             "description": "Last canonical sequence durably handled by the renderer."
           }
         ],
         "responses": {
-          "101": { "description": "WebSocket upgrade accepted" },
-          "401": { "$ref": "#/components/responses/ErrorResponse" },
-          "403": { "$ref": "#/components/responses/ErrorResponse" },
-          "409": { "$ref": "#/components/responses/ErrorResponse" }
+          "101": {
+            "description": "WebSocket upgrade accepted"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
         }
       }
     }
@@ -465,25 +662,36 @@
         "name": "Origin",
         "in": "header",
         "required": true,
-        "schema": { "const": "http://127.0.0.1:8787" }
+        "schema": {
+          "const": "http://127.0.0.1:8787"
+        }
       },
       "IdempotencyKey": {
         "name": "Idempotency-Key",
         "in": "header",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "ArtifactId": {
         "name": "artifactId",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "CallId": {
         "name": "callId",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       }
     },
     "responses": {
@@ -491,7 +699,9 @@
         "description": "Uniform Local Runtime error",
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
           }
         }
       },
@@ -500,12 +710,17 @@
         "headers": {
           "Retry-After": {
             "required": true,
-            "schema": { "type": "integer", "minimum": 1 }
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
           }
         }
       }
@@ -514,23 +729,49 @@
       "SuccessEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ok", "requestId", "data", "error"],
+        "required": [
+          "ok",
+          "requestId",
+          "data",
+          "error"
+        ],
         "properties": {
-          "ok": { "const": true },
-          "requestId": { "type": "string", "format": "uuid" },
+          "ok": {
+            "const": true
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          },
           "data": {},
-          "error": { "type": "null" }
+          "error": {
+            "type": "null"
+          }
         }
       },
       "ErrorEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ok", "requestId", "data", "error"],
+        "required": [
+          "ok",
+          "requestId",
+          "data",
+          "error"
+        ],
         "properties": {
-          "ok": { "const": false },
-          "requestId": { "type": "string", "format": "uuid" },
-          "data": { "type": "null" },
-          "error": { "$ref": "#/components/schemas/LocalError" }
+          "ok": {
+            "const": false
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "data": {
+            "type": "null"
+          },
+          "error": {
+            "$ref": "#/components/schemas/LocalError"
+          }
         }
       },
       "LocalErrorCode": {
@@ -561,25 +802,45 @@
           "ALREADY_CONFIGURED",
           "SETTINGS_LOCKED",
           "INVALID_PIN",
-          "INVALID_SETTINGS"
+          "INVALID_SETTINGS",
+          "TURN_BUSY"
         ]
       },
       "LocalError": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "message", "retryable"],
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
         "properties": {
-          "code": { "$ref": "#/components/schemas/LocalErrorCode" },
-          "message": { "type": "string", "minLength": 1, "maxLength": 512 },
-          "retryable": { "type": "boolean" }
+          "code": {
+            "$ref": "#/components/schemas/LocalErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "retryable": {
+            "type": "boolean"
+          }
         }
       },
       "BootstrapRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["clientVersion", "bootstrapToken"],
+        "required": [
+          "clientVersion",
+          "bootstrapToken"
+        ],
         "properties": {
-          "clientVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "clientVersion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
           "bootstrapToken": {
             "type": "string",
             "minLength": 43,
@@ -592,10 +853,18 @@
       "BootstrapData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["protocolVersion", "expiresAt"],
+        "required": [
+          "protocolVersion",
+          "expiresAt"
+        ],
         "properties": {
-          "protocolVersion": { "const": "1.0" },
-          "expiresAt": { "type": "string", "format": "date-time" }
+          "protocolVersion": {
+            "const": "2.0"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "GatewayState": {
@@ -624,7 +893,10 @@
         ]
       },
       "TrustMode": {
-        "enum": ["SYSTEM_TRUST", "CONFIRMED_SPKI_PIN"]
+        "enum": [
+          "SYSTEM_TRUST",
+          "CONFIRMED_SPKI_PIN"
+        ]
       },
       "SpkiFingerprint": {
         "type": "string",
@@ -640,25 +912,67 @@
           "gatewayState",
           "robotReady",
           "activeSessionId",
-          "activeTurnId"
+          "activeTurnId",
+          "lastSequence",
+          "protocolVersion"
         ],
         "properties": {
-          "runtimeReady": { "type": "boolean" },
-          "setupRequired": { "type": "boolean" },
-          "settingsUnlocked": { "type": "boolean" },
-          "gatewayState": { "$ref": "#/components/schemas/GatewayState" },
-          "robotReady": { "type": "boolean" },
-          "activeSessionId": { "type": ["string", "null"], "format": "uuid" },
-          "activeTurnId": { "type": ["string", "null"], "format": "uuid" }
+          "runtimeReady": {
+            "type": "boolean"
+          },
+          "setupRequired": {
+            "type": "boolean"
+          },
+          "settingsUnlocked": {
+            "type": "boolean"
+          },
+          "gatewayState": {
+            "$ref": "#/components/schemas/GatewayState"
+          },
+          "robotReady": {
+            "type": "boolean"
+          },
+          "activeSessionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "activeTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "lastSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "protocolVersion": {
+            "const": "2.0"
+          }
         }
       },
       "RuntimeContext": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["robotName", "language"],
+        "required": [
+          "robotName",
+          "language"
+        ],
         "properties": {
-          "robotName": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "language": { "type": "string", "minLength": 2, "maxLength": 35 }
+          "robotName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "language": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35
+          }
         }
       },
       "SettingsData": {
@@ -667,24 +981,46 @@
         "required": [
           "gatewayUrl",
           "trustMode",
-          "agentProfile",
           "context",
-          "credentialConfigured",
+          "hasApiKey",
           "certificatePinConfigured",
           "pinConfigured",
           "unlocked",
           "unlockExpiresAt"
         ],
         "properties": {
-          "gatewayUrl": { "type": ["string", "null"], "format": "uri" },
-          "trustMode": { "$ref": "#/components/schemas/TrustMode" },
-          "agentProfile": { "type": ["string", "null"] },
-          "context": { "$ref": "#/components/schemas/RuntimeContext" },
-          "credentialConfigured": { "type": "boolean" },
-          "certificatePinConfigured": { "type": "boolean" },
-          "pinConfigured": { "type": "boolean" },
-          "unlocked": { "type": "boolean" },
-          "unlockExpiresAt": { "type": ["string", "null"], "format": "date-time" }
+          "gatewayUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "trustMode": {
+            "$ref": "#/components/schemas/TrustMode"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RuntimeContext"
+          },
+          "hasApiKey": {
+            "type": "boolean"
+          },
+          "certificatePinConfigured": {
+            "type": "boolean"
+          },
+          "pinConfigured": {
+            "type": "boolean"
+          },
+          "unlocked": {
+            "type": "boolean"
+          },
+          "unlockExpiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         }
       },
       "SettingsSetupRequest": {
@@ -695,122 +1031,173 @@
           "pin",
           "confirmPin",
           "gatewayUrl",
-          "deviceToken",
+          "apiKey",
           "trustMode",
-          "agentProfile",
           "context"
         ],
         "dependentRequired": {
-          "certificatePin": ["confirmedFingerprint"],
-          "confirmedFingerprint": ["certificatePin"]
+          "certificatePin": [
+            "confirmedFingerprint"
+          ],
+          "confirmedFingerprint": [
+            "certificatePin"
+          ]
         },
         "properties": {
-          "pin": { "type": "string", "pattern": "^[0-9]{6,12}$", "writeOnly": true },
-          "confirmPin": { "type": "string", "pattern": "^[0-9]{6,12}$", "writeOnly": true },
+          "pin": {
+            "type": "string",
+            "pattern": "^[0-9]{6,12}$",
+            "writeOnly": true
+          },
+          "confirmPin": {
+            "type": "string",
+            "pattern": "^[0-9]{6,12}$",
+            "writeOnly": true
+          },
           "gatewayUrl": {
             "type": "string",
             "format": "uri",
             "pattern": "^https://",
-            "maxLength": 2048
+            "maxLength": 2048,
+            "default": "https://hermes.internal.c3land.org/hermes-api/p/grok/v1"
           },
-          "deviceToken": {
+          "apiKey": {
             "type": "string",
             "minLength": 16,
             "maxLength": 4096,
             "writeOnly": true
           },
-          "trustMode": { "$ref": "#/components/schemas/TrustMode" },
-          "certificatePin": { "$ref": "#/components/schemas/SpkiFingerprint" },
-          "confirmedFingerprint": { "$ref": "#/components/schemas/SpkiFingerprint" },
-          "agentProfile": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9._-]+$"
+          "trustMode": {
+            "$ref": "#/components/schemas/TrustMode"
           },
-          "context": { "$ref": "#/components/schemas/RuntimeContext" }
+          "certificatePin": {
+            "$ref": "#/components/schemas/SpkiFingerprint"
+          },
+          "confirmedFingerprint": {
+            "$ref": "#/components/schemas/SpkiFingerprint"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RuntimeContext"
+          }
         },
         "allOf": [
           {
             "if": {
-              "properties": { "trustMode": { "const": "CONFIRMED_SPKI_PIN" } },
-              "required": ["trustMode"]
+              "properties": {
+                "trustMode": {
+                  "const": "CONFIRMED_SPKI_PIN"
+                }
+              },
+              "required": [
+                "trustMode"
+              ]
             },
-            "then": { "required": ["certificatePin", "confirmedFingerprint"] }
+            "then": {
+              "required": [
+                "certificatePin",
+                "confirmedFingerprint"
+              ]
+            }
           }
         ]
       },
       "SettingsUnlockRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["pin"],
+        "required": [
+          "pin"
+        ],
         "properties": {
-          "pin": { "type": "string", "pattern": "^[0-9]{6,12}$", "writeOnly": true }
+          "pin": {
+            "type": "string",
+            "pattern": "^[0-9]{6,12}$",
+            "writeOnly": true
+          }
         }
       },
       "SettingsUpdateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["trustMode"],
-        "description": "deviceToken is write-only. For CONFIRMED_SPKI_PIN, certificatePin and confirmedFingerprint are required and must be identical.",
+        "required": [
+          "trustMode"
+        ],
+        "description": "apiKey is write-only. For CONFIRMED_SPKI_PIN, certificatePin and confirmedFingerprint are required and must be identical.",
         "dependentRequired": {
-          "certificatePin": ["confirmedFingerprint"],
-          "confirmedFingerprint": ["certificatePin"]
+          "certificatePin": [
+            "confirmedFingerprint"
+          ],
+          "confirmedFingerprint": [
+            "certificatePin"
+          ]
         },
         "properties": {
           "gatewayUrl": {
             "type": "string",
             "format": "uri",
             "pattern": "^https://",
-            "maxLength": 2048
+            "maxLength": 2048,
+            "default": "https://hermes.internal.c3land.org/hermes-api/p/grok/v1"
           },
-          "deviceToken": {
+          "apiKey": {
             "type": "string",
             "minLength": 16,
             "maxLength": 4096,
             "writeOnly": true
           },
-          "trustMode": { "$ref": "#/components/schemas/TrustMode" },
-          "certificatePin": { "$ref": "#/components/schemas/SpkiFingerprint" },
-          "confirmedFingerprint": { "$ref": "#/components/schemas/SpkiFingerprint" },
-          "agentProfile": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9._-]+$"
+          "trustMode": {
+            "$ref": "#/components/schemas/TrustMode"
           },
-          "context": { "$ref": "#/components/schemas/RuntimeContext" }
+          "certificatePin": {
+            "$ref": "#/components/schemas/SpkiFingerprint"
+          },
+          "confirmedFingerprint": {
+            "$ref": "#/components/schemas/SpkiFingerprint"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RuntimeContext"
+          }
         },
         "allOf": [
           {
             "if": {
-              "properties": { "trustMode": { "const": "CONFIRMED_SPKI_PIN" } },
-              "required": ["trustMode"]
+              "properties": {
+                "trustMode": {
+                  "const": "CONFIRMED_SPKI_PIN"
+                }
+              },
+              "required": [
+                "trustMode"
+              ]
             },
-            "then": { "required": ["certificatePin", "confirmedFingerprint"] }
+            "then": {
+              "required": [
+                "certificatePin",
+                "confirmedFingerprint"
+              ]
+            }
           }
         ]
       },
       "SettingsTestRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["gatewayUrl", "trustMode", "agentProfile"],
-        "description": "SYSTEM_TRUST may use deviceToken transiently for authenticated capability discovery. CONFIRMED_SPKI_PIN without a previously confirmed fingerprint performs a certificate-only probe and never transmits deviceToken.",
+        "required": [
+          "gatewayUrl",
+          "trustMode"
+        ],
+        "description": "SYSTEM_TRUST may use apiKey transiently for authenticated capability discovery. CONFIRMED_SPKI_PIN without a previously confirmed fingerprint performs a certificate-only probe and never transmits apiKey.",
         "properties": {
           "gatewayUrl": {
             "type": "string",
             "format": "uri",
             "pattern": "^https://",
-            "maxLength": 2048
+            "maxLength": 2048,
+            "default": "https://hermes.internal.c3land.org/hermes-api/p/grok/v1"
           },
-          "trustMode": { "$ref": "#/components/schemas/TrustMode" },
-          "agentProfile": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "pattern": "^[A-Za-z0-9._-]+$"
+          "trustMode": {
+            "$ref": "#/components/schemas/TrustMode"
           },
-          "deviceToken": {
+          "apiKey": {
             "type": "string",
             "minLength": 16,
             "maxLength": 4096,
@@ -821,10 +1208,18 @@
       "UnlockData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["unlocked", "unlockExpiresAt"],
+        "required": [
+          "unlocked",
+          "unlockExpiresAt"
+        ],
         "properties": {
-          "unlocked": { "const": true },
-          "unlockExpiresAt": { "type": "string", "format": "date-time" }
+          "unlocked": {
+            "const": true
+          },
+          "unlockExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "SettingsTestData": {
@@ -841,25 +1236,50 @@
           "capabilitiesReceived"
         ],
         "properties": {
-          "reachable": { "type": "boolean" },
-          "tlsTrusted": { "type": "boolean" },
-          "latencyMs": { "type": ["integer", "null"], "minimum": 0 },
-          "protocolVersion": { "type": ["string", "null"] },
-          "confirmationRequired": { "type": "boolean" },
-          "fingerprint": {
-            "anyOf": [
-              { "$ref": "#/components/schemas/SpkiFingerprint" },
-              { "type": "null" }
+          "reachable": {
+            "type": "boolean"
+          },
+          "tlsTrusted": {
+            "type": "boolean"
+          },
+          "latencyMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "protocolVersion": {
+            "type": [
+              "string",
+              "null"
             ]
           },
-          "authenticated": { "type": "boolean" },
-          "capabilitiesReceived": { "type": "boolean" }
+          "confirmationRequired": {
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpkiFingerprint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "capabilitiesReceived": {
+            "type": "boolean"
+          }
         }
       },
       "ConversationData": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Authoritative renderer recovery snapshot for the current remote session and active turn.",
+        "description": "Authoritative renderer recovery snapshot for the current Native-owned session and active turn.",
         "required": [
           "sessionId",
           "activeTurnId",
@@ -869,145 +1289,451 @@
           "assistantText"
         ],
         "properties": {
-          "sessionId": { "type": ["string", "null"], "format": "uuid" },
-          "activeTurnId": { "type": ["string", "null"], "format": "uuid" },
-          "turnState": { "$ref": "#/components/schemas/TurnState" },
-          "lastSequence": { "type": "integer", "minimum": 0 },
-          "transcript": { "type": "string", "maxLength": 16000 },
-          "assistantText": { "type": "string", "maxLength": 64000 }
+          "sessionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "activeTurnId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "turnState": {
+            "$ref": "#/components/schemas/TurnState"
+          },
+          "lastSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "transcript": {
+            "type": "string",
+            "maxLength": 16000
+          },
+          "assistantText": {
+            "type": "string",
+            "maxLength": 64000
+          }
         }
       },
       "TextTurnRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["clientTurnId", "text"],
+        "required": [
+          "clientTurnId",
+          "text"
+        ],
         "properties": {
-          "clientTurnId": { "type": "string", "format": "uuid" },
-          "text": { "type": "string", "minLength": 1, "maxLength": 16000 },
-          "language": { "type": "string", "minLength": 2, "maxLength": 35 }
+          "clientTurnId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "language": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35
+          }
         }
       },
       "VoiceTurnRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["clientTurnId", "audio", "durationMs"],
+        "required": [
+          "clientTurnId",
+          "audio",
+          "durationMs"
+        ],
         "properties": {
-          "clientTurnId": { "type": "string", "format": "uuid" },
+          "clientTurnId": {
+            "type": "string",
+            "format": "uuid"
+          },
           "audio": {
             "type": "string",
             "contentEncoding": "binary",
             "contentMediaType": "audio/wav",
             "x-max-bytes": 2097152
           },
-          "durationMs": { "type": "integer", "minimum": 1, "maximum": 30000 },
-          "language": { "type": "string", "minLength": 2, "maxLength": 35 }
+          "durationMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30000
+          },
+          "language": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35
+          }
         }
       },
       "TurnAcceptedData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["clientTurnId", "accepted"],
+        "required": [
+          "clientTurnId",
+          "accepted"
+        ],
         "properties": {
-          "clientTurnId": { "type": "string", "format": "uuid" },
-          "accepted": { "const": true }
+          "clientTurnId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "accepted": {
+            "const": true
+          }
         }
       },
       "CancelTurnRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["reason"],
+        "required": [
+          "reason"
+        ],
         "properties": {
-          "turnId": { "type": "string", "format": "uuid" },
-          "reason": { "enum": ["barge_in", "user_interaction", "screen_off", "sleep"] }
+          "turnId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "enum": [
+              "barge_in",
+              "user_interaction",
+              "screen_off",
+              "sleep"
+            ]
+          }
         }
       },
       "CancelResultData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["remoteCancelled", "robotStopped"],
+        "required": [
+          "remoteCancelled",
+          "robotStopped"
+        ],
         "properties": {
-          "remoteCancelled": { "type": "boolean" },
-          "robotStopped": { "type": "boolean" }
+          "remoteCancelled": {
+            "type": "boolean"
+          },
+          "robotStopped": {
+            "type": "boolean"
+          }
         }
       },
       "ToolCallReceiptData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["callId", "status"],
+        "required": [
+          "callId",
+          "status"
+        ],
         "properties": {
-          "callId": { "type": "string", "format": "uuid" },
-          "status": { "enum": ["accepted", "succeeded", "failed", "rejected"] }
+          "callId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "succeeded",
+              "failed",
+              "rejected"
+            ]
+          }
         }
       },
       "PlaybackReceiptData": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["turnId", "artifactId", "status"],
+        "required": [
+          "turnId",
+          "artifactId",
+          "status"
+        ],
         "properties": {
-          "turnId": { "type": "string", "format": "uuid" },
-          "artifactId": { "type": "string", "format": "uuid" },
-          "status": { "enum": ["started", "completed", "interrupted"] }
+          "turnId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "artifactId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "enum": [
+              "started",
+              "completed",
+              "interrupted"
+            ]
+          }
         }
       },
       "BootstrapResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/BootstrapData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/BootstrapData"
+              }
+            }
+          }
         ]
       },
       "StatusResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/StatusData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/StatusData"
+              }
+            }
+          }
         ]
       },
       "SettingsResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/SettingsData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/SettingsData"
+              }
+            }
+          }
         ]
       },
       "UnlockResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/UnlockData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/UnlockData"
+              }
+            }
+          }
         ]
       },
       "SettingsTestResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/SettingsTestData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/SettingsTestData"
+              }
+            }
+          }
         ]
       },
       "ConversationResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/ConversationData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/ConversationData"
+              }
+            }
+          }
         ]
       },
       "TurnAcceptedResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/TurnAcceptedData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/TurnAcceptedData"
+              }
+            }
+          }
         ]
       },
       "CancelResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/CancelResultData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/CancelResultData"
+              }
+            }
+          }
         ]
       },
       "ToolCallReceiptResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/ToolCallReceiptData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/ToolCallReceiptData"
+              }
+            }
+          }
         ]
       },
       "PlaybackReceiptResponse": {
         "allOf": [
-          { "$ref": "#/components/schemas/SuccessEnvelope" },
-          { "properties": { "data": { "$ref": "#/components/schemas/PlaybackReceiptData" } } }
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/PlaybackReceiptData"
+              }
+            }
+          }
         ]
+      },
+      "ToolCallUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "updatedAt"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "accepted",
+              "succeeded",
+              "failed",
+              "rejected"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "output": {
+            "description": "JSON-compatible tool output; serialized UTF-8 representation is limited to 16 KiB.",
+            "x-max-bytes": 16384
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "description": "A succeeded update carries output. Failed or rejected updates carry error. Timeout and turn cancellation use failed with error code TIMEOUT or TURN_CANCELLED. Terminal states cannot transition."
+      },
+      "PlaybackUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "turnId",
+          "artifactId",
+          "status",
+          "timestamp"
+        ],
+        "properties": {
+          "turnId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "artifactId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "enum": [
+              "started",
+              "completed",
+              "interrupted"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "positionMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "enum": [
+              "barge_in",
+              "screen_off",
+              "playback_error",
+              "client_cancelled"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "started",
+                  "completed"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "status": {
+                "const": "interrupted"
+              }
+            }
+          }
+        ]
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        }
       }
     }
   }

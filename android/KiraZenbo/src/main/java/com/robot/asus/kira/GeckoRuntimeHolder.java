@@ -10,7 +10,10 @@ public class GeckoRuntimeHolder {
     public static synchronized GeckoRuntime get(Context context) {
         if (sGeckoRuntime == null) {
             GeckoRuntimeSettings.Builder settingsBuilder = new GeckoRuntimeSettings.Builder()
-                    .aboutConfigEnabled(true).consoleOutput(true).debugLogging(true).remoteDebuggingEnabled(true);
+                    .aboutConfigEnabled(BuildConfig.DEBUG)
+                    .consoleOutput(BuildConfig.DEBUG)
+                    .debugLogging(false)
+                    .remoteDebuggingEnabled(BuildConfig.DEBUG);
             sGeckoRuntime = GeckoRuntime.create(context.getApplicationContext(), settingsBuilder.build());
         }
         return sGeckoRuntime;

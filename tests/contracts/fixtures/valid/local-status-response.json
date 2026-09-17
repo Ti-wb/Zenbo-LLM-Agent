@@ -8,7 +8,9 @@
     "gatewayState": "READY",
     "robotReady": true,
     "activeSessionId": "20000000-0000-4000-8000-000000000001",
-    "activeTurnId": null
+    "activeTurnId": null,
+    "lastSequence": 0,
+    "protocolVersion": "2.0"
   },
   "error": null
 }
