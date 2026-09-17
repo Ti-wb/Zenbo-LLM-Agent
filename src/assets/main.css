@@ -21,9 +21,7 @@ body,
 }
 
 body {
-  background:
-    radial-gradient(circle at 50% 48%, rgb(24 97 121 / 20%), transparent 46%),
-    #061018;
+  background: #061018;
   -webkit-font-smoothing: antialiased;
   user-select: none;
 }

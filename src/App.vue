@@ -37,7 +37,6 @@ const microphoneLevel = computed(() => {
   return listeningReady.value && Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
 });
 const listeningStyle = computed(() => ({
-  '--listening-glow': listeningReady.value ? 0.12 + microphoneLevel.value * 0.5 : 0,
   '--listening-frame': listeningReady.value ? 0.3 + microphoneLevel.value * 0.65 : 0,
 }));
 const statusLabel = computed(() => {
@@ -109,7 +108,6 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="face-shell" :class="{ 'listening-ready': listeningReady }" :style="listeningStyle">
-    <div class="listening-ambient" aria-hidden="true" />
     <header class="top-bar">
       <span class="clock">{{ clock }}</span>
       <span class="connection-dot" :data-state="runtime.connectionState" aria-hidden="true" />
@@ -200,15 +198,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.listening-ambient {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse at 50% 48%, transparent 22%, #163e35 68%, #0c2a27 100%);
-  opacity: var(--listening-glow, 0);
-  transition: opacity 80ms linear;
-}
-
 .face-stage {
   position: relative;
 }
@@ -245,7 +234,6 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .listening-ambient,
   .listening-frame {
     transition: none;
   }
