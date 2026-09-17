@@ -1125,6 +1125,12 @@ public final class LocalRuntimeServer {
         }
 
         @Override
+        public boolean readFullyOnRequest() {
+            // The route validates captured parts, so it must wait for the complete multipart body.
+            return true;
+        }
+
+        @Override
         protected void onBoundaryEnd() {
             finishPart();
             super.onBoundaryEnd();
