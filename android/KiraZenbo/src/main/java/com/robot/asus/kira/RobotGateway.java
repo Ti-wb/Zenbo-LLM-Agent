@@ -5,6 +5,7 @@ import android.os.Looper;
 import android.os.Build;
 
 import com.asus.robotframework.API.RobotAPI;
+import com.asus.robotframework.API.RobotCmdState;
 import com.asus.robotframework.API.RobotFace;
 
 import org.json.JSONException;
@@ -34,6 +35,25 @@ public final class RobotGateway implements RobotOperations {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile RobotAPI robotAPI;
     private volatile boolean moving;
+    private final HeadMotionTracker headMotion = new HeadMotionTracker();
+
+    /** Only serials returned by this app's lookAtUser command can own head motion. */
+    static final class HeadMotionTracker {
+        private final Set<Integer> activeSerials = new HashSet<>();
+        synchronized void started(int serial) { activeSerials.add(serial); }
+        synchronized boolean isMoving() { return !activeSerials.isEmpty(); }
+        synchronized void clear() { activeSerials.clear(); }
+        synchronized void onStateChanged(int serial, RobotCmdState state) {
+            if (state == RobotCmdState.SUCCEED || state == RobotCmdState.FAILED
+                    || state == RobotCmdState.REJECTED || state == RobotCmdState.PREEMPTED) {
+                activeSerials.remove(serial);
+            }
+        }
+    }
+
+    public void onCommandStateChanged(int serial, RobotCmdState state) {
+        headMotion.onStateChanged(serial, state);
+    }
 
     public void attach(RobotAPI robotAPI) {
         this.robotAPI = robotAPI;
@@ -42,6 +62,7 @@ public final class RobotGateway implements RobotOperations {
     public void detach() {
         this.robotAPI = null;
         moving = false;
+        headMotion.clear();
     }
 
     public boolean isReady() {
@@ -49,7 +70,7 @@ public final class RobotGateway implements RobotOperations {
     }
 
     public boolean isMoving() {
-        return moving;
+        return moving || headMotion.isMoving();
     }
 
     public Set<String> getAllowedTools() {
@@ -68,8 +89,9 @@ public final class RobotGateway implements RobotOperations {
 
     public boolean emergencyStop() {
         RobotAPI api = robotAPI;
-        boolean stopped = api != null && moving;
+        boolean stopped = api != null && isMoving();
         moving = false;
+        headMotion.clear();
         if (api != null) mainHandler.post(api::cancelCommandAll);
         return stopped;
     }
@@ -122,13 +144,14 @@ public final class RobotGateway implements RobotOperations {
                         case "stop_robot_following":
                             api.cancelCommandAll();
                             moving = false;
+                            headMotion.clear();
                             break;
                         case "look_at_user":
                             double doa = safeArguments.optDouble("doa", Double.NaN);
                             if (Double.isNaN(doa) || doa < -180.0 || doa > 180.0) {
                                 throw new IllegalArgumentException("doa must be between -180 and 180");
                             }
-                            api.utility.lookAtUser((float) doa);
+                            headMotion.started(api.utility.lookAtUser((float) doa));
                             break;
                         default:
                             throw new IllegalArgumentException("Unsupported tool");
@@ -142,7 +165,7 @@ public final class RobotGateway implements RobotOperations {
                 output.put("accepted", true);
                 if ("get_system_status".equals(name)) {
                     output.put("robotReady", robotAPI != null);
-                    output.put("moving", moving);
+                    output.put("moving", isMoving());
                     output.put("androidSdk", Build.VERSION.SDK_INT);
                     output.put("robotModel", "zenbo-k");
                 }

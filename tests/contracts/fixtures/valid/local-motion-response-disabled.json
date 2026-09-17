@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000011",
+  "data": {
+    "motionEnabled": false,
+    "moving": false
+  },
+  "error": null
+}

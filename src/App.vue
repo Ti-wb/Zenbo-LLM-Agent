@@ -11,10 +11,13 @@ const {
   isListening,
   isAudioReady = ref(false),
   inputLevel = ref(0),
+  motionUpdating = ref(false),
+  motionError = ref(''),
   savingSettings,
   settingsTestResult,
   testingSettings,
   saveSettings,
+  setMotionEnabled,
   testSettings,
   toggleListening,
   wakeUp,
@@ -119,6 +122,21 @@ onBeforeUnmount(() => {
       >
         {{ isListening ? '●' : '○' }}
       </button>
+      <div class="motion-control">
+        <button
+          class="motion-toggle"
+          :class="{ enabled: runtime.motionEnabled === true }"
+          type="button"
+          :aria-label="motionUpdating ? '正在更新動作設定' : runtime.motionEnabled ? '動作已開啟，點一下關閉' : '動作已關閉，點一下開啟'"
+          :aria-pressed="runtime.motionEnabled === true"
+          :aria-busy="motionUpdating"
+          :disabled="motionUpdating || !setMotionEnabled"
+          @click="setMotionEnabled?.(!runtime.motionEnabled)"
+        >
+          {{ motionUpdating ? '設定中' : runtime.motionEnabled ? '動作 開' : '動作 關' }}
+        </button>
+        <p v-if="motionError" class="motion-error" role="status">{{ motionError }}</p>
+      </div>
       <button
         class="icon-button settings-hold"
         :class="{ holding: settingsHolding }"
@@ -198,6 +216,59 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.motion-control {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.motion-toggle {
+  min-width: 86px;
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border: 1px solid #34474b;
+  border-radius: 24px;
+  background: #0b1b22;
+  color: #abc2c7;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.motion-toggle.enabled {
+  border-color: #5aa88e;
+  background: #102922;
+  color: #a3e8cf;
+}
+
+.motion-toggle:focus-visible {
+  outline: 2px solid #80dcc0;
+  outline-offset: 3px;
+}
+
+.motion-toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.motion-error {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #5b5140;
+  border-radius: 6px;
+  background: #172027;
+  color: #efd7a7;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .face-stage {
   position: relative;
 }
@@ -231,6 +302,11 @@ onBeforeUnmount(() => {
 
 .listening-label {
   color: #9bd8c6;
+}
+
+@media (max-width: 480px) {
+  .top-bar { gap: 6px; }
+  .motion-toggle { min-width: 74px; padding: 0 10px; font-size: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

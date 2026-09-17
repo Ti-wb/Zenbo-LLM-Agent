@@ -229,7 +229,12 @@ public class RobotApiService extends Service {
                 } catch (JSONException e) {
                     Log.e(TAG, "onStateChange: JSONException", e);
                 }
-                sendEvent("onStateChange", obj);
+                // Match SDK dispatch on the main thread so a fast completion cannot
+                // arrive before lookAtUser has returned its serial to RobotGateway.
+                displayHandler.post(() -> {
+                    robotGateway.onCommandStateChanged(serial, state);
+                    sendEvent("onStateChange", obj);
+                });
             }
 
             @Override

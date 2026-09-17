@@ -10,7 +10,8 @@
     "activeSessionId": null,
     "activeTurnId": null,
     "lastSequence": 0,
-    "protocolVersion": "2.0"
+    "protocolVersion": "2.0",
+    "motionEnabled": false
   },
   "error": null
 }

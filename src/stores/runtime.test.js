@@ -140,7 +140,7 @@ describe('runtime store', () => {
     expect(store.applyEnvelope(ready)).toBe(true);
     store.commitEnvelope(ready);
     expect(store.lastSequence).toBe(1);
-    const robot = { protocolVersion: '2.0', type: 'local.robot.state', sequence: 2, data: { ready: true, moving: false } };
+    const robot = { protocolVersion: '2.0', type: 'local.robot.state', sequence: 2, data: { ready: true, moving: false, motionEnabled: false } };
     expect(store.applyEnvelope(robot)).toBe(true);
     store.commitEnvelope(robot);
     expect(store.lastSequence).toBe(2);

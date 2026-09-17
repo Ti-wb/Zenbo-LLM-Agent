@@ -9,10 +9,22 @@ public class GatewaySettingsTest {
         GatewaySettings settings = new GatewaySettings(new MemoryPreferences());
         assertEquals(HermesEndpoints.DEFAULT_BASE_URL, settings.getGatewayUrl());
         assertFalse(settings.isEnabled());
+        assertFalse(settings.isMotionEnabled());
         JSONObject exposed = settings.toJson(false);
         assertFalse(exposed.has("model"));
         assertFalse(exposed.has("agentProfile"));
         assertFalse(exposed.getBoolean("hasApiKey"));
+    }
+
+    @Test public void motionPreferencePersistsIndependentlyOfGatewaySettings() throws Exception {
+        MemoryPreferences store = new MemoryPreferences();
+        GatewaySettings settings = new GatewaySettings(store);
+        settings.setMotionEnabled(true);
+        assertTrue(new GatewaySettings(store).isMotionEnabled());
+        settings.update(new JSONObject().put("gatewayUrl", "https://example.com/p/other/v1"));
+        assertTrue(settings.isMotionEnabled());
+        settings.setMotionEnabled(false);
+        assertFalse(new GatewaySettings(store).isMotionEnabled());
     }
 
     @Test public void pendingRequestRetainsExactIdempotentBodyAndNeverAppearsInPublicSettings() throws Exception {

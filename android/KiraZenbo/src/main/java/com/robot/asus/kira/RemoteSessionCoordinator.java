@@ -32,6 +32,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     private static final long TERMINAL_TOOL_RETENTION_MS = 5 * 60_000L;
     private final RobotOperations robotGateway;
     private final HermesTransport gatewayClient;
+    private final GatewaySettings settings;
     private final ScheduledExecutorService scheduler;
     private final String sessionId = UUID.randomUUID().toString();
     private final Deque<JSONObject> conversation = new ArrayDeque<>();
@@ -43,6 +44,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     private long generation;
     private boolean stopped;
     private boolean announcedReady;
+    private boolean motionEnabled;
     private String connectionState = "OFFLINE";
     private String transcript = "";
     private String assistantText = "";
@@ -90,14 +92,18 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
 
     public RemoteSessionCoordinator(GatewaySettings settings, DeviceCredentialStore credentials,
                                     RobotGateway robotGateway) {
+        this.settings = settings;
+        this.motionEnabled = settings.isMotionEnabled();
         this.robotGateway = robotGateway;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
         this.gatewayClient = new HermesClient(settings, credentials, robotGateway.getToolManifest(), this);
     }
 
     RemoteSessionCoordinator(HermesTransport transport, RobotOperations robotGateway,
-                             ScheduledExecutorService scheduler) {
+                             ScheduledExecutorService scheduler, GatewaySettings settings) {
         this.gatewayClient = transport; this.robotGateway = robotGateway; this.scheduler = scheduler;
+        this.settings = settings;
+        this.motionEnabled = settings.isMotionEnabled();
     }
 
     public synchronized void setLocalPublisher(LocalPublisher publisher) { localPublisher = publisher; }
@@ -123,6 +129,28 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         return active == null || active.localTerminal ? null : active.id;
     }
     public synchronized String getGatewayState() { return GatewayStateMapper.normalize(connectionState); }
+    public synchronized boolean isMotionEnabled() { return motionEnabled; }
+    public synchronized JSONObject setMotionEnabled(boolean enabled) {
+        if (enabled) {
+            // Never grant hardware authority before its durable preference is saved.
+            settings.setMotionEnabled(true);
+            motionEnabled = true;
+            publishRobotState();
+        } else {
+            motionEnabled = false;
+            boolean motionPending = robotGateway.isMoving();
+            for (ToolCall tool : new ArrayList<>(tools.values())) {
+                if (requiresMotionPermission(tool.name) && tool.terminal == null) {
+                    motionPending = true;
+                    terminalTool(tool, motionDisabledResult());
+                }
+            }
+            if (motionPending) robotGateway.emergencyStop();
+            try { settings.setMotionEnabled(false); }
+            finally { publishRobotState(); }
+        }
+        return json("motionEnabled", motionEnabled, "moving", robotGateway.isMoving());
+    }
     public synchronized JSONArray getConversation() {
         JSONArray result = new JSONArray();
         for (JSONObject event : conversation) result.put(event);
@@ -135,12 +163,12 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         frames.put(emit("local.gateway.state", null, json("state", getGatewayState(),
                 "detail", interrupted ? "畫面重新連線，上一輪已停止，請重新提問。" : "")));
         frames.put(emit("local.robot.state", null,
-                json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving())));
+                json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving(), "motionEnabled", motionEnabled)));
         return frames;
     }
     public synchronized JSONObject getStatus() {
         return json("sessionId", sessionId, "gateway", gatewayClient.getStatus(),
-                "robotReady", robotGateway.isReady(), "lastSequence", sequence,
+                "robotReady", robotGateway.isReady(), "motionEnabled", motionEnabled, "lastSequence", sequence,
                 "conversationEvents", conversation.size(), "turnBusy", active != null);
     }
     public synchronized JSONObject getConversationSnapshot(long ignored) {
@@ -507,7 +535,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             if (timeoutMs < 100 || timeoutMs > 15_000) throw new IllegalArgumentException("Invalid timeout");
             deadline = Math.min(parseDeadline(call.getString("deadlineAt")), System.currentTimeMillis() + Math.min(timeoutMs, 5_000));
             if (deadline <= System.currentTimeMillis()) throw new IllegalArgumentException("Expired tool call");
-            if (robotGateway.isPhysicalTool(name) && !tryClaimPhysicalTool(physicalToolOwner, callId))
+            if ((motionEnabled || !requiresMotionPermission(name))
+                    && robotGateway.isPhysicalTool(name) && !tryClaimPhysicalTool(physicalToolOwner, callId))
                 throw new IllegalArgumentException("Another physical tool is active");
         } catch (Exception error) {
             if (!callId.isEmpty()) gatewayClient.reportToolResult(callId,
@@ -526,6 +555,10 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         }
         ToolCall tool = new ToolCall(callId, name, turn, deadline);
         tools.put(callId, tool);
+        if (!motionEnabled && requiresMotionPermission(name)) {
+            terminalTool(tool, motionDisabledResult());
+            return;
+        }
         final JSONObject arguments = args;
         gatewayClient.reportToolResult(callId, toolUpdate("accepted", null, null), new HermesTransport.ResultCallback() {
             @Override public void onSuccess(JSONObject ignored) {
@@ -553,7 +586,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                     }
                     robotGateway.execute(tool.id, tool.name, arguments, action -> {
                         synchronized (RemoteSessionCoordinator.this) {
-                            return canExecute(tool) && turnAuthority.runIfAuthorized(tool.turn.id, action);
+                            return (motionEnabled || !requiresMotionPermission(tool.name))
+                                    && canExecute(tool) && turnAuthority.runIfAuthorized(tool.turn.id, action);
                         }
                     }, result -> {
                         synchronized (RemoteSessionCoordinator.this) {
@@ -709,11 +743,18 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         } else if ("initComplete".equals(type) || "onStateChange".equals(type)) {
             publishRobotState();
         } else if ("robotUnavailable".equals(type) || "DeviceShutdown".equals(type)) {
-            emit("local.robot.state", null, json("ready", false, "moving", false));
+            emit("local.robot.state", null, json("ready", false, "moving", false, "motionEnabled", motionEnabled));
         }
     }
     private void publishRobotState() {
-        emit("local.robot.state", null, json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving()));
+        emit("local.robot.state", null, json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving(),
+                "motionEnabled", motionEnabled));
+    }
+    private static boolean requiresMotionPermission(String name) {
+        return "start_robot_following".equals(name) || "look_at_user".equals(name);
+    }
+    private static JSONObject motionDisabledResult() {
+        return toolUpdate("rejected", null, toolError("MOTION_DISABLED", "Robot motion is disabled on this device"));
     }
     private boolean current(Turn turn) { return !stopped && active == turn && turn.generation == generation; }
     private void completeTurn(Turn turn) {

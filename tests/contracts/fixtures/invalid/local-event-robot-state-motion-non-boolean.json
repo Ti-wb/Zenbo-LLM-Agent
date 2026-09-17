@@ -6,7 +6,7 @@
   "data": {
     "ready": true,
     "moving": true,
-    "motionEnabled": true
+    "motionEnabled": 1
   },
   "sequence": 1
 }

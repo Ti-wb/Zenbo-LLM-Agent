@@ -82,6 +82,19 @@ Bootstrap is rate-limited and MUST NOT rotate or disclose the Hermes API credent
 The runtime applies retry throttling to setup/unlock attempts and returns
 `RATE_LIMITED` with `Retry-After` when the limit is exceeded.
 
+## Motion permission
+
+`PUT /api/v2/motion` is a renderer interaction command, separate from locked
+connection settings. It requires the existing renderer cookie and exact Origin,
+but no PIN or settings unlock lease. It accepts only a boolean `enabled` field;
+unknown fields and non-boolean values fail with `INVALID_REQUEST`.
+
+Native persists this non-secret preference with a default of false. Off blocks
+following and looking toward the user; stopping remains available. Credentials,
+TLS trust and PIN state cannot be changed through this route. Enabling requires
+a successful save; disabling revokes runtime permission before saving. If that
+save fails, return `INTERNAL_ERROR` while keeping runtime permission off.
+
 ## Gateway test and trust modes
 
 `POST /api/v2/settings/test` is non-persistent and accepts `gatewayUrl`,

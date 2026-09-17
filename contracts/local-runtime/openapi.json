@@ -92,6 +92,52 @@
         }
       }
     },
+    "/motion": {
+      "put": {
+        "operationId": "setMotionPermission",
+        "summary": "Set the persisted device motion permission",
+        "description": "Requires the renderer session cookie and exact Origin, but no settings PIN or unlock lease. The request accepts only enabled. Motion permission defaults to false. When disabled, start_robot_following and look_at_user are rejected with tool error MOTION_DISABLED; stop_robot_following remains available. A rejected motion tool does not fail the conversation turn. Disabling immediately blocks new and queued motion and stops only app-owned active or pending motion; disabling while idle does not call the robot SDK. Enabling grants permission only after persistence succeeds. Storage failures return HTTP 500 INTERNAL_ERROR. If disabling cannot be persisted, runtime permission remains off; the renderer refreshes status after the error instead of restoring permission.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MotionUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current persisted motion permission and movement state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MotionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        }
+      }
+    },
     "/settings": {
       "get": {
         "operationId": "getSettings",
@@ -914,7 +960,8 @@
           "activeSessionId",
           "activeTurnId",
           "lastSequence",
-          "protocolVersion"
+          "protocolVersion",
+          "motionEnabled"
         ],
         "properties": {
           "runtimeReady": {
@@ -952,6 +999,11 @@
           },
           "protocolVersion": {
             "const": "2.0"
+          },
+          "motionEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Persisted Native permission for following and looking toward the user. Defaults to false."
           }
         }
       },
@@ -1734,6 +1786,48 @@
             "type": "boolean"
           }
         }
+      },
+      "MotionUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MotionStateData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "motionEnabled",
+          "moving"
+        ],
+        "properties": {
+          "motionEnabled": {
+            "type": "boolean"
+          },
+          "moving": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MotionResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/MotionStateData"
+              }
+            }
+          }
+        ]
       }
     }
   }

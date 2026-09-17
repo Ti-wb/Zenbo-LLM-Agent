@@ -98,10 +98,11 @@ export function decodeLocalControl(envelope) {
           }
         : { kind: 'invalid', message: 'Invalid local gateway state.' };
     case 'local.robot.state':
-      return hasExactKeys(data, ['ready', 'moving']) &&
+      return hasExactKeys(data, ['ready', 'moving', 'motionEnabled']) &&
         typeof data.ready === 'boolean' &&
-        typeof data.moving === 'boolean'
-        ? { kind: 'robot', ready: data.ready, moving: data.moving }
+        typeof data.moving === 'boolean' &&
+        typeof data.motionEnabled === 'boolean'
+        ? { kind: 'robot', ready: data.ready, moving: data.moving, motionEnabled: data.motionEnabled }
         : { kind: 'invalid', message: 'Invalid local robot state.' };
     case 'local.screen.state':
       return hasExactKeys(data, ['state']) && (data.state === 'ON' || data.state === 'OFF')

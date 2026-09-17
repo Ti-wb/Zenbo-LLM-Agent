@@ -30,7 +30,7 @@ assert(api.components.schemas.StatusData.required.includes('lastSequence'));
 assert(api.components.schemas.ConversationData.required.includes('lastSequence'));
 
 const expectedOperations = {
-  '/bootstrap': ['post'], '/status': ['get'], '/settings': ['get', 'put'],
+  '/bootstrap': ['post'], '/status': ['get'], '/motion': ['put'], '/settings': ['get', 'put'],
   '/settings/setup': ['post'], '/settings/unlock': ['post'], '/settings/test': ['post'],
   '/conversation': ['get'], '/conversation/turns': ['post'], '/conversation/cancel': ['post'],
   '/conversation/tool-calls/{callId}': ['put'], '/conversation/playback': ['post'],
@@ -65,6 +65,22 @@ assert(schemas.SettingsData.required.includes('hasApiKey'));
 assert(!('model' in schemas.SettingsData.properties));
 assert.equal(schemas.VoiceTurnRequest.properties.audio['x-max-bytes'], 2097152);
 assert.equal(schemas.VoiceTurnRequest.properties.durationMs.maximum, 30000);
+assert(schemas.StatusData.required.includes('motionEnabled'));
+assert.equal(schemas.StatusData.properties.motionEnabled.type, 'boolean');
+assert.equal(schemas.StatusData.properties.motionEnabled.default, false);
+assert.deepEqual(schemas.MotionUpdateRequest.required, ['enabled']);
+assert.deepEqual(Object.keys(schemas.MotionUpdateRequest.properties), ['enabled']);
+assert.equal(schemas.MotionUpdateRequest.properties.enabled.type, 'boolean');
+assert.equal(schemas.MotionUpdateRequest.additionalProperties, false);
+assert.deepEqual(schemas.MotionStateData.required, ['motionEnabled', 'moving']);
+assert.equal(schemas.MotionStateData.additionalProperties, false);
+assert.equal(api.paths['/motion'].put.requestBody.content['application/json'].schema.$ref, '#/components/schemas/MotionUpdateRequest');
+assert.equal(api.paths['/motion'].put.responses['200'].content['application/json'].schema.$ref, '#/components/schemas/MotionResponse');
+assert(!api.paths['/motion'].put.parameters.some((item) => item.$ref?.includes('IdempotencyKey')));
+assert(event.$defs.robotState.required.includes('motionEnabled'));
+assert.equal(event.$defs.robotState.properties.motionEnabled.type, 'boolean');
+assert.equal(event.$defs.robotState.properties.motionEnabled.default, false);
+
 
 for (const schema of [event.$defs.localControlEnvelope, conversationEvent]) {
   assert.equal(schema.properties.protocolVersion.const, '2.0');
@@ -102,6 +118,8 @@ const mapping = {
   'local-playback': [schemas.PlaybackUpdate, api],
   'local-bootstrap-request': [schemas.BootstrapRequest, api],
   'local-status-response': [schemas.StatusResponse, api],
+  'local-motion-request': [schemas.MotionUpdateRequest, api],
+  'local-motion-response': [schemas.MotionResponse, api],
   'local-error-envelope': [schemas.ErrorEnvelope, api],
   'local-settings-setup': [schemas.SettingsSetupRequest, api],
   'local-settings-update': [schemas.SettingsUpdateRequest, api],

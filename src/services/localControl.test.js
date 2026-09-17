@@ -20,7 +20,7 @@ describe('decodeLocalControl', () => {
       { state: 'READY' },
       { kind: 'gateway', state: 'READY', detail: '', errorCode: '' },
     ],
-    ['local.robot.state', { ready: true, moving: false }, { kind: 'robot', ready: true, moving: false }],
+    ['local.robot.state', { ready: true, moving: false, motionEnabled: false }, { kind: 'robot', ready: true, moving: false, motionEnabled: false }],
     ['local.screen.state', { state: 'OFF' }, { kind: 'screen', state: 'OFF' }],
     ['local.interaction', { kind: 'HEAD_PRESS' }, { kind: 'interaction', interaction: 'HEAD_PRESS' }],
   ])('decodes %s with the Native cursor', (type, data, expected) => {
@@ -36,9 +36,14 @@ describe('decodeLocalControl', () => {
     );
     expect(
       decodeLocalControl(
-        localControl('local.robot.state', { ready: true, moving: false, token: 'x' }),
+        localControl('local.robot.state', { ready: true, moving: false, motionEnabled: false, token: 'x' }),
       ),
     ).toMatchObject({ kind: 'invalid' });
+    for (const motionEnabled of [undefined, 'true']) {
+      expect(decodeLocalControl(localControl('local.robot.state', {
+        ready: true, moving: false, motionEnabled,
+      }))).toMatchObject({ kind: 'invalid' });
+    }
   });
 
   it('leaves Native conversation envelopes to the conversation validator', () => {

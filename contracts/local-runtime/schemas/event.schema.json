@@ -118,7 +118,8 @@
       "additionalProperties": false,
       "required": [
         "ready",
-        "moving"
+        "moving",
+        "motionEnabled"
       ],
       "properties": {
         "ready": {
@@ -126,6 +127,10 @@
         },
         "moving": {
           "type": "boolean"
+        },
+        "motionEnabled": {
+          "type": "boolean",
+          "default": false
         }
       }
     },

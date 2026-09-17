@@ -25,6 +25,7 @@ public final class GatewaySettings {
     private static final String KEY_ROBOT_NAME = "robot_name";
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_PENDING_SUBMISSION = "pending_submission";
+    private static final String KEY_MOTION_ENABLED = "motion_enabled";
 
     public static final String SYSTEM_TRUST = "SYSTEM_TRUST";
     public static final String CONFIRMED_SPKI_PIN = "CONFIRMED_SPKI_PIN";
@@ -77,6 +78,16 @@ public final class GatewaySettings {
 
     public synchronized String getLanguage() {
         return preferences.getString(KEY_LANGUAGE, "zh-TW");
+    }
+
+    public synchronized boolean isMotionEnabled() {
+        return preferences.getBoolean(KEY_MOTION_ENABLED, false);
+    }
+
+    synchronized void setMotionEnabled(boolean enabled) {
+        if (!preferences.edit().putBoolean(KEY_MOTION_ENABLED, enabled).commit()) {
+            throw new IllegalStateException("Could not save motion preference");
+        }
     }
 
     synchronized RemoteSessionState loadRemoteSessionState() {

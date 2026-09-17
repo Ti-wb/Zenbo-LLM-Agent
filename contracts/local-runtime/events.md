@@ -29,6 +29,10 @@ emits `turn.completed`. Playback receipts are never forwarded to Hermes.
 The four controls are `local.gateway.state`, `local.robot.state`,
 `local.screen.state`, and `local.interaction`. They also advance the local
 sequence. Their strict data schemas exclude keys and authorization values.
+`local.robot.state.data` always contains `ready`, `moving`, and `motionEnabled`
+booleans, including initial and recovery frames. `motionEnabled` is the persisted
+Native motion permission, which defaults to false; it is not a robot readiness
+or movement indication.
 
 Web-owned tool calls use `PUT /api/v2/conversation/tool-calls/{callId}`. Native
 validates the allowlist, owner, correlation and deadline before returning the

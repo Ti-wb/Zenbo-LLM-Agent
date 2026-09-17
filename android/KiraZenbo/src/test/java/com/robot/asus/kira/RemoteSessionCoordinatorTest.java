@@ -28,12 +28,15 @@ public class RemoteSessionCoordinatorTest {
     private ScheduledExecutorService scheduler;
     private RemoteSessionCoordinator coordinator;
     private List<JSONObject> events;
+    private MemoryPreferences preferences;
 
     @Before public void setUp() {
         transport = new FakeTransport();
         robot = new FakeRobot();
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        coordinator = new RemoteSessionCoordinator(transport, robot, scheduler);
+        preferences = new MemoryPreferences();
+        coordinator = new RemoteSessionCoordinator(transport, robot, scheduler,
+                new GatewaySettings(preferences));
         events = new ArrayList<>();
         coordinator.setLocalPublisher(events::add);
         coordinator.onStateChanged("READY", "ready");
@@ -138,6 +141,7 @@ public class RemoteSessionCoordinatorTest {
     }
 
     @Test public void queuedPhysicalActionLosesAuthorityImmediatelyOnCancellation() throws Exception {
+        coordinator.setMotionEnabled(true);
         robot.queue = true;
         String turn = startText();
         coordinator.onDeviceToolCall(tool("look_at_user", object("doa", 10)));
@@ -149,6 +153,7 @@ public class RemoteSessionCoordinatorTest {
     }
 
     @Test public void duplicateAcknowledgedPhysicalCallDoesNotRepeatActionOrTerminal() throws Exception {
+        coordinator.setMotionEnabled(true);
         startText();
         JSONObject call = tool("look_at_user", object("doa", 10));
         coordinator.onDeviceToolCall(call);
@@ -157,6 +162,71 @@ public class RemoteSessionCoordinatorTest {
         assertEquals(1, robot.physicalEffects);
         assertEquals(2, transport.toolUpdates.size()); // accepted and one acknowledged terminal
         assertEquals("succeeded", transport.toolUpdates.get(1).getString("status"));
+    }
+
+    @Test public void motionDefaultsOffAndRejectsOnlyMotionWithoutFailingConversation() throws Exception {
+        assertFalse(coordinator.getStatus().getBoolean("motionEnabled"));
+        coordinator.setMotionEnabled(false);
+        assertEquals(0, robot.stops); // An idle toggle must not trigger vendor hardware UI.
+        String turn = startText();
+        coordinator.onDeviceToolCall(tool("look_at_user", object("doa", 10)));
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()));
+        assertEquals(0, robot.executions);
+        for (JSONObject update : transport.toolUpdates) {
+            assertEquals("rejected", update.getString("status"));
+            assertEquals("MOTION_DISABLED", update.getJSONObject("error").getString("code"));
+        }
+        coordinator.onDeviceToolCall(tool("stop_robot_following", object()));
+        coordinator.onDeviceToolCall(tool("get_system_status", object()));
+        assertEquals(2, robot.executions);
+        coordinator.onDeviceToolCall(tool("show_emotion", object("emotion", "HAPPY", "durationMs", 0)));
+        assertEquals(1, count("tool.call"));
+        assertEquals(turn, coordinator.getActiveTurnId());
+        assertEquals(0, count("turn.error"));
+        assertFalse(latest("local.robot.state").getJSONObject("data").getBoolean("motionEnabled"));
+    }
+
+    @Test public void disablingMotionRevokesQueuedActionEvenWhenReenabled() throws Exception {
+        coordinator.setMotionEnabled(true);
+        robot.queue = true;
+        String turn = startText();
+        coordinator.onDeviceToolCall(tool("look_at_user", object("doa", 10)));
+        GuardedExecution.Guard queued = robot.pendingGuard;
+        assertNotNull(queued);
+        coordinator.setMotionEnabled(false);
+        coordinator.setMotionEnabled(true);
+        assertFalse(queued.runIfAllowed(() -> robot.physicalEffects++));
+        assertEquals(0, robot.physicalEffects);
+        assertEquals(1, robot.stops);
+        assertEquals("MOTION_DISABLED", transport.toolUpdates.get(1).getJSONObject("error").getString("code"));
+        assertEquals(turn, coordinator.getActiveTurnId());
+        assertEquals(0, count("turn.cancelled"));
+    }
+
+    @Test public void disablingMotionStopsAnAlreadyRunningAction() throws Exception {
+        coordinator.setMotionEnabled(true);
+        startText();
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()));
+        assertTrue(robot.isMoving());
+        JSONObject result = coordinator.setMotionEnabled(false);
+        assertFalse(result.getBoolean("motionEnabled"));
+        assertFalse(result.getBoolean("moving"));
+        assertEquals(1, robot.stops);
+    }
+
+    @Test public void persistenceFailureNeverGrantsOrRestoresMotionAuthority() throws Exception {
+        preferences.failCommits = true;
+        try { coordinator.setMotionEnabled(true); fail("Saving enabled must fail"); }
+        catch (IllegalStateException expected) { }
+        assertFalse(coordinator.isMotionEnabled());
+        preferences.failCommits = false;
+        coordinator.setMotionEnabled(true);
+        preferences.failCommits = true;
+        try { coordinator.setMotionEnabled(false); fail("Saving disabled must report failure"); }
+        catch (IllegalStateException expected) { }
+        assertFalse(coordinator.isMotionEnabled());
+        assertFalse(latest("local.robot.state").getJSONObject("data").getBoolean("motionEnabled"));
+        assertEquals(0, robot.stops);
     }
 
     @Test public void sleepStopsHardwareImmediatelyButLocalTerminalReplyWaitsForRemoteAck() throws Exception {
@@ -368,11 +438,11 @@ public class RemoteSessionCoordinatorTest {
         public void reportPlayback(JSONObject update, ResultCallback callback) { callback.onSuccess(update); }
     }
     private static class FakeRobot implements RobotOperations {
-        int stops; int executions; int physicalEffects; boolean queue;
+        int stops; int executions; int physicalEffects; boolean queue; boolean moving;
         GuardedExecution.Guard pendingGuard;
         public boolean isReady() { return true; }
-        public boolean isMoving() { return physicalEffects > 0; }
-        public boolean emergencyStop() { stops++; return false; }
+        public boolean isMoving() { return moving; }
+        public boolean emergencyStop() { stops++; boolean stopped = moving; moving = false; return stopped; }
         public Set<String> getAllowedTools() { return new HashSet<>(Arrays.asList(
                 "get_system_status", "start_robot_following", "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep")); }
         public boolean isNativeTool(String name) { return !"show_emotion".equals(name) && !"go_to_sleep".equals(name); }
@@ -380,7 +450,12 @@ public class RemoteSessionCoordinatorTest {
         public void execute(String callId, String name, JSONObject arguments, GuardedExecution.Guard guard, ResultCallback callback) {
             executions++; pendingGuard = guard;
             if (queue) return;
-            if (guard.runIfAllowed(() -> physicalEffects++)) callback.onResult(object("status", "queued", "result", object("accepted", true)));
+            if (guard.runIfAllowed(() -> {
+                if ("look_at_user".equals(name) || "start_robot_following".equals(name)) {
+                    physicalEffects++;
+                    moving = true;
+                } else if ("stop_robot_following".equals(name)) moving = false;
+            })) callback.onResult(object("status", "queued", "result", object("accepted", true)));
         }
     }
 }

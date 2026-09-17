@@ -69,6 +69,18 @@ describe('RuntimeTransport', () => {
     expect(fetchImpl.mock.calls.at(-1)[1].headers['Content-Type']).toBe('application/json');
   });
 
+  it('updates the Native motion preference with only a boolean and the local session cookie', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ motionEnabled: true, moving: false }));
+    const transport = new RuntimeTransport({ fetchImpl });
+    await expect(transport.setMotionEnabled(true)).resolves.toEqual({ motionEnabled: true, moving: false });
+    const [url, request] = fetchImpl.mock.calls[0];
+    expect(url).toBe('http://127.0.0.1:8787/api/v2/motion');
+    expect(request.method).toBe('PUT');
+    expect(request.credentials).toBe('include');
+    expect(JSON.parse(request.body)).toEqual({ enabled: true });
+    expect(request.headers['Content-Type']).toBe('application/json');
+  });
+
   it('requires Local Runtime 2.0 at the loopback bootstrap boundary', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ protocolVersion: '1.0' }));
     const transport = new RuntimeTransport({ fetchImpl });

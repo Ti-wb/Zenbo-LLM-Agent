@@ -202,6 +202,13 @@ export class RuntimeTransport {
     return this.request(`${LOCAL_API_PREFIX}/status`, { method: 'GET' });
   }
 
+  setMotionEnabled(enabled) {
+    return this.request(`${LOCAL_API_PREFIX}/motion`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   async getConversation() {
     const payload = await this.request(`${LOCAL_API_PREFIX}/conversation`, { method: 'GET' });
     if (payload?.sessionId) {

@@ -5,8 +5,7 @@
   "timestamp": "2026-07-17T08:00:01.000Z",
   "data": {
     "ready": true,
-    "moving": true,
-    "motionEnabled": true
+    "moving": true
   },
   "sequence": 1
 }

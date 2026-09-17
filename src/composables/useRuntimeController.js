@@ -73,13 +73,46 @@ export function useRuntimeController(options = {}) {
   const savingSettings = ref(false);
   const testingSettings = ref(false);
   const settingsTestResult = ref(null);
+  const motionUpdating = ref(false);
+  const motionError = ref('');
   const started = ref(false);
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
   let listeningGeneration = 0;
+  let robotStateRevision = 0;
   let speechTurnId = '';
   let activePlaylist = null;
   let pendingVoiceTurn = null;
+
+  function applyNativeRobotStatus(status) {
+    robotStateRevision += 1;
+    runtime.motionEnabled = status?.motionEnabled === true;
+    if (typeof status?.robotReady === 'boolean') runtime.robotReady = status.robotReady;
+  }
+
+  async function setMotionEnabled(enabled) {
+    if (motionUpdating.value || typeof enabled !== 'boolean') return false;
+    motionUpdating.value = true;
+    motionError.value = '';
+    const revision = robotStateRevision;
+    try {
+      const result = await transport.setMotionEnabled(enabled);
+      if (typeof result?.motionEnabled !== 'boolean' || typeof result?.moving !== 'boolean') {
+        throw new Error('本機 Runtime 回覆的動作狀態無效。');
+      }
+      // A newer Native robot event may arrive before this HTTP response.
+      if (revision === robotStateRevision) {
+        runtime.motionEnabled = result.motionEnabled;
+        runtime.robotMoving = result.moving;
+      }
+      return true;
+    } catch (error) {
+      motionError.value = `未收到動作設定確認：${error.message || '請稍後再試。'}`;
+      return false;
+    } finally {
+      motionUpdating.value = false;
+    }
+  }
 
   async function submitPendingVoiceTurn(pending) {
     if (pendingVoiceTurn !== pending || runtime.sleeping) return;
@@ -194,6 +227,7 @@ export function useRuntimeController(options = {}) {
 
   async function refreshAuthoritativeRuntime(errorMessage = '') {
     const status = await transport.getRuntimeStatus();
+    applyNativeRobotStatus(status);
     const conversation = await transport.getConversation();
     await applyAuthoritativeConversation(conversation, errorMessage);
     const gateway = status?.gateway || status || {};
@@ -381,8 +415,10 @@ export function useRuntimeController(options = {}) {
           if (localControl.state === CONNECTION_STATES.READY) await enterListening();
           break;
         case 'robot':
+          robotStateRevision += 1;
           runtime.robotReady = localControl.ready;
           runtime.robotMoving = localControl.moving;
+          runtime.motionEnabled = localControl.motionEnabled;
           break;
         case 'screen':
           if (localControl.state === 'OFF') await enterSleep('screen-off');
@@ -783,6 +819,7 @@ export function useRuntimeController(options = {}) {
           // Preserve the committed cursor so retained tool/audio events replay.
           // A Native recovery control requests a snapshot if history was evicted.
           const status = await transport.getRuntimeStatus();
+          applyNativeRobotStatus(status);
           const gateway = status?.gateway || status || {};
           runtime.setConnection(normalizedGatewayState(gateway.state || status?.gatewayState));
         } catch (error) {
@@ -832,6 +869,9 @@ export function useRuntimeController(options = {}) {
     isListening: computed(() => vad.isRunning.value),
     isAudioReady: computed(() => Boolean(vad.isAudioReady?.value)),
     inputLevel: computed(() => vad.inputLevel?.value || 0),
+    motionUpdating,
+    motionError,
+    setMotionEnabled,
     savingSettings,
     settingsTestResult,
     testingSettings,

@@ -94,6 +94,7 @@ export const useRuntimeStore = defineStore('runtime', {
     sessionId: '',
     robotReady: false,
     robotMoving: false,
+    motionEnabled: false,
     activeTurnId: '',
     lastSequence: 0,
     transcript: '',

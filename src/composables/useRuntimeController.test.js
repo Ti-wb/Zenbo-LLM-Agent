@@ -48,6 +48,7 @@ function fakeTransport({ status, conversation }) {
     bootstrap: vi.fn().mockResolvedValue({}),
     getRuntimeSettings: vi.fn().mockResolvedValue({ pinConfigured: true }),
     getRuntimeStatus: vi.fn().mockResolvedValue(status),
+    setMotionEnabled: vi.fn(),
     getConversation: vi.fn().mockResolvedValue(conversation),
     resetCursor: vi.fn(),
     connectEvents: vi.fn(),
@@ -246,6 +247,63 @@ describe('go_to_sleep result and cancellation ordering', () => {
     expect(runtime.statusLabel).toBe('休眠中');
     expect(vad.start).not.toHaveBeenCalled();
     expect(api.requests.filter(({ method }) => method === 'POST')).toHaveLength(1);
+    app.unmount();
+  });
+});
+
+describe('Native motion preference', () => {
+  it('waits for Native confirmation, ignores repeat clicks and keeps failed updates separate from speech', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY', motionEnabled: false }, conversation: initial });
+    const { app, controller, runtime, playback, vad } = await mountController({ transport, conversation: initial });
+    expect(runtime.motionEnabled).toBe(false);
+    let confirm;
+    transport.setMotionEnabled.mockImplementationOnce(() => new Promise((resolve) => { confirm = resolve; }));
+    const pending = controller.setMotionEnabled(true);
+    expect(controller.motionUpdating.value).toBe(true);
+    expect(runtime.motionEnabled).toBe(false);
+    await controller.setMotionEnabled(true);
+    expect(transport.setMotionEnabled).toHaveBeenCalledOnce();
+    confirm({ motionEnabled: true, moving: false });
+    expect(await pending).toBe(true);
+    expect(runtime.motionEnabled).toBe(true);
+    expect(controller.motionUpdating.value).toBe(false);
+    transport.setMotionEnabled.mockRejectedValueOnce(new Error('Native unavailable'));
+    expect(await controller.setMotionEnabled(false)).toBe(false);
+    expect(runtime.motionEnabled).toBe(true);
+    expect(controller.motionError.value).toContain('Native unavailable');
+    expect(runtime.error).toBe('');
+    expect(runtime.turnState).toBe(TURN_STATES.SPEAKING);
+    expect(vad.pause).not.toHaveBeenCalled();
+    expect(playback.stop).not.toHaveBeenCalled();
+    expect(transport.cancelTurn).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('reads the persisted value at startup and synchronizes Native controls and reconnect status', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY', motionEnabled: true }, conversation: initial });
+    const { app, controller, runtime } = await mountController({ transport, conversation: initial });
+    expect(runtime.motionEnabled).toBe(true);
+    let confirm;
+    transport.setMotionEnabled.mockImplementationOnce(() => new Promise((resolve) => { confirm = resolve; }));
+    const pending = controller.setMotionEnabled(true);
+    await transport.emit('event', {
+      protocolVersion: '2.0', eventId: '00000000-0000-4000-8000-000000000004',
+      sequence: 4, type: 'local.robot.state', timestamp: '2026-09-17T00:00:00.000Z',
+      data: { ready: true, moving: false, motionEnabled: false },
+    });
+    expect(runtime.motionEnabled).toBe(false);
+    expect(runtime.robotReady).toBe(true);
+    confirm({ motionEnabled: true, moving: true });
+    await pending;
+    expect(runtime.motionEnabled).toBe(false);
+    expect(runtime.robotMoving).toBe(false);
+    runtime.setConnection(CONNECTION_STATES.DEGRADED);
+    transport.getRuntimeStatus.mockResolvedValueOnce({ gatewayState: 'READY', motionEnabled: true });
+    await transport.emit('runtimeConnected', { connected: true });
+    expect(runtime.motionEnabled).toBe(true);
+    expect(runtime.lastSequence).toBe(4);
     app.unmount();
   });
 });

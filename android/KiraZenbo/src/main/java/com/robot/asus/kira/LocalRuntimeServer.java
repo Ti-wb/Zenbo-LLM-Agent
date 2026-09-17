@@ -163,6 +163,22 @@ public final class LocalRuntimeServer {
         registerConversationRoute("/api/v2/conversation$");
         registerMultipartTurnRoute("/api/v2/conversation/turns$");
 
+        server.addAction("PUT", "/api/v2/motion$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            JSONObject body = readJson(request);
+            try {
+                requireOnlyKeys(body, "enabled");
+                if (!(body.opt("enabled") instanceof Boolean)) {
+                    throw new IllegalArgumentException("enabled must be a boolean");
+                }
+                sendJson(response, 200, coordinator.setMotionEnabled(body.getBoolean("enabled")));
+            } catch (IllegalStateException error) {
+                sendError(response, 500, "INTERNAL_ERROR", "Could not save motion preference");
+            } catch (Exception error) {
+                sendError(response, 400, "INVALID_REQUEST", "enabled must be the only field and a boolean");
+            }
+        }, headers -> new JSONObjectBody());
+
         server.get("/api/v2/settings$", (request, response) -> {
             if (!requireSession(request, response)) return;
             sendJson(response, 200, settingsJson());
@@ -521,6 +537,7 @@ public final class LocalRuntimeServer {
                     "settingsUnlocked", isUnlocked(),
                     "gatewayState", coordinator.getGatewayState(),
                     "robotReady", robotGateway.isReady(),
+                    "motionEnabled", coordinatorStatus.optBoolean("motionEnabled", false),
                     "activeSessionId", activeSessionId,
                     "activeTurnId", activeTurnId == null || activeTurnId.isEmpty() ? JSONObject.NULL : activeTurnId
             ));
