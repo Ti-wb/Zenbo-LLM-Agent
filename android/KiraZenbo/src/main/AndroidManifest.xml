@@ -24,7 +24,7 @@
         <activity
             android:name="com.robot.asus.kira.MainActivity"
             android:exported="true"
-            android:launchMode="singleTop" >
+            android:launchMode="singleTask" >
 
             <!-- Keep the existing launcher/ZENBO intent-filter -->
             <intent-filter>
