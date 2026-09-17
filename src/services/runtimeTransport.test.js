@@ -47,6 +47,28 @@ class FakeWebSocket {
 }
 
 describe('RuntimeTransport', () => {
+  it('omits Content-Type on bodyless reads so Native does not parse an empty JSON body', async () => {
+    const fetchImpl = vi.fn(async (_url, request) => {
+      if (!request.body && request.headers['Content-Type'] === 'application/json') {
+        throw new TypeError('NetworkError when attempting to fetch resource.');
+      }
+      return jsonResponse({ pinConfigured: true, hasApiKey: true, lastSequence: 0 });
+    });
+    const transport = new RuntimeTransport({ fetchImpl });
+    await transport.getHealth();
+    await expect(transport.getRuntimeSettings()).resolves.toMatchObject({
+      pinConfigured: true, hasApiKey: true,
+    });
+    await transport.getRuntimeStatus();
+    await transport.getConversation();
+    expect(fetchImpl.mock.calls.every(([, request]) => request.method === 'GET')).toBe(true);
+    expect(fetchImpl.mock.calls.every(([, request]) => !('Content-Type' in request.headers))).toBe(true);
+    expect(fetchImpl.mock.calls.every(([, request]) => request.headers.Accept === 'application/json')).toBe(true);
+
+    await transport.unlockRuntimeSettings({ pin: '123456' });
+    expect(fetchImpl.mock.calls.at(-1)[1].headers['Content-Type']).toBe('application/json');
+  });
+
   it('requires Local Runtime 2.0 at the loopback bootstrap boundary', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ protocolVersion: '1.0' }));
     const transport = new RuntimeTransport({ fetchImpl });

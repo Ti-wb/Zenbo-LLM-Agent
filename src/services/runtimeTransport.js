@@ -138,7 +138,9 @@ export class RuntimeTransport {
     const response = await this.fetchImpl(`${this.origin}${path}`, {
       ...options,
       credentials: 'include',
-      headers: this.headers(options.headers, options.json !== false),
+      // AndroidAsync selects its body parser from Content-Type, even for GET.
+      // Bodyless reads must not advertise an empty JSON document.
+      headers: this.headers(options.headers, options.json !== false && options.body !== undefined),
     });
     const payload = await this.parseResponse(response);
     if (!response.ok) {
