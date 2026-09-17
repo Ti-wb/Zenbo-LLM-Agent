@@ -15,7 +15,9 @@ import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -46,8 +48,12 @@ public class RobotApiService extends Service {
     private static final String CHANNEL_ID = "RobotApiServiceChannel";
     private static volatile boolean localRuntimeReady;
     private static volatile LocalRuntimeServer activeLocalRuntime;
+    private static volatile RobotApiService activeRobotService;
+    private static volatile boolean rendererForeground;
 
     private RobotAPI robotAPI;
+    private boolean robotApiInitialized;
+    private final Handler displayHandler = new Handler(Looper.getMainLooper());
     private GatewaySettings gatewaySettings;
     private DeviceCredentialStore credentialStore;
     private RobotGateway robotGateway;
@@ -96,6 +102,7 @@ public class RobotApiService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        activeRobotService = this;
 
         createNotificationChannel();
         registerScreenEventReceiver();
@@ -156,6 +163,11 @@ public class RobotApiService extends Service {
                 super.initComplete();
                 Log.i(TAG, "RobotAPI initialized; attaching native robot gateway.");
                 robotGateway.attach(robotAPI);
+                displayHandler.post(() -> {
+                    if (activeRobotService != RobotApiService.this) return;
+                    robotApiInitialized = true;
+                    hideStockFaceForRenderer();
+                });
                 sendEvent("initComplete", new JSONObject());
             }
 
@@ -386,6 +398,9 @@ public class RobotApiService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (activeRobotService == this) activeRobotService = null;
+        displayHandler.removeCallbacksAndMessages(null);
+        robotApiInitialized = false;
         localRuntimeReady = false;
         activeLocalRuntime = null;
         if (screenEventReceiver != null) {
@@ -421,6 +436,23 @@ public class RobotApiService extends Service {
 
     public static boolean isLocalRuntimeReady() {
         return localRuntimeReady;
+    }
+
+    /** Activity lifecycle controls display ownership; the service remains the sole SDK owner. */
+    public static void setRendererForeground(boolean foreground) {
+        rendererForeground = foreground;
+        RobotApiService service = activeRobotService;
+        if (service != null && foreground) service.displayHandler.post(service::hideStockFaceForRenderer);
+    }
+
+    private void hideStockFaceForRenderer() {
+        if (activeRobotService != this || !rendererForeground || !robotApiInitialized || robotAPI == null) return;
+        try {
+            // ASUS's custom-UI lifecycle API only hides its expression window, without speech or motion.
+            robotAPI.robot.setExpression(RobotFace.HIDEFACE);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not release the stock face overlay for the renderer", error);
+        }
     }
 
     public static String issueRendererBootstrapSecret() {

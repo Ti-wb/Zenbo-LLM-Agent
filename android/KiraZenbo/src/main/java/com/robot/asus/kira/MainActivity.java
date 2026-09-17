@@ -109,6 +109,18 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        RobotApiService.setRendererForeground(true);
+    }
+
+    @Override
+    protected void onPause() {
+        RobotApiService.setRendererForeground(false);
+        super.onPause();
+    }
+
+    @Override
     public void onMediaPermissionRequest(@NonNull GeckoSession session, @NonNull String uri,
                                          GeckoSession.PermissionDelegate.MediaSource[] video, @NonNull GeckoSession.PermissionDelegate.MediaSource[] audio,
                                          @NonNull GeckoSession.PermissionDelegate.MediaCallback callback) {
