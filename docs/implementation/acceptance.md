@@ -6,13 +6,14 @@
 
 | 項目 | 結果與界線 |
 | --- | --- |
-| Web | 本輪 `npm test`：150 項全數通過；Web production build 通過 |
+| Web | 本輪 `npm test`：153 項全數通過；Web production build 通過 |
 | 表情改版 | 五種新表情、睡眠 Z／呼吸、雙眨眼及 wink；保留實際音量嘴型與 reduced motion。桌面已實際查看 Vue 六格畫面，實機結果另列 |
-| 最新 UI 修補 | 背景統一純深色並保留輸入音量像素角框，已完成桌面視覺檢查；真正開始說話時清除上輪字幕。兩項 source 修補尚未安裝到裝置 |
-| 本機契約 | `npm run test:contracts`：13 個路徑、30 個有效及 31 個拒絕 fixtures 通過 |
+| UI 修補 | 背景統一純深色並保留輸入音量像素角框，已完成桌面視覺檢查；真正開始說話時清除上輪字幕。本輪正式 APK 實機畫面已確認背景均一 |
+| 動作開關 | 已實作 Native 持久化、預設 OFF；關閉時拒絕跟隨與看向使用者，停止工具始終保留，語音與表情不受影響。未啟用 ON 或測試移動 |
+| 本機契約 | `npm run test:contracts`：14 個路徑、34 個有效及 40 個拒絕 fixtures 通過 |
 | Hermes fixtures | `npm run test:hermes`：5 項通過，含真實匿名 run／SSE／idempotency 記錄 |
 | 外掛 Python | 45 項測試通過 |
-| Android 測試與建置 | Native 本輪未更動，沿用先前 58 項測試通過紀錄（KiraZenbo 57、RobotActivityLibrary 1）；本輪 `assembleDebug` 成功，APK 備妥但未安裝 |
+| Android 測試與建置 | 本輪 64 項測試全數通過（KiraZenbo 63、RobotActivityLibrary 1）；`assembleDebug` 成功，正式 APK 覆蓋安裝與新程序啟動通過 |
 | 正式 APK | 不含臨時診斷碼；source、Git index 與 APK 掃描未檢出 API key 或 PIN |
 | 實際 Hermes | 外掛已在既有 Hermes 程序內運行，公開 HTTPS／WSS 443；grok run 完全省略 `model`，由 Profile 管理模型 |
 | 工具往返 | 真實 Hermes run 呼叫 `show_emotion`，由模擬裝置回報結果；尚非 Zenbo 實機六工具驗收 |
@@ -29,9 +30,9 @@
 | Android | 6.0.1／API 23 |
 | ABI | x86_64 |
 | 韌體 | 13.10.8.240-20230807 |
-| 安裝 | 已完成設定與前版 APK 覆蓋安裝；最新背景／字幕修補尚未安裝。USB／ADB 目前未列出裝置，重接後先讀取現況，不追加錄音或重啟 |
+| 安裝 | USB／ADB 已恢復；正式 APK 覆蓋安裝與新程序啟動成功，PIN／key 保留 |
 | Native 狀態 | `runtimeReady=true`、`robotReady=true`、`setupRequired=false` |
-| 設定保存 | 改版 APK 安裝後仍為 `onboardingComplete=true`、`hasApiKey=true`，沒有錯誤回到首次設定；`micEnabled=false`、`turnState=IDLE` |
+| 設定保存 | 正式 APK 重啟後 PIN／key 保留，沒有錯誤回到首次設定；Hermes `READY`、休眠、`micEnabled=false`、`turnState=IDLE` 且無錯誤 |
 | 真實本機 API | `/api/v2/status`、`/api/v2/conversation` 均 HTTP 200 且符合正式 v2 schema；session 與 sequence 一致 |
 | 網路與時鐘 | 本輪 `network_connected=true`，裝置與電腦時鐘相差少於 5 分鐘；連網與校時通過 |
 | Android 6 TLS | 已補足缺少的官方 ISRG Root X1，限 Native Hermes 驗證使用，保留 PKIX／hostname 驗證；未更動系統 CA、`SYSTEM_TRUST` 或 pins。實機 Hermes 為 `READY` |
@@ -42,7 +43,9 @@
 | 本機休眠 | 切至 Android Wi-Fi 設定再返回 App，正式 `visibilitychange` 觸發休眠：`sleeping=true`、`micEnabled=false`、`turnState=IDLE`，Native 無 active turn 且 RobotAPI ready；睡臉持續 30 秒正常，未被原廠臉覆蓋 |
 | 語音入口 | 麥克風權限已授予；實際按 ○ 進入 `READY/LISTENING`、`micEnabled=true` 且無錯誤，再按 ○ 可休眠並關閉麥克風 |
 | 實際語音流程 | 使用者已可說話、完成 capture 並進入辨識；最新 Hermes STT、Agent 回答與 TTS 已完成，但尚無裝置音檔下載，回答仍未播放 |
-| 尚待定位 | 表情工具回報裝置拒絕；Native／Renderer 的結果接收與播放仍待定位。前次上輪字幕殘留已在 source 修正 |
+| 單一畫面 | 原先已證實不同 task 各有 MainActivity。改為 singleTask 後，一般顯式啟動與再次 MAIN＋LAUNCHER 啟動均保留同一 Activity、同一 Gecko 頁面 |
+| 動作預設 | 正式 APK 的 Native／Web 均為 `motionEnabled=false`，按鈕顯示「動作關」、無啟用狀態，兩端事件游標一致；未開啟 ON 或執行移動 |
+| 播放驗收 | 前次表情工具被裝置拒絕且無回答播放，仍需修補後同版自然中文回合驗收；不以服務端完成代替裝置播放成功 |
 | 頭部按鍵 | 已修正短按／中按辨識並通過回歸測試；實際按頭後的一句自然中文仍待最終驗收 |
 | 收音回饋 | 已實作收到第一個音訊 frame 才顯示聆聽並發出一次輕提示音；像素角框亮度隨輸入 RMS 變化，背景維持純色。最終實機感受待驗 |
 | 動態畫面／語音硬體 | 實機收音、提交與服務端處理已有證據；裝置播放、表情同步及音量嘴型仍未通過 |
@@ -58,7 +61,7 @@
 
 ## 本輪剩餘驗收
 
-- [ ] USB 恢復後先確認現況與版本；定位 Hermes 結果回到裝置後的音檔下載、播放及表情回報，完成既有自然中文回合的閉環。
+- [ ] 請使用者說一次自然中文，確認正式同版的回答播放與表情同步；期間保持動作 OFF。
 
 目前以這一趟自然語音閉環為準。較廣的長時間運作、多段播放、斷線／重啟與取消邊界、20 秒靜音休眠及六工具完整回歸留待另行安排；HOME 停留不再追加測試。實體移動依使用者要求未測。
 
