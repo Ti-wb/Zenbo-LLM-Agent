@@ -4,16 +4,24 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.security.GeneralSecurityException;
 import java.security.KeyManagementException;
+import java.security.KeyStore;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Call;
@@ -26,7 +34,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 
-/** Confirmed-SPKI support and an unauthenticated certificate fingerprint probe. */
+/** Hermes-only system trust, confirmed SPKI, and unauthenticated certificate probes. */
 public final class TlsTrust {
     private TlsTrust() { }
 
@@ -38,6 +46,77 @@ public final class TlsTrust {
     public interface CapabilityCallback {
         void onSuccess(JSONObject result);
         void onError(String code, String message);
+    }
+
+    /** Adds the public ISRG X1 root for Android 6 without changing device-wide trust. */
+    public static OkHttpClient.Builder systemTrustBuilder(HttpUrl baseUrl) {
+        if (!baseUrl.isHttps()) throw new IllegalArgumentException("Hermes TLS requires HTTPS");
+        try {
+            X509TrustManager trustManager = withIsrgRoot(trustManager(null));
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, new TrustManager[]{trustManager}, null);
+            return new OkHttpClient.Builder()
+                    .sslSocketFactory(sslContext.getSocketFactory(), trustManager)
+                    .followRedirects(false).followSslRedirects(false)
+                    .addInterceptor(chain -> {
+                        HttpUrl target = chain.request().url();
+                        if (!target.isHttps() || !baseUrl.host().equals(target.host())
+                                || baseUrl.port() != target.port()) {
+                            throw new SSLPeerUnverifiedException("Hermes TLS requires the configured HTTPS origin");
+                        }
+                        return chain.proceed(chain.request());
+                    });
+            // OkHttp's default hostname verifier remains in force for HTTPS and WSS.
+        } catch (GeneralSecurityException | IOException error) {
+            throw new IllegalStateException("Hermes system TLS is unavailable", error);
+        }
+    }
+
+    static X509Certificate loadIsrgRoot() throws CertificateException, IOException {
+        try (InputStream input = TlsTrust.class.getResourceAsStream("/certificates/isrg_root_x1.pem")) {
+            if (input == null) throw new IOException("Missing bundled ISRG root certificate");
+            return (X509Certificate) CertificateFactory.getInstance("X.509").generateCertificate(input);
+        }
+    }
+
+    static X509TrustManager withIsrgRoot(X509TrustManager platform)
+            throws GeneralSecurityException, IOException {
+        KeyStore roots = KeyStore.getInstance(KeyStore.getDefaultType());
+        roots.load(null, null);
+        roots.setCertificateEntry("isrg-root-x1", loadIsrgRoot());
+        final X509TrustManager isrg = trustManager(roots);
+        Set<X509Certificate> issuers = new LinkedHashSet<>(Arrays.asList(platform.getAcceptedIssuers()));
+        issuers.addAll(Arrays.asList(isrg.getAcceptedIssuers()));
+        final X509Certificate[] acceptedIssuers = issuers.toArray(new X509Certificate[0]);
+        return new X509TrustManager() {
+            @Override public void checkClientTrusted(X509Certificate[] chain, String authType)
+                    throws CertificateException {
+                throw new CertificateException("Client certificates are not accepted");
+            }
+
+            @Override public void checkServerTrusted(X509Certificate[] chain, String authType)
+                    throws CertificateException {
+                try {
+                    platform.checkServerTrusted(chain, authType);
+                } catch (CertificateException platformFailure) {
+                    // This is a second full PKIX validation against one public root, never an accept bypass.
+                    isrg.checkServerTrusted(chain, authType);
+                }
+            }
+
+            @Override public X509Certificate[] getAcceptedIssuers() {
+                return acceptedIssuers.clone();
+            }
+        };
+    }
+
+    private static X509TrustManager trustManager(KeyStore roots) throws GeneralSecurityException {
+        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init(roots);
+        for (TrustManager manager : factory.getTrustManagers()) {
+            if (manager instanceof X509TrustManager) return (X509TrustManager) manager;
+        }
+        throw new GeneralSecurityException("No X.509 trust manager available");
     }
 
     public static OkHttpClient.Builder pinnedBuilder(String host, String pin) {
@@ -71,7 +150,7 @@ public final class TlsTrust {
     public static void probeSystemTrust(String gatewayUrl, String deviceId, ProbeCallback callback) {
         try {
             HttpUrl baseUrl = new HermesEndpoints(gatewayUrl).base();
-            OkHttpClient client = new OkHttpClient.Builder()
+            OkHttpClient client = systemTrustBuilder(baseUrl)
                     .followRedirects(false).followSslRedirects(false)
                     .connectTimeout(10, TimeUnit.SECONDS)
                     .readTimeout(10, TimeUnit.SECONDS)
@@ -128,7 +207,7 @@ public final class TlsTrust {
         try {
             HermesEndpoints endpoints = new HermesEndpoints(gatewayUrl);
             OkHttpClient.Builder builder = GatewaySettings.CONFIRMED_SPKI_PIN.equals(trustMode)
-                    ? pinnedBuilder(endpoints.base().host(), confirmedPin) : new OkHttpClient.Builder();
+                    ? pinnedBuilder(endpoints.base().host(), confirmedPin) : systemTrustBuilder(endpoints.base());
             OkHttpClient client = builder.followRedirects(false).followSslRedirects(false)
                     .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build();
             testCapabilities(client, endpoints, deviceId, apiKey, startedAt, callback);

@@ -163,10 +163,10 @@ public final class HermesClient implements HermesTransport {
         }
         try {
             endpoints = testEndpoints != null ? testEndpoints : new HermesEndpoints(settings.getGatewayUrl());
-            OkHttpClient.Builder builder = GatewaySettings.CONFIRMED_SPKI_PIN.equals(settings.getTrustMode())
+            OkHttpClient.Builder builder = testHttp != null ? testHttp.newBuilder()
+                    : GatewaySettings.CONFIRMED_SPKI_PIN.equals(settings.getTrustMode())
                     ? TlsTrust.pinnedBuilder(endpoints.base().host(), settings.getCertificatePin())
-                    : new OkHttpClient.Builder();
-            if (testHttp != null) builder = testHttp.newBuilder();
+                    : TlsTrust.systemTrustBuilder(endpoints.base());
             http = builder.followRedirects(false).followSslRedirects(false)
                     .connectTimeout(15, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS)
                     .writeTimeout(45, TimeUnit.SECONDS).build();

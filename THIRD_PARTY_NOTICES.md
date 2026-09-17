@@ -89,6 +89,17 @@ in this repository's [`LICENSE`](LICENSE) file. Kotlin standard-library JDK 7
 and JDK 8 compatibility artifacts also appear in the graph, but their classes
 resolve to the Kotlin 2.2.10 standard library used by the APK.
 
+### ISRG Root X1 public certificate
+
+The Native Hermes client bundles the unchanged public [ISRG Root X1
+certificate](https://letsencrypt.org/certs/isrgrootx1.pem) for Android 6 trust
+compatibility. It is owned by Internet Security Research Group. [ISRG CP/CPS
+section 9.5](https://letsencrypt.org/documents/isrg-cp-cps-v6.2/#95-intellectual-property-rights)
+permits complete reproduction and redistribution on a non-exclusive,
+royalty-free basis; this certificate is not licensed under the project's
+Apache-2.0 license. Its source and fingerprint are recorded beside the bundled
+certificate in `android/KiraZenbo/src/main/resources/certificates/README.md`.
+
 ### ASUS Zenbo SDK
 
 The ASUS Zenbo SDK is a proprietary vendor dependency and is intentionally not
