@@ -66,6 +66,29 @@ class CompatTests(unittest.TestCase):
         with self.assertRaises(module.IncompatibleHermes):
             self.compat.preflight()
 
+    def test_tts_uses_only_profile_directory_or_host_approved_roots(self):
+        self.compat.tts = types.SimpleNamespace(_default_output_dir=lambda: "/protected-profile/cache/audio")
+        self.compat.file_safety = types.SimpleNamespace(
+            get_safe_write_roots=lambda: {"/workspace"},
+            is_write_denied=lambda path: not path.startswith("/workspace/"),
+            is_write_approval_required=lambda path: False)
+        self.assertEqual(self.compat.tts_output_dir(), Path("/workspace"))
+        self.compat.tts._default_output_dir = lambda: "/workspace/profile/audio"
+        self.assertEqual(self.compat.tts_output_dir(), Path("/workspace/profile/audio"))
+        self.compat.file_safety.is_write_approval_required = lambda path: True
+        with self.assertRaises(module.IncompatibleHermes):
+            self.compat.tts_output_dir()
+
+    def test_tts_rejects_actual_protected_path_and_missing_allowed_root(self):
+        self.compat.tts = types.SimpleNamespace(_default_output_dir=lambda: "/protected-profile/cache/audio")
+        self.compat.file_safety = types.SimpleNamespace(
+            get_safe_write_roots=lambda: set(), is_write_denied=lambda path: True,
+            is_write_approval_required=lambda path: False)
+        with self.assertRaises(module.IncompatibleHermes):
+            self.compat.tts_output_dir()
+        with self.assertRaises(module.IncompatibleHermes):
+            self.compat.check_tts_output_path(Path("/tmp/speech.wav"))
+
 
 class PluginTests(unittest.TestCase):
     def test_six_tools_register_and_fail_closed_without_listener(self):

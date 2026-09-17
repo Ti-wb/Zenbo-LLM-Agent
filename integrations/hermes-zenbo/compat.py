@@ -7,6 +7,7 @@ The preflight checks the installed implementation, without reading credentials.
 import ast
 import importlib
 import inspect
+from pathlib import Path
 import textwrap
 
 
@@ -22,6 +23,8 @@ class HermesCompat:
         self.session = importlib.import_module("gateway.session_context")
         self.approval = importlib.import_module("tools.approval_context")
         self.interrupt = importlib.import_module("tools.interrupt")
+        self.tts = importlib.import_module("tools.tts_tool")
+        self.file_safety = importlib.import_module("agent.file_safety")
         self.preflight()
 
     def preflight(self):
@@ -36,6 +39,10 @@ class HermesCompat:
                           (self.interrupt, "is_interrupted")):
             if not hasattr(obj, name):
                 raise IncompatibleHermes("Hermes tool context helpers are unsupported")
+        if not callable(getattr(self.tts, "_default_output_dir", None)) or any(
+                not callable(getattr(self.file_safety, name, None)) for name in
+                ("get_safe_write_roots", "is_write_denied", "is_write_approval_required")):
+            raise IncompatibleHermes("Hermes safe audio output helpers are unsupported")
         try:
             getter = self.runs._RunLaunch.approval_session_key.fget
             tree = ast.parse(textwrap.dedent(inspect.getsource(getter)))
@@ -108,3 +115,24 @@ class HermesCompat:
     def speak(text, output_path):
         from tools.tts_tool import text_to_speech_tool
         return text_to_speech_tool(text=text, output_path=str(output_path))
+
+    def check_tts_output_path(self, path):
+        value = str(Path(path).resolve())
+        if self.file_safety.is_write_denied(value) or self.file_safety.is_write_approval_required(value):
+            raise IncompatibleHermes("Hermes policy does not permit this audio output path")
+
+    def tts_output_dir(self):
+        # Called in the worker's authenticated profile scope. Prefer the profile
+        # audio location, then only roots admitted by the host's existing policy.
+        candidates = [self.tts._default_output_dir(), *sorted(self.file_safety.get_safe_write_roots())]
+        for candidate in candidates:
+            path = Path(candidate)
+            if not path.is_absolute():
+                continue
+            path = path.resolve()
+            try:
+                self.check_tts_output_path(path / ".zenbo-audio-probe" / "speech.wav")
+            except IncompatibleHermes:
+                continue
+            return path
+        raise IncompatibleHermes("Hermes has no policy-approved audio output directory")

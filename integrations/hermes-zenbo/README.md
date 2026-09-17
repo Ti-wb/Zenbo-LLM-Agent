@@ -73,7 +73,8 @@ Hermes profile context. `language` is request metadata; provider language/voice
 policy stays in the profile.
 
 TTS accepts at most 8,000 characters and preserves ordered multi-file output.
-Only WAV/MP3 files generated inside the request's private temporary directory
+Only WAV/MP3 files generated inside a private temporary directory under a
+Hermes-policy-approved output root
 are accepted; they are deleted before responding. Responses expose no paths,
 provider exceptions or keys. UUID artifacts remain in memory, scoped to
 profile/key/device, with SHA-256 and a 30-minute maximum TTL. Limits: 10 MiB per

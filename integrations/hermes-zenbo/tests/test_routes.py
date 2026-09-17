@@ -3,6 +3,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 import uuid
@@ -50,12 +51,21 @@ class FakeCompat:
         second.write_bytes(b"ID3second")
         return json.dumps({"success": True, "file_paths": [str(path), str(second)]})
 
+    def tts_output_dir(self):
+        return self.audio_directory
+
+    def check_tts_output_path(self, path):
+        if not path.is_relative_to(Path(self.audio_directory).resolve()):
+            raise ValueError("Test audio escaped its configured root")
+
 
 @unittest.skipIf(aiohttp is None, "aiohttp is required for HTTP/WebSocket integration tests")
 class RouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         routes = importlib.import_module(PACKAGE + ".routes")
         self.compat = FakeCompat()
+        self.audio_directory = tempfile.TemporaryDirectory(prefix="zenbo-route-profile-audio-")
+        self.compat.audio_directory = self.audio_directory.name
         self.runtime = routes.Runtime(self.compat)
         app = web.Application()
         self.runtime.mount(app)
@@ -67,6 +77,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.close()
+        self.audio_directory.cleanup()
 
     async def bind(self):
         socket = await self.client.ws_connect(self.root + "/device-channel", headers=self.headers)

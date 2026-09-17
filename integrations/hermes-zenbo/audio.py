@@ -146,9 +146,15 @@ class Speech:
 
     async def synthesize(self, text):
         def work():
-            with tempfile.TemporaryDirectory(prefix="hermes-zenbo-tts-") as directory:
+            # Resolve inside the worker's inherited profile context. The host's
+            # file policy chooses the root; generic OS temp is never substituted.
+            parent = Path(self.compat.tts_output_dir()).resolve()
+            parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="zenbo-", dir=parent) as directory:
                 root = Path(directory).resolve()
-                result = self.compat.speak(text, root / "speech.wav")
+                output_path = root / "speech.wav"
+                self.compat.check_tts_output_path(output_path)
+                result = self.compat.speak(text, output_path)
                 result = json.loads(result) if isinstance(result, str) else result
                 if not isinstance(result, dict) or not result.get("success"):
                     raise Rejected("synthesis_failed", "Hermes could not synthesize this answer")
