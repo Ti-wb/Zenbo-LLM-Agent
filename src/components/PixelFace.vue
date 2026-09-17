@@ -66,9 +66,11 @@ let emotionTransition = null;
 let speechTransition = null;
 let wasSpeaking = false;
 let previousEqualizerBand;
+let expressionStartedAt = 0;
+let expressionKey = '';
 
 function withMouth(frame, mouth) {
-  return { ...frame, mouth };
+  return { ...frame, mouth, mouthShadows: [], mouthAccents: [] };
 }
 
 function transitionEmotion(frame, time) {
@@ -158,12 +160,20 @@ function draw(time) {
   const context = canvas.value?.getContext('2d');
   if (!context) return;
 
+  const nextExpression = props.sleeping ? 'sleeping'
+    : String(props.turnState || 'IDLE').toUpperCase() === 'LISTENING' ? 'curious' : normalizeEmotion(props.emotion);
+  if (nextExpression !== expressionKey) {
+    expressionKey = nextExpression;
+    expressionStartedAt = time;
+  }
+
   let frame = resolveFaceFrame({
     emotion: props.emotion,
     mouthLevel: props.mouthLevel,
     sleeping: props.sleeping,
     turnState: props.turnState,
     elapsedMs: time - startedAt,
+    expressionElapsedMs: time - expressionStartedAt,
     reducedMotion: reducedMotion.value,
     previousEqualizerBand,
   });

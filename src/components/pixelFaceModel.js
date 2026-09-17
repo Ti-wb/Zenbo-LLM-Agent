@@ -3,12 +3,12 @@ export const FACE_HEIGHT = 100;
 export const FACE_BACKGROUND = '#061018';
 
 export const FACE_PALETTE = Object.freeze({
-  neutral: '#76f4ff',
-  happy: '#68ffd1',
-  curious: '#6ce8ff',
-  concerned: '#ff7f91',
-  excited: '#ffdf6c',
-  sleeping: '#76f4ff',
+  neutral: '#78f3d3',
+  happy: '#8bffe0',
+  curious: '#79eaff',
+  concerned: '#96dcdf',
+  excited: '#ffe395',
+  sleeping: '#78ccc9',
 });
 
 export const THINKING_TURN_STATES = Object.freeze([
@@ -65,108 +65,85 @@ function sanitizeRectangles(rectangles) {
     .filter((item) => item.width > 0 && item.height > 0);
 }
 
-function capsuleScanlines(centerX, centerY, width, height) {
-  const rowCount = Math.round(height / 2);
-  let widths;
-
-  if (rowCount === 6) {
-    widths = [width - 8, width - 2, width, width, width - 2, width - 8];
-  } else if (rowCount === 7) {
-    widths = [width - 12, width - 4, width, width, width, width - 4, width - 12];
-  } else {
-    widths = Array.from({ length: rowCount }, (_, index) => {
-      if (index === 0 || index === rowCount - 1) return width - 8;
-      if (index === 1 || index === rowCount - 2) return width - 4;
-      return width;
-    });
-  }
-
-  const top = centerY - height / 2;
-  return widths.map((rowWidth, index) =>
-    rect(centerX - rowWidth / 2, top + index * 2, rowWidth, 2),
-  );
-}
-
-function happyEye(centerX, centerY) {
-  const top = centerY - 7;
-  return [
-    rect(centerX - 8, top, 16, 2),
-    rect(centerX - 12, top + 2, 24, 2),
-    rect(centerX - 14, top + 4, 8, 2),
-    rect(centerX + 6, top + 4, 8, 2),
-    rect(centerX - 16, top + 6, 8, 2),
-    rect(centerX + 8, top + 6, 8, 2),
-    rect(centerX - 16, top + 8, 6, 2),
-    rect(centerX + 10, top + 8, 6, 2),
-    rect(centerX - 16, top + 10, 4, 2),
-    rect(centerX + 12, top + 10, 4, 2),
-    rect(centerX - 16, top + 12, 4, 2),
-    rect(centerX + 12, top + 12, 4, 2),
-  ];
-}
-
-function concernedEye(centerX, centerY, side) {
-  const leftRows = [
-    [4, -6, 8],
-    [-4, -4, 20],
-    [-12, -2, 28],
-    [-16, 0, 32],
-    [-16, 2, 24],
-    [-12, 4, 12],
-  ];
-
-  return leftRows.map(([relativeX, relativeY, width]) => {
-    const x = side === 'left' ? relativeX : -relativeX - width;
-    return rect(centerX + x, centerY + relativeY, width, 2);
+// Every silhouette is built from 2 px scanlines. Its highlights are separate
+// layers clipped to the current silhouette, including during blinks and morphs.
+function roundedEye(centerX, centerY, width, height) {
+  const rows = height / 2;
+  return Array.from({ length: rows }, (_, index) => {
+    const edgeDistance = Math.min(index, rows - index - 1);
+    const inset = edgeDistance === 0 ? 6 : edgeDistance === 1 ? 2 : 0;
+    return rect(centerX - width / 2 + inset, centerY - height / 2 + index * 2, width - inset * 2, 2);
   });
 }
 
+function happyEye(centerX, centerY) {
+  return [
+    rect(centerX - 6, centerY - 6, 12, 4),
+    rect(centerX - 10, centerY - 4, 20, 4),
+    rect(centerX - 14, centerY, 8, 4),
+    rect(centerX + 6, centerY, 8, 4),
+    rect(centerX - 14, centerY + 4, 4, 4),
+    rect(centerX + 10, centerY + 4, 4, 4),
+  ];
+}
+
+function worriedEye(centerX, side) {
+  return roundedEye(centerX, 44, 22, 22).map((item) => {
+    // Lift the inner corner: a worried, asking-for-help expression, never a V scowl.
+    const innerOffset = side === 'left' ? 2 : -2;
+    return { ...item, x: item.x + (item.y < 38 ? innerOffset : 0) };
+  });
+}
+
+function starEye(centerX, centerY) {
+  const pixels = [
+    '......##......', '......##......', '.....####.....', '.....####.....',
+    '##############', '.############.', '..##########..', '...########...',
+    '...########...', '..##########..', '..####..####..', '.####....####.',
+    '.###......###.', '.##........##.',
+  ];
+  const rectangles = [];
+  pixels.forEach((row, index) => {
+    for (const match of row.matchAll(/#+/g)) {
+      rectangles.push(rect(centerX - 14 + match.index * 2, centerY - 14 + index * 2, match[0].length * 2, 2));
+    }
+  });
+  return rectangles;
+}
+
 function sleepingEye(centerX) {
-  return [rect(centerX - 14, 42, 28, 4)];
+  return [
+    rect(centerX - 12, 42, 4, 6),
+    rect(centerX - 8, 44, 16, 4),
+    rect(centerX + 8, 42, 4, 6),
+  ];
 }
 
 function emotionEyes(emotion) {
+  const centers = { left: { x: 52, y: 42 }, right: { x: 108, y: 42 } };
   switch (emotion) {
     case 'happy':
-      return {
-        left: happyEye(52, 42),
-        right: happyEye(108, 42),
-        centers: { left: { x: 52, y: 42 }, right: { x: 108, y: 42 } },
-      };
+      return { left: happyEye(52, 42), right: happyEye(108, 42), centers };
     case 'curious':
       return {
-        left: capsuleScanlines(50, 40, 36, 14),
-        right: capsuleScanlines(110, 43, 24, 12),
-        centers: { left: { x: 50, y: 40 }, right: { x: 110, y: 43 } },
+        left: roundedEye(50, 40, 26, 32),
+        right: roundedEye(108, 44, 22, 24),
+        centers: { left: { x: 50, y: 40 }, right: { x: 108, y: 44 } },
       };
     case 'concerned':
       return {
-        left: concernedEye(52, 42, 'left'),
-        right: concernedEye(108, 42, 'right'),
-        centers: { left: { x: 52, y: 42 }, right: { x: 108, y: 42 } },
-        corners: {
-          left: { innerY: 38, outerY: 42 },
-          right: { innerY: 38, outerY: 42 },
-        },
+        left: worriedEye(52, 'left'), right: worriedEye(108, 'right'), centers,
+        corners: { left: { innerY: 25, outerY: 29 }, right: { innerY: 25, outerY: 29 } },
       };
     case 'excited':
-      return {
-        left: capsuleScanlines(54, 40, 18, 30),
-        right: capsuleScanlines(106, 40, 18, 30),
-        centers: { left: { x: 54, y: 40 }, right: { x: 106, y: 40 } },
-      };
+      return { left: starEye(52, 41), right: starEye(108, 41), centers };
     case 'sleeping':
       return {
-        left: sleepingEye(52),
-        right: sleepingEye(108),
-        centers: { left: { x: 52, y: 44 }, right: { x: 108, y: 44 } },
+        left: sleepingEye(52), right: sleepingEye(108),
+        centers: { left: { x: 52, y: 45 }, right: { x: 108, y: 45 } },
       };
     default:
-      return {
-        left: capsuleScanlines(52, 42, 34, 14),
-        right: capsuleScanlines(108, 42, 34, 14),
-        centers: { left: { x: 52, y: 42 }, right: { x: 108, y: 42 } },
-      };
+      return { left: roundedEye(52, 42, 24, 30), right: roundedEye(108, 42, 24, 30), centers };
   }
 }
 
@@ -174,30 +151,101 @@ function shortMouth(width = 8) {
   return [rect(80 - width / 2, 71, width, 2)];
 }
 
+function openSmile(width, height) {
+  const rows = height / 2;
+  return Array.from({ length: rows }, (_, index) => {
+    const inset = index < rows - 3 ? 0 : (index - rows + 4) * 2;
+    return rect(80 - width / 2 + inset, 66 + index * 2, width - inset * 2, 2);
+  });
+}
+
 function emotionMouth(emotion) {
   switch (emotion) {
     case 'happy':
-      return [rect(75, 70, 2, 2), rect(77, 72, 6, 2), rect(83, 70, 2, 2)];
+      return openSmile(22, 14);
     case 'curious':
+      return [rect(77, 67, 6, 2), rect(75, 69, 2, 6), rect(83, 69, 2, 6), rect(77, 75, 6, 2)];
     case 'sleeping':
       return shortMouth(6);
     case 'concerned':
-      return [rect(75, 72, 2, 2), rect(77, 70, 6, 2), rect(83, 72, 2, 2)];
+      return [rect(72, 73, 4, 2), rect(76, 71, 8, 2), rect(84, 73, 4, 2)];
     case 'excited':
-      return [
-        rect(75, 69, 10, 2),
-        rect(75, 71, 2, 2),
-        rect(83, 71, 2, 2),
-        rect(75, 73, 10, 2),
-      ];
+      return openSmile(26, 18);
     default:
-      return shortMouth();
+      return [rect(73, 69, 2, 4), rect(75, 73, 10, 2), rect(85, 69, 2, 4)];
   }
 }
 
-function shiftRectangles(rectangles, offsetX) {
-  if (!offsetX) return rectangles.map((item) => ({ ...item }));
-  return rectangles.map((item) => ({ ...item, x: item.x + offsetX }));
+function shiftRectangles(rectangles, offsetX = 0, offsetY = 0) {
+  return rectangles.map((item) => ({ ...item, x: item.x + offsetX, y: item.y + offsetY }));
+}
+
+function clipRectangles(rectangles, mask) {
+  const clipped = [];
+  for (const item of rectangles) {
+    for (const region of mask) {
+      const x = Math.max(item.x, region.x);
+      const y = Math.max(item.y, region.y);
+      const right = Math.min(item.x + item.width, region.x + region.width);
+      const bottom = Math.min(item.y + item.height, region.y + region.height);
+      if (right > x && bottom > y) clipped.push(rect(x, y, right - x, bottom - y));
+    }
+  }
+  return clipped;
+}
+
+function eyebrowGeometry(emotion) {
+  if (emotion === 'curious') {
+    return [rect(37, 18, 16, 2), rect(53, 20, 8, 2), rect(100, 26, 14, 2)];
+  }
+  if (emotion === 'concerned') {
+    return [rect(39, 29, 8, 2), rect(47, 27, 8, 2), rect(55, 25, 8, 2),
+      rect(97, 25, 8, 2), rect(105, 27, 8, 2), rect(113, 29, 8, 2)];
+  }
+  return [];
+}
+
+function eyeDetails(emotion, centers) {
+  if (['happy', 'sleeping', 'excited'].includes(emotion)) return { highlights: [], eyeShadows: [] };
+  const highlights = [];
+  const eyeShadows = [];
+  for (const center of [centers.left, centers.right]) {
+    highlights.push(rect(center.x - 6, center.y - 8, 6, 6), rect(center.x + 4, center.y + 6, 2, 2));
+    eyeShadows.push(rect(center.x + 4, center.y + 8, 6, 4));
+  }
+  return { highlights, eyeShadows };
+}
+
+function sparkle(x, y, size = 2) {
+  return [rect(x - size, y, size * 3, size), rect(x, y - size, size, size * 3)];
+}
+
+function sleepZ(x, y) {
+  return [
+    rect(x, y, 5, 1),
+    rect(x + 3, y + 1, 1, 1),
+    rect(x + 2, y + 2, 1, 1),
+    rect(x + 1, y + 3, 1, 1),
+    rect(x, y + 4, 5, 1),
+  ];
+}
+
+function expressiveDetails(emotion, elapsed, reducedMotion, speaking) {
+  const cheekWidth = ['happy', 'excited'].includes(emotion) ? 14 : 10;
+  const cheeks = [rect(31 - cheekWidth / 2, 61, cheekWidth, 4), rect(129 - cheekWidth / 2, 61, cheekWidth, 4)];
+  const joyfulMouth = !speaking && ['happy', 'excited'].includes(emotion);
+  const tongueY = emotion === 'excited' ? 76 : 74;
+  const sparkleVisible = emotion === 'excited' && !speaking && (reducedMotion || elapsed < 1200);
+  const sparkleStep = reducedMotion ? 0 : Math.floor(elapsed / 300) % 2;
+  const sleepFloat = reducedMotion ? 0 : Math.floor((elapsed % 5800) / 1450) * 2;
+  return {
+    cheeks,
+    cheekOpacity: emotion === 'sleeping' ? 0.22 : ['happy', 'excited'].includes(emotion) ? 0.8 : 0.45,
+    mouthShadows: joyfulMouth ? [rect(emotion === 'excited' ? 71 : 73, 68, emotion === 'excited' ? 18 : 14, emotion === 'excited' ? 8 : 6)] : [],
+    mouthAccents: joyfulMouth ? [rect(76, tongueY, 8, 4)] : [],
+    sparkles: sparkleVisible ? [...sparkle(23, 28 - sparkleStep * 2), ...sparkle(137, 35 + sparkleStep * 2)] : [],
+    sleepMarks: emotion === 'sleeping' ? [...sleepZ(127, 26 - sleepFloat), ...sleepZ(139, 14 - sleepFloat)] : [],
+  };
 }
 
 function squashRectangles(rectangles, centerY, scale) {
@@ -214,17 +262,20 @@ function squashRectangles(rectangles, centerY, scale) {
 
 function blinkState(elapsedMs, reducedMotion, sleeping) {
   if (reducedMotion || sleeping) return { frame: null, scale: 1 };
-
-  const phase = ((elapsedMs % BLINK_PERIOD_MS) + BLINK_PERIOD_MS) % BLINK_PERIOD_MS;
-  const startsAt = BLINK_PERIOD_MS - BLINK_DURATION_MS;
-  if (phase < startsAt) return { frame: null, scale: 1 };
-
-  const frameDuration = BLINK_DURATION_MS / BLINK_SCALES.length;
-  const frame = Math.min(
-    BLINK_SCALES.length - 1,
-    Math.floor((phase - startsAt) / frameDuration),
-  );
+  const phase = elapsedMs % BLINK_PERIOD_MS;
+  const cycle = Math.floor(elapsedMs / BLINK_PERIOD_MS);
+  const doubleBlink = cycle > 0 && cycle % 3 === 0 && phase >= 60 && phase < 60 + BLINK_DURATION_MS;
+  const startsAt = doubleBlink ? 60 : BLINK_PERIOD_MS - BLINK_DURATION_MS;
+  if (phase < startsAt || phase >= startsAt + BLINK_DURATION_MS) return { frame: null, scale: 1 };
+  const frame = Math.min(BLINK_SCALES.length - 1, Math.floor((phase - startsAt) / (BLINK_DURATION_MS / BLINK_SCALES.length)));
   return { frame, scale: BLINK_SCALES[frame] };
+}
+
+function bodyOffset(elapsedMs, emotion, reducedMotion, speaking) {
+  if (reducedMotion || speaking) return 0;
+  const period = emotion === 'sleeping' ? 5800 : 6400;
+  // A single 2 px rise per slow breath, with a long settled rest at baseline.
+  return Math.sin((elapsedMs / period) * Math.PI * 2) > 0.65 ? -2 : 0;
 }
 
 function thinkingOffset(elapsedMs, turnState, reducedMotion, sleeping) {
@@ -284,62 +335,58 @@ export function resolveFaceFrame({
   sleeping = false,
   turnState = 'IDLE',
   elapsedMs = 0,
+  expressionElapsedMs = elapsedMs,
   reducedMotion = false,
   previousEqualizerBand,
 } = {}) {
   const normalizedTurnState = String(turnState || 'IDLE').toUpperCase();
   const requestedEmotion = normalizeEmotion(emotion);
-  const resolvedEmotion = sleeping
-    ? 'sleeping'
-    : normalizedTurnState === 'LISTENING'
-      ? 'curious'
-      : requestedEmotion;
+  const resolvedEmotion = sleeping ? 'sleeping'
+    : normalizedTurnState === 'LISTENING' ? 'curious' : requestedEmotion;
   const elapsed = Math.max(0, numeric(elapsedMs));
+  const expressionElapsed = Math.max(0, numeric(expressionElapsedMs));
+  const speaking = normalizedTurnState === 'SPEAKING' && !sleeping;
   const eyes = emotionEyes(resolvedEmotion);
   const driftX = thinkingOffset(elapsed, normalizedTurnState, reducedMotion, sleeping);
+  const breathY = bodyOffset(elapsed, resolvedEmotion, reducedMotion, speaking);
+  const bounceY = !reducedMotion && !speaking && resolvedEmotion === 'excited' && expressionElapsed < 600
+    ? expressionElapsed >= 120 && expressionElapsed < 360 ? -2 : 0 : 0;
+  const offsetY = breathY + bounceY;
   const blink = blinkState(elapsed, reducedMotion, sleeping);
-  const leftEye = sanitizeRectangles(
-    squashRectangles(
-      shiftRectangles(eyes.left, driftX),
-      eyes.centers.left.y,
-      blink.scale,
-    ),
-  );
-  const rightEye = sanitizeRectangles(
-    squashRectangles(
-      shiftRectangles(eyes.right, driftX),
-      eyes.centers.right.y,
-      blink.scale,
-    ),
-  );
-  const speaking = normalizedTurnState === 'SPEAKING' && !sleeping;
-  const equalizerBand = speaking
-    ? resolveEqualizerBand(mouthLevel, previousEqualizerBand)
-    : 0;
-  const mouth = sanitizeRectangles(
-    speaking ? equalizerMouth(equalizerBand) : emotionMouth(resolvedEmotion),
-  );
-  const speechClosedMouth = sanitizeRectangles(shortMouth());
-
+  const winkPhase = expressionElapsed % 11000;
+  const winking = !reducedMotion && !speaking && resolvedEmotion === 'happy'
+    && blink.frame === null && winkPhase >= 7000 && winkPhase < 7260;
+  const leftEye = sanitizeRectangles(shiftRectangles(
+    squashRectangles(eyes.left, eyes.centers.left.y, winking ? 0.12 : blink.scale), driftX, offsetY,
+  ));
+  const rightEye = sanitizeRectangles(shiftRectangles(
+    squashRectangles(eyes.right, eyes.centers.right.y, blink.scale), driftX, offsetY,
+  ));
+  const equalizerBand = speaking ? resolveEqualizerBand(mouthLevel, previousEqualizerBand) : 0;
+  const mouth = sanitizeRectangles(shiftRectangles(
+    speaking ? equalizerMouth(equalizerBand) : emotionMouth(resolvedEmotion), 0, offsetY,
+  ));
+  const eyeDetail = eyeDetails(resolvedEmotion, eyes.centers);
+  const details = expressiveDetails(resolvedEmotion, expressionElapsed, reducedMotion, speaking);
+  const eyesMask = [...leftEye, ...rightEye];
   return {
-    width: FACE_WIDTH,
-    height: FACE_HEIGHT,
-    backgroundColor: FACE_BACKGROUND,
-    color: FACE_PALETTE[resolvedEmotion],
-    emotion: resolvedEmotion,
-    turnState: normalizedTurnState,
-    leftEye,
-    rightEye,
-    mouth,
-    speechClosedMouth,
-    equalizerBand,
-    speaking,
-    blinkFrame: blink.frame,
-    eyeOffsetX: driftX,
-    metrics: {
-      eyeCenters: eyes.centers,
-      concernedCorners: eyes.corners || null,
-    },
+    width: FACE_WIDTH, height: FACE_HEIGHT, backgroundColor: FACE_BACKGROUND,
+    color: FACE_PALETTE[resolvedEmotion], emotion: resolvedEmotion, turnState: normalizedTurnState,
+    leftEye, rightEye, mouth,
+    speechClosedMouth: shortMouth(),
+    brows: blink.scale < 0.3 ? [] : shiftRectangles(eyebrowGeometry(resolvedEmotion), driftX, offsetY),
+    highlights: clipRectangles(shiftRectangles(eyeDetail.highlights, driftX, offsetY), eyesMask),
+    eyeShadows: clipRectangles(shiftRectangles(eyeDetail.eyeShadows, driftX, offsetY), eyesMask),
+    cheeks: shiftRectangles(details.cheeks, 0, offsetY),
+    cheekOpacity: details.cheekOpacity,
+    mouthShadows: clipRectangles(shiftRectangles(details.mouthShadows, 0, offsetY), mouth),
+    mouthAccents: clipRectangles(shiftRectangles(details.mouthAccents, 0, offsetY), mouth),
+    sparkles: details.sparkles,
+    sleepMarks: details.sleepMarks,
+    detailOpacity: 1,
+    equalizerBand, speaking, blinkFrame: blink.frame, winking,
+    eyeOffsetX: driftX, bodyOffsetY: offsetY,
+    metrics: { eyeCenters: eyes.centers, concernedCorners: eyes.corners || null },
   };
 }
 
@@ -503,7 +550,7 @@ export function morphRectanglesToSlit(rectangles, slit, progress) {
       slitCenterY,
     );
     return rect(
-      snapCoordinateToGrid(centerX - width / 2, slit.x),
+      Math.round(centerX - width / 2),
       snapCoordinateToGrid(centerY - height / 2, slit.y),
       width,
       height,
@@ -529,20 +576,46 @@ export function morphRectanglesThroughSlit(
 
 export function interpolateFaceFrames(fromFrame, toFrame, progress) {
   if (!fromFrame) return toFrame;
-  return {
+  const amount = clamp(numeric(progress), 0, 1);
+  const frame = {
     ...toFrame,
     leftEye: morphRectanglesThroughSlit(
       fromFrame.leftEye,
       toFrame.leftEye,
       EYE_TRANSITION_SLITS.left,
-      progress,
+      amount,
     ),
     rightEye: morphRectanglesThroughSlit(
       fromFrame.rightEye,
       toFrame.rightEye,
       EYE_TRANSITION_SLITS.right,
-      progress,
+      amount,
     ),
+    mouth: toFrame.speaking ? toFrame.mouth : morphRectanglesThroughSlit(
+      fromFrame.mouth, toFrame.mouth, toFrame.speechClosedMouth[0], amount,
+    ),
+  };
+  return transitionDetails(fromFrame, toFrame, frame, amount);
+}
+
+function transitionDetails(fromFrame, toFrame, frame, amount) {
+  const source = amount < 0.5 ? fromFrame : toFrame;
+  const eyes = [...frame.leftEye, ...frame.rightEye];
+  const eyeHeight = (items) => Math.max(...items.map((item) => item.y + item.height))
+    - Math.min(...items.map((item) => item.y));
+  const eyesOpen = Math.min(eyeHeight(frame.leftEye), eyeHeight(frame.rightEye)) >= 8;
+  return {
+    ...frame,
+    detailOpacity: (source.detailOpacity ?? 1) * Math.abs(1 - amount * 2),
+    brows: eyesOpen ? source.brows || [] : [],
+    highlights: eyesOpen ? clipRectangles(source.highlights || [], eyes) : [],
+    eyeShadows: eyesOpen ? clipRectangles(source.eyeShadows || [], eyes) : [],
+    cheeks: source.cheeks || [],
+    cheekOpacity: source.cheekOpacity ?? 0.45,
+    mouthShadows: frame.speaking ? [] : clipRectangles(source.mouthShadows || [], frame.mouth),
+    mouthAccents: frame.speaking ? [] : clipRectangles(source.mouthAccents || [], frame.mouth),
+    sparkles: toFrame.emotion === 'sleeping' ? [] : source.sparkles || [],
+    sleepMarks: toFrame.emotion === 'sleeping' && amount > 0.75 ? toFrame.sleepMarks : [],
   };
 }
 
@@ -590,7 +663,7 @@ export function interpolateSleepFrames(fromFrame, toFrame, progress, phase) {
     };
   }
   const amount = clamp(numeric(progress), 0, 1);
-  return {
+  const frame = {
     ...toFrame,
     leftEye: sanitizeRectangles(
       interpolateSleepEye(
@@ -610,7 +683,11 @@ export function interpolateSleepFrames(fromFrame, toFrame, progress, phase) {
         phase,
       ),
     ),
+    mouth: morphRectanglesThroughSlit(
+      fromFrame.mouth, toFrame.mouth, toFrame.speechClosedMouth[0], amount,
+    ),
   };
+  return transitionDetails(fromFrame, toFrame, frame, amount);
 }
 
 export function resolveSpeechTransitionMouth({
@@ -665,6 +742,7 @@ export function renderFace(context, frame) {
   if (!context || !frame) return;
 
   const rectangles = [...frame.leftEye, ...frame.rightEye, ...frame.mouth];
+  const detailOpacity = frame.detailOpacity ?? 1;
   context.imageSmoothingEnabled = false;
   context.save();
   context.clearRect(0, 0, FACE_WIDTH, FACE_HEIGHT);
@@ -674,5 +752,13 @@ export function renderFace(context, frame) {
   drawRectangles(context, rectangles, frame.color, 2, 0.08);
   drawRectangles(context, rectangles, frame.color, 1, 0.16);
   drawRectangles(context, rectangles, frame.color, 0, 1);
+  drawRectangles(context, frame.brows || [], frame.color, 0, detailOpacity * 0.82);
+  drawRectangles(context, frame.eyeShadows || [], '#279c99', 0, detailOpacity * 0.65);
+  drawRectangles(context, frame.highlights || [], '#edfff5', 0, detailOpacity);
+  drawRectangles(context, frame.cheeks || [], '#f3a6a5', 0, detailOpacity * (frame.cheekOpacity ?? 0.45));
+  drawRectangles(context, frame.mouthShadows || [], '#13333a', 0, detailOpacity);
+  drawRectangles(context, frame.mouthAccents || [], '#f8b4b5', 0, detailOpacity);
+  drawRectangles(context, frame.sparkles || [], '#ffedbc', 0, detailOpacity * 0.8);
+  drawRectangles(context, frame.sleepMarks || [], '#8fcdca', 0, detailOpacity * 0.5);
   context.restore();
 }

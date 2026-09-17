@@ -26,6 +26,23 @@ function allFaceRectangles(frame) {
   return [...frame.leftEye, ...frame.rightEye, ...frame.mouth];
 }
 
+function detailRectangles(frame) {
+  return ['brows', 'highlights', 'eyeShadows', 'cheeks', 'mouthShadows', 'mouthAccents', 'sparkles', 'sleepMarks']
+    .flatMap((name) => frame[name] || []);
+}
+
+function coversPixel(rectangles, x, y) {
+  return rectangles.some((item) => x >= item.x && x < item.x + item.width && y >= item.y && y < item.y + item.height);
+}
+
+function expectClippedToMask(rectangles, mask) {
+  for (const item of rectangles) {
+    for (let y = item.y; y < item.y + item.height; y += 1) {
+      for (let x = item.x; x < item.x + item.width; x += 1) expect(coversPixel(mask, x, y)).toBe(true);
+    }
+  }
+}
+
 function sortedRectangles(rectangles) {
   return rectangles
     .map((item) => ({ ...item }))
@@ -123,26 +140,50 @@ function expectIntegerBoundedConnected(rectangles) {
 }
 
 describe('resolveFaceFrame', () => {
-  it.each([
-    ['NEUTRAL', 'neutral', '#76f4ff', [34, 14], [34, 14]],
-    ['HAPPY', 'happy', '#68ffd1', [32, 14], [32, 14]],
-    ['CURIOUS', 'curious', '#6ce8ff', [36, 14], [24, 12]],
-    ['CONCERNED', 'concerned', '#ff7f91', [32, 12], [32, 12]],
-    ['EXCITED', 'excited', '#ffdf6c', [18, 30], [18, 30]],
-  ])(
-    'builds the pupil-free %s A-style eye geometry',
-    (emotion, key, color, leftSize, rightSize) => {
+  it.each(['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'])(
+    'builds readable, connected %s pixel eyes with bounded detail layers',
+    (emotion) => {
       const frame = resolveFaceFrame({ emotion, reducedMotion: true });
-
-      expect(frame.emotion).toBe(key);
-      expect(frame.color).toBe(color);
-      expect([bounds(frame.leftEye).width, bounds(frame.leftEye).height]).toEqual(leftSize);
-      expect([bounds(frame.rightEye).width, bounds(frame.rightEye).height]).toEqual(rightSize);
-      expect(frame.leftEye.every((item) => item.height === 2)).toBe(true);
-      expect(frame).not.toHaveProperty('pupil');
-      expect(frame).not.toHaveProperty('highlight');
+      expect(frame.emotion).toBe(emotion.toLowerCase());
+      expect(frame.color).toBe(FACE_PALETTE[frame.emotion]);
+      expectIntegerBoundedConnected(frame.leftEye);
+      expectIntegerBoundedConnected(frame.rightEye);
+      for (const item of detailRectangles(frame)) {
+        expect([item.x, item.y, item.width, item.height].every(Number.isInteger)).toBe(true);
+        expect(item.width).toBeGreaterThan(0);
+        expect(item.height).toBeGreaterThan(0);
+        expect(item.x).toBeGreaterThanOrEqual(0);
+        expect(item.y).toBeGreaterThanOrEqual(0);
+        expect(item.x + item.width).toBeLessThanOrEqual(FACE_WIDTH);
+        expect(item.y + item.height).toBeLessThanOrEqual(FACE_HEIGHT);
+      }
     },
   );
+
+  it('distinguishes all five expressions by geometry even without their colors', () => {
+    const shapes = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'].map((emotion) => {
+      const { leftEye, rightEye, mouth, brows } = resolveFaceFrame({ emotion, reducedMotion: true });
+      return JSON.stringify({ leftEye, rightEye, mouth, brows });
+    });
+    expect(new Set(shapes).size).toBe(5);
+    const neutral = resolveFaceFrame({ reducedMotion: true });
+    const happy = resolveFaceFrame({ emotion: 'HAPPY', reducedMotion: true });
+    expect(bounds(neutral.leftEye).height).toBeGreaterThan(bounds(neutral.leftEye).width);
+    expect(bounds(happy.leftEye).height).toBeLessThan(bounds(neutral.leftEye).height);
+    expect(happy.cheekOpacity).toBeGreaterThan(neutral.cheekOpacity);
+    expect(neutral.highlights.length).toBeGreaterThan(0);
+    expect(happy.highlights).toEqual([]);
+  });
+
+  it('gives excited eyes a top point, broad side points and separated lower star tips', () => {
+    const { leftEye } = resolveFaceFrame({ emotion: 'EXCITED', reducedMotion: true });
+    const box = bounds(leftEye);
+    const centerX = box.x + box.width / 2;
+    expect(coversPixel(leftEye, centerX, box.y)).toBe(true);
+    expect(coversPixel(leftEye, box.x, box.y + 8)).toBe(true);
+    expect(coversPixel(leftEye, centerX, box.y + box.height - 1)).toBe(false);
+    expect(leftEye.filter((item) => item.y === box.y + box.height - 2)).toHaveLength(2);
+  });
 
   it('falls back to neutral geometry and palette for an unknown emotion', () => {
     const fallback = resolveFaceFrame({ emotion: 'SURPRISED', reducedMotion: true });
@@ -154,7 +195,7 @@ describe('resolveFaceFrame', () => {
     expect(fallback.rightEye).toEqual(neutral.rightEye);
   });
 
-  it('uses a static curious face while listening', () => {
+  it('uses asymmetric curious eyes and a lifted brow while listening', () => {
     const frame = resolveFaceFrame({
       emotion: 'HAPPY',
       turnState: 'LISTENING',
@@ -164,8 +205,9 @@ describe('resolveFaceFrame', () => {
     expect(frame.emotion).toBe('curious');
     expect(frame.color).toBe(FACE_PALETTE.curious);
     expect(frame.eyeOffsetX).toBe(0);
-    expect(bounds(frame.leftEye)).toMatchObject({ width: 36, height: 14 });
-    expect(bounds(frame.rightEye)).toMatchObject({ width: 24, height: 12 });
+    expect(bounds(frame.leftEye).height).toBeGreaterThan(bounds(frame.rightEye).height);
+    expect(bounds(frame.leftEye).y).toBeLessThan(bounds(frame.rightEye).y);
+    expect(frame.brows.length).toBeGreaterThan(0);
   });
 
   it('keeps concerned inner corners four pixels above the outer corners', () => {
@@ -179,19 +221,19 @@ describe('resolveFaceFrame', () => {
     );
   });
 
-  it('uses the exact A-style non-speaking mouths', () => {
+  it('has a small neutral smile, round curious mouth and larger joyful open mouths', () => {
     const neutral = resolveFaceFrame({ emotion: 'NEUTRAL', reducedMotion: true });
     const happy = resolveFaceFrame({ emotion: 'HAPPY', reducedMotion: true });
     const curious = resolveFaceFrame({ emotion: 'CURIOUS', reducedMotion: true });
     const concerned = resolveFaceFrame({ emotion: 'CONCERNED', reducedMotion: true });
     const excited = resolveFaceFrame({ emotion: 'EXCITED', reducedMotion: true });
-
-    expect(bounds(neutral.mouth)).toMatchObject({ width: 8, height: 2 });
-    expect(bounds(happy.mouth)).toMatchObject({ width: 10, height: 4 });
-    expect(bounds(curious.mouth)).toMatchObject({ width: 6, height: 2 });
-    expect(bounds(concerned.mouth)).toMatchObject({ width: 10, height: 4 });
-    expect(bounds(excited.mouth)).toMatchObject({ width: 10, height: 6 });
-    expect(excited.mouth).toHaveLength(4);
+    expect(bounds(happy.mouth).height).toBeGreaterThan(bounds(neutral.mouth).height);
+    expect(bounds(excited.mouth).height).toBeGreaterThan(bounds(happy.mouth).height);
+    expect(bounds(curious.mouth).width).toBe(bounds(curious.mouth).height);
+    expect(coversPixel(curious.mouth, 80, 72)).toBe(false);
+    expect(bounds(concerned.mouth).height).toBeLessThan(bounds(neutral.mouth).height);
+    expect(happy.mouthAccents.length).toBeGreaterThan(0);
+    expect(excited.mouthAccents.length).toBeGreaterThan(0);
   });
 
   it('overrides every other state with the sleeping face', () => {
@@ -208,9 +250,28 @@ describe('resolveFaceFrame', () => {
     expect(frame.speaking).toBe(false);
     expect(frame.equalizerBand).toBe(0);
     expect(frame.blinkFrame).toBeNull();
-    expect(bounds(frame.leftEye)).toMatchObject({ width: 28, height: 4, y: 42 });
-    expect(bounds(frame.rightEye)).toMatchObject({ width: 28, height: 4, y: 42 });
+    expect(bounds(frame.leftEye).height).toBeLessThanOrEqual(6);
+    expect(bounds(frame.rightEye).height).toBeLessThanOrEqual(6);
+    expect(frame.highlights).toEqual([]);
+    expect(frame.brows).toEqual([]);
+    expect(frame.sparkles).toEqual([]);
+    expect(frame.sleepMarks.length).toBeGreaterThan(0);
     expect(bounds(frame.mouth)).toMatchObject({ width: 6, height: 2 });
+  });
+
+  it('draws small sleeping Z marks with a descending diagonal rather than an I stem', () => {
+    const frame = resolveFaceFrame({ sleeping: true, reducedMotion: true });
+    for (const origin of [{ x: 127, y: 26 }, { x: 139, y: 14 }]) {
+      for (let column = 0; column < 5; column += 1) {
+        expect(coversPixel(frame.sleepMarks, origin.x + column, origin.y)).toBe(true);
+        expect(coversPixel(frame.sleepMarks, origin.x + column, origin.y + 4)).toBe(true);
+      }
+      for (let row = 1; row < 4; row += 1) {
+        const filledColumns = Array.from({ length: 5 }, (_, column) => column)
+          .filter((column) => coversPixel(frame.sleepMarks, origin.x + column, origin.y + row));
+        expect(filledColumns).toEqual([4 - row]);
+      }
+    }
   });
 
   it('returns integer, even-sized, in-bounds pixel rectangles for every face', () => {
@@ -241,6 +302,44 @@ describe('resolveFaceFrame', () => {
 });
 
 describe('motion semantics', () => {
+  it('uses an occasional second blink and a short happy wink without touching speech levels', () => {
+    const secondBlink = resolveFaceFrame({ elapsedMs: 15727 });
+    const ordinaryCycle = resolveFaceFrame({ elapsedMs: 20927 });
+    expect(secondBlink.blinkFrame).toBe(2);
+    expect(ordinaryCycle.blinkFrame).toBeNull();
+    const wink = resolveFaceFrame({ emotion: 'HAPPY', elapsedMs: 7150 });
+    expect(wink.winking).toBe(true);
+    expect(bounds(wink.leftEye).height).toBeLessThan(bounds(wink.rightEye).height);
+    expect(resolveFaceFrame({ emotion: 'HAPPY', elapsedMs: 7400 }).winking).toBe(false);
+    expect(resolveFaceFrame({ emotion: 'HAPPY', elapsedMs: 7150, turnState: 'SPEAKING' }).winking).toBe(false);
+  });
+
+  it('breathes gently and reserves excited sparkles for a brief entrance', () => {
+    const resting = resolveFaceFrame({ elapsedMs: 0 });
+    const inhaling = resolveFaceFrame({ elapsedMs: 1600 });
+    expect(inhaling.bodyOffsetY - resting.bodyOffsetY).toBe(-2);
+    expect(bounds(inhaling.leftEye).y - bounds(resting.leftEye).y).toBe(-2);
+    expect(bounds(inhaling.mouth).y - bounds(resting.mouth).y).toBe(-2);
+    expect(inhaling.cheeks[0].y - resting.cheeks[0].y).toBe(-2);
+    expect(resolveFaceFrame({ emotion: 'EXCITED', expressionElapsedMs: 0 }).sparkles.length).toBeGreaterThan(0);
+    expect(resolveFaceFrame({ emotion: 'EXCITED', expressionElapsedMs: 1400 }).sparkles).toEqual([]);
+    expect(resolveFaceFrame({ emotion: 'EXCITED', sleeping: true, elapsedMs: 200 }).sparkles).toEqual([]);
+    const sleepStart = resolveFaceFrame({ sleeping: true, elapsedMs: 0 });
+    const sleepLater = resolveFaceFrame({ sleeping: true, elapsedMs: 3000 });
+    expect(sleepStart.sleepMarks).not.toEqual(sleepLater.sleepMarks);
+  });
+
+  it('freezes all decorative animation under reduced motion for every expression', () => {
+    for (const emotion of ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED']) {
+      for (const sleeping of [false, true]) {
+        const first = resolveFaceFrame({ emotion, sleeping, reducedMotion: true, elapsedMs: 0 });
+        for (const elapsedMs of [1600, 5100, 7150, 15727]) {
+          expect(resolveFaceFrame({ emotion, sleeping, reducedMotion: true, elapsedMs })).toEqual(first);
+        }
+      }
+    }
+  });
+
   it('uses a five-frame blink at the end of each 5.2 second period', () => {
     const before = resolveFaceFrame({ elapsedMs: 5032 });
     const opening = resolveFaceFrame({ elapsedMs: 5033 });
@@ -293,11 +392,24 @@ describe('motion semantics', () => {
 
     expect(frame.blinkFrame).toBeNull();
     expect(frame.eyeOffsetX).toBe(0);
-    expect(bounds(frame.leftEye)).toMatchObject({ width: 34, height: 14 });
+    expect(frame.bodyOffsetY).toBe(0);
+    expect(frame.winking).toBe(false);
   });
 });
 
 describe('speech equalizer', () => {
+  it('uses actual audio level for the mouth without time-driven fake speech or tongue overlays', () => {
+    for (const mouthLevel of [0, 0.25, 0.5, 0.75, 1]) {
+      const first = resolveFaceFrame({ emotion: 'EXCITED', turnState: 'SPEAKING', mouthLevel, elapsedMs: 0 });
+      for (const elapsedMs of [1600, 5100, 7150, 15727]) {
+        const frame = resolveFaceFrame({ emotion: 'EXCITED', turnState: 'SPEAKING', mouthLevel, elapsedMs });
+        expect(frame.mouth).toEqual(first.mouth);
+        expect(frame.mouthShadows).toEqual([]);
+        expect(frame.mouthAccents).toEqual([]);
+      }
+    }
+  });
+
   it.each([
     [-1, 0],
     [Number.NaN, 0],
@@ -364,7 +476,8 @@ describe('speech equalizer', () => {
     expect(speaking.equalizerBand).toBe(4);
     expect(speaking.mouth.map((item) => item.height)).toEqual([4, 8, 4]);
     expect(exited.equalizerBand).toBe(0);
-    expect(exited.mouth).toHaveLength(3);
+    expect(exited.mouth).toEqual(resolveFaceFrame({ emotion: 'HAPPY', reducedMotion: true }).mouth);
+    expect(speaking.mouthAccents).toEqual([]);
     expect(reduced.equalizerBand).toBe(3);
     expect(reduced.mouth.map((item) => item.height)).toEqual([4, 6, 4]);
   });
@@ -472,6 +585,43 @@ describe('speech equalizer', () => {
 });
 
 describe('frame interpolation and renderer', () => {
+  it('clips highlights and mouth accents throughout emotion changes instead of leaving floating pixels', () => {
+    const emotions = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'];
+    for (const emotion of emotions) {
+      const from = resolveFaceFrame({ emotion, reducedMotion: true });
+      const to = resolveFaceFrame({ emotion: 'NEUTRAL', reducedMotion: true });
+      for (let step = 0; step <= 20; step += 1) {
+        const frame = interpolateFaceFrames(from, to, step / 20);
+        expectClippedToMask(frame.highlights, [...frame.leftEye, ...frame.rightEye]);
+        expectClippedToMask(frame.eyeShadows, [...frame.leftEye, ...frame.rightEye]);
+        expectClippedToMask(frame.mouthShadows, frame.mouth);
+        expectClippedToMask(frame.mouthAccents, frame.mouth);
+      }
+      const closed = interpolateFaceFrames(from, to, 0.5);
+      expect(closed.highlights).toEqual([]);
+      expect(closed.brows).toEqual([]);
+      expect(closed.detailOpacity).toBe(0);
+    }
+  });
+
+  it('removes awake sparkles on sleep, hides eye details at closure and removes Z marks on waking', () => {
+    const awake = resolveFaceFrame({ emotion: 'EXCITED', reducedMotion: true });
+    const sleeping = resolveFaceFrame({ sleeping: true, reducedMotion: true });
+    for (let step = 0; step <= 20; step += 1) {
+      const closed = interpolateSleepFrames(awake, sleeping, step / 20, 'sleeping');
+      expect(closed.sparkles).toEqual([]);
+      const waking = interpolateSleepFrames(sleeping, awake, step / 20, 'waking');
+      expect(waking.sleepMarks).toEqual([]);
+    }
+    const neutral = resolveFaceFrame({ reducedMotion: true });
+    const slit = interpolateSleepFrames(neutral, sleeping, 0.75, 'sleeping');
+    expect(slit.highlights).toEqual([]);
+    expect(slit.brows).toEqual([]);
+    const end = interpolateSleepFrames(neutral, sleeping, 1, 'sleeping');
+    expect(end.highlights).toEqual([]);
+    expect(end.sleepMarks.length).toBeGreaterThan(0);
+  });
+
   it('closes neutral eyes to common slits before opening happy arches', () => {
     const from = resolveFaceFrame({ emotion: 'NEUTRAL', reducedMotion: true });
     const to = resolveFaceFrame({ emotion: 'HAPPY', reducedMotion: true });
@@ -647,7 +797,11 @@ describe('frame interpolation and renderer', () => {
 
     expect(closing[0].leftEye).toEqual(awake.leftEye);
     expect(closing.at(-1).leftEye).toEqual(sleeping.leftEye);
-    expect(heights).toEqual([14, 10, 4, 2, 4]);
+    expect(heights[0]).toBeGreaterThan(heights[1]);
+    expect(heights[1]).toBeGreaterThan(heights[2]);
+    expect(heights[2]).toBeGreaterThan(heights[3]);
+    expect(heights[3]).toBe(2);
+    expect(heights[4]).toBeLessThanOrEqual(6);
 
     for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
       const entering = interpolateSleepFrames(
@@ -931,7 +1085,10 @@ describe('frame interpolation and renderer', () => {
       fillStyle: FACE_BACKGROUND,
       alpha: 1,
     });
-    expect(calls).toHaveLength(2 + shapeCount * 3);
+    expect(calls.length).toBeGreaterThan(2 + shapeCount * 3);
+    expect(calls.some((call) => call.fillStyle === '#edfff5' && call.alpha === 1)).toBe(true);
+    expect(calls.some((call) => call.fillStyle === '#f3a6a5')).toBe(true);
+    expect(calls.filter((call) => call.type === 'fill').every((call) => call.values.every(Number.isInteger))).toBe(true);
     expect(calls[2].alpha).toBe(0.08);
     expect(calls[2].values[0]).toBe(frame.leftEye[0].x - 2);
     expect(calls[2 + shapeCount].alpha).toBe(0.16);
