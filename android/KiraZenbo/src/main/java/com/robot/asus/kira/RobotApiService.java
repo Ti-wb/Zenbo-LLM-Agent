@@ -63,21 +63,6 @@ public class RobotApiService extends Service {
     private SensorManager sensorManager;
     private SensorEventListener headTouchListener;
 
-    /**
-     * Bring the GeckoView UI (MainActivity) to the foreground.
-     * This is called in response to user voice activity so that the
-     * agent UI is ready when the user starts talking to the robot.
-     */
-    private void bringUiToForeground() {
-        Intent activityIntent = new Intent(this, MainActivity.class);
-        activityIntent.setAction(Intent.ACTION_MAIN);
-        activityIntent.addCategory(Intent.CATEGORY_LAUNCHER);
-        activityIntent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-        );
-        startActivity(activityIntent);
-    }
-
     private void sendEvent(String event, JSONObject data) {
         Log.d(TAG, "Sending robot event type '" + event + "'");
         if (sessionCoordinator != null) {
@@ -274,9 +259,9 @@ public class RobotApiService extends Service {
 
             @Override
             public void onVoiceDetect(JSONObject jsonObject) {
+                // Background SDK voice events must not interrupt Settings, HOME, or another app.
+                // The renderer is opened only by an explicit user launch or notification tap.
                 sendEvent("onVoiceDetect", jsonObject);
-                // User just made a sound; bring the UI to the foreground so the agent is ready.
-                bringUiToForeground();
             }
 
             @Override
