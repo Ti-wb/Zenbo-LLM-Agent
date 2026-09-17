@@ -59,6 +59,12 @@ terminal status and pending-call cleanup. Tools never replay. `accepted` is a
 receipt; the handler waits for a valid terminal result within five seconds,
 including activation and transport time.
 
+If a run has already completed before its first activation, `run.active` only
+acknowledges speech correlation; device tools remain disabled. Failed, cancelled,
+stopping or previously bound runs cannot be activated again. Each binding retains
+at most 4,096 run IDs; after that, start a new session instead of forgetting old
+revocations.
+
 ## Speech and cleanup
 
 STT accepts mono 16 kHz PCM16 WAV, up to 2 MiB and 30 seconds. Its original file

@@ -65,13 +65,40 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_activation_requires_owned_active_status(self):
         for status in (None, {"session_id": "other", "status": "running"},
                        *({"session_id": "session-1", "status": state} for state in
-                         ("completed", "failed", "cancelled", "canceled", "stopping"))):
+                         ("failed", "cancelled", "canceled", "stopping"))):
             with self.subTest(status=status):
                 self.statuses["run-1"] = status
                 self.reject("run_not_active", self.broker.activate, self.binding, "run-1", "turn-1")
                 self.assertFalse(self.binding.enabled)
                 self.assertEqual(self.binding.run, "")
         self.assertEqual(self.events, [])
+
+    async def test_completed_before_first_activation_allows_only_speech(self):
+        self.statuses["run-1"]["status"] = "completed"
+        self.activate()
+        self.assertFalse(self.binding.enabled)
+        self.assertEqual(self.binding.reason, "completed")
+        self.assertIs(self.broker.speech_binding("grok", "device-1", "session-1", "principal-1",
+                                                "run-1", "turn-1"), self.binding)
+        result = await self.broker.execute(("grok", "session-1", "run-1"), "stop_robot_following", {})
+        self.assertEqual(result["error"]["code"], "run_inactive")
+        self.assertEqual(self.events, [])
+        self.reject("run_busy", self.broker.activate, self.binding, "run-1", "another-turn")
+
+    async def test_completed_run_revoked_then_replaced_cannot_be_resurrected(self):
+        self.statuses["run-1"]["status"] = "completed"
+        self.activate()
+        self.broker.deactivate(self.binding, "run-1", "turn-1", "cancelled")
+        self.reject("speech_run_not_completed", self.broker.speech_binding,
+                    "grok", "device-1", "session-1", "principal-1", "run-1", "turn-1")
+        self.statuses["run-2"] = {"session_id": "session-1", "status": "completed"}
+        self.broker.activate(self.binding, "run-2", "turn-2")
+        self.assertFalse(self.binding.enabled)
+        self.reject("run_busy", self.broker.activate, self.binding, "run-1", "turn-3")
+
+    async def test_binding_run_history_is_bounded_without_forgetting_revocation(self):
+        self.binding.seen_runs = {"previous-" + str(i) for i in range(4096)}
+        self.reject("session_capacity_exceeded", self.broker.activate, self.binding, "run-1", "turn-1")
 
     async def test_profile_session_device_and_principal_cannot_be_mixed(self):
         self.activate()

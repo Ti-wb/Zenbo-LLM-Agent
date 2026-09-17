@@ -150,3 +150,17 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", body)
         self.assertNotIn("/private", body)
         await socket.close()
+
+    async def test_completed_before_activation_acknowledges_speech_without_tools(self):
+        socket = await self.bind()
+        self.compat.statuses["run"]["status"] = "completed"
+        await self.activate(socket)
+        result = await self.runtime.broker.execute(("grok", "session", "run"), "stop_robot_following", {})
+        self.assertEqual(result["error"]["code"], "run_inactive")
+        response = await self.client.post(self.root + "/audio/speech", headers=self.headers,
+                                          json={"text": "hello", "language": "en", "sessionId": "session", "runId": "run", "turnId": self.turn})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(len((await response.json())["artifacts"]), 2)
+        await socket.send_json({"type": "run.activate", "sessionId": "session", "runId": "run", "turnId": self.turn})
+        self.assertEqual((await socket.receive_json())["code"], "run_busy")
+        await socket.close()

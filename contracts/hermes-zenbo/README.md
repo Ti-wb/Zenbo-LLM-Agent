@@ -62,6 +62,13 @@ Transport liveness uses WebSocket ping/pong, without an application heartbeat.
 6. Native sends `run.deactivate` with the three IDs and a reason, receiving
    `run.inactive`. Deactivation fails all pending calls and revokes authority.
 
+A fast run may already be `completed` when its first `run.activate` arrives.
+After verifying ownership, the plugin may establish this initial binding for
+speech only, with internal authority `enabled=false` and reason `completed`.
+It still acknowledges `run.active`; that acknowledgement does not grant tool
+authority for a completed run. Runs that are `failed`, `cancelled`, or `stopping`,
+and any previously revoked binding, cannot be activated or reactivated.
+
 A duplicate active device/session binding is rejected without replacing the
 existing connection. Disconnect, cancellation, expiry, or uncertain results
 never replay tools, including idempotent physical tools. Unknown calls, wrong

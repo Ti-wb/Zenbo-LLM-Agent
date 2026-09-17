@@ -35,6 +35,7 @@ class Binding:
     enabled: bool = False
     reason: str = ""
     pending: dict = field(default_factory=dict)
+    seen_runs: set = field(default_factory=set)
 
 
 @dataclass
@@ -77,16 +78,25 @@ class Broker:
     def activate(self, binding, run, turn):
         if not binding.connected:
             raise Rejected("device_disconnected")
+        if run in binding.seen_runs:
+            raise Rejected("run_busy")
+        if len(binding.seen_runs) >= 4096:
+            raise Rejected("session_capacity_exceeded")
         if binding.run:
             # Even a repeated activate must not reopen a cancelled run.
             if run == binding.run or not self._terminal(binding) or binding.pending:
                 raise Rejected("run_busy")
         status = binding.status(run)
         if (not status or status.get("session_id") != binding.session
-                or status.get("status") in TERMINAL | {"stopping"}):
+                or status.get("status") in (TERMINAL - {"completed"}) | {"stopping"}):
             raise Rejected("run_not_active")
         binding.run, binding.turn = run, turn
-        binding.enabled, binding.reason = True, ""
+        binding.seen_runs.add(run)
+        # A short answer may finish before Native receives POST /runs and sends
+        # its first activation. Bind its speech correlation without granting any
+        # device-tool authority. Previously bound/revoked runs cannot reopen.
+        completed = status.get("status") == "completed"
+        binding.enabled, binding.reason = not completed, "completed" if completed else ""
 
     def deactivate(self, binding, run, turn, reason):
         if (binding.run, binding.turn) != (run, turn):
