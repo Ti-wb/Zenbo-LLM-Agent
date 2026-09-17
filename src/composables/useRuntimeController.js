@@ -76,6 +76,7 @@ export function useRuntimeController(options = {}) {
   const started = ref(false);
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
+  let listeningGeneration = 0;
   let speechTurnId = '';
   let activePlaylist = null;
   let pendingVoiceTurn = null;
@@ -127,7 +128,7 @@ export function useRuntimeController(options = {}) {
       timers.clearInactivity();
       const turnId = speechTurnId;
       speechTurnId = '';
-      await vad.pause();
+      await pauseListening();
       runtime.transition('upload_started', { turnId });
       pendingVoiceTurn = { turnId, blob };
       await submitPendingVoiceTurn(pendingVoiceTurn);
@@ -171,7 +172,7 @@ export function useRuntimeController(options = {}) {
   async function convergeTurnError(message = 'Agent turn failed.') {
     timers.clearAll();
     speechTurnId = '';
-    await Promise.allSettled([vad.pause(), stopResponse('turn-error')]);
+    await Promise.allSettled([pauseListening(), stopResponse('turn-error')]);
     runtime.transition('failed', {
       turnId: '',
       error: message || 'Agent turn failed.',
@@ -180,7 +181,7 @@ export function useRuntimeController(options = {}) {
 
   async function applyAuthoritativeConversation(conversation = {}, errorMessage = '') {
     if (activePlaylist || pendingVoiceTurn) {
-      await Promise.allSettled([stopResponse('runtime-recovery'), vad.pause()]);
+      await Promise.allSettled([stopResponse('runtime-recovery'), pauseListening()]);
     }
     runtime.applyConversationSnapshot(conversation);
     transport.resetCursor(runtime.lastSequence);
@@ -308,7 +309,7 @@ export function useRuntimeController(options = {}) {
       try {
         const blob = await transport.resolveAudio(artifact);
         if (!isCurrent()) return;
-        await vad.pause();
+        await pauseListening();
         if (!isCurrent()) return;
         await playback.play(blob, {
           onStarted: () => {
@@ -544,7 +545,7 @@ export function useRuntimeController(options = {}) {
       case RuntimeEventType.SESSION_CLOSED:
       case RuntimeEventType.SESSION_EXPIRED:
         await stopResponse('session-closed');
-        await vad.pause();
+        await pauseListening();
         runtime.setConnection(
           payload.reason === 'credential_revoked'
             ? CONNECTION_STATES.AUTH_ERROR
@@ -666,7 +667,7 @@ export function useRuntimeController(options = {}) {
 
     transport.close();
     await stopResponse('settings changed');
-    await vad.pause();
+    await pauseListening();
     await connect();
   }
 
@@ -675,6 +676,11 @@ export function useRuntimeController(options = {}) {
     if (runtime.connectionState === CONNECTION_STATES.READY) {
       await enterListening();
     }
+  }
+
+  function pauseListening() {
+    listeningGeneration += 1;
+    return vad.pause();
   }
 
   async function enterListening() {
@@ -687,9 +693,15 @@ export function useRuntimeController(options = {}) {
     ) {
       return;
     }
+    const request = ++listeningGeneration;
     speechTurnId = '';
     await vad.start();
-    if (!vad.isRunning.value) return;
+    if (request !== listeningGeneration || !vad.isRunning.value) return;
+    if (runtime.sleeping || runtime.connectionState !== CONNECTION_STATES.READY) {
+      await pauseListening();
+      return;
+    }
+    if (runtime.turnState !== TURN_STATES.IDLE || runtime.activeTurnId) return;
     runtime.transition('speech_started', { turnId: '', error: '' });
     timers.scheduleInactivity(() => {
       void enterSleep('inactivity');
@@ -712,7 +724,7 @@ export function useRuntimeController(options = {}) {
       sleep: 'sleep',
       'client-cancelled': 'user_interaction',
     };
-    const localShutdown = Promise.allSettled([vad.pause(), stopResponse(reason)]);
+    const localShutdown = Promise.allSettled([pauseListening(), stopResponse(reason)]);
     runtime.goToSleep();
     if (!options.skipCancel) {
       await transport.cancelTurn(turnId, cancelReasons[reason] || 'user_interaction');
@@ -739,7 +751,7 @@ export function useRuntimeController(options = {}) {
     if (action === InteractionAction.CANCEL_AND_LISTEN) {
       const turnId = runtime.activeTurnId;
       if (!safetyCancelled) await transport.cancelTurn(turnId, 'user_interaction');
-      await Promise.allSettled([stopResponse('client-cancelled'), vad.pause()]);
+      await Promise.allSettled([stopResponse('client-cancelled'), pauseListening()]);
       runtime.transition('reset', { turnId: '' });
     }
     await enterListening();
@@ -806,6 +818,7 @@ export function useRuntimeController(options = {}) {
   });
 
   onBeforeUnmount(async () => {
+    listeningGeneration += 1;
     timers.clearAll();
     disposers.forEach((dispose) => dispose());
     transport.close();
@@ -815,6 +828,8 @@ export function useRuntimeController(options = {}) {
 
   return {
     isListening: computed(() => vad.isRunning.value),
+    isAudioReady: computed(() => Boolean(vad.isAudioReady?.value)),
+    inputLevel: computed(() => vad.inputLevel?.value || 0),
     savingSettings,
     settingsTestResult,
     testingSettings,

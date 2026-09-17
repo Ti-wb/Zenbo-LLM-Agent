@@ -250,6 +250,38 @@ describe('go_to_sleep result and cancellation ordering', () => {
   });
 });
 
+describe('listening startup cancellation', () => {
+  it('does not let a late start revive sleep and allows a subsequent wake', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'OFFLINE' }, conversation: initial });
+    const { app, controller, runtime, timers, vad } = await mountController({ transport, conversation: initial });
+    let finishOldStart;
+    vad.start
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOldStart = resolve; }))
+      .mockImplementationOnce(async () => { vad.isRunning.value = true; });
+    vad.pause.mockImplementation(async () => { vad.isRunning.value = false; });
+    const oldListening = transport.emit('connection', { state: CONNECTION_STATES.READY });
+    await vi.waitFor(() => expect(finishOldStart).toBeTypeOf('function'));
+    await transport.emit('event', {
+      protocolVersion: '2.0', sequence: 4, type: 'local.screen.state',
+      eventId: '00000000-0000-4000-8000-000000000004', timestamp: '2026-09-17T00:00:00.000Z',
+      data: { state: 'OFF' },
+    });
+    expect(runtime.sleeping).toBe(true);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    vad.isRunning.value = true;
+    finishOldStart();
+    await oldListening;
+    expect(runtime.sleeping).toBe(true);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(timers.scheduleInactivity).not.toHaveBeenCalled();
+    await controller.wakeUp();
+    expect(timers.scheduleInactivity).toHaveBeenCalledOnce();
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    app.unmount();
+  });
+});
+
 describe('gateway error recovery state', () => {
   it('prioritizes canonical Local Runtime error codes over message heuristics', () => {
     expect(gatewayErrorState({ code: 'GATEWAY_TLS', message: 'network offline' })).toBe(

@@ -3,11 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import PixelFace from './components/PixelFace.vue';
 import SettingsOverlay from './components/SettingsOverlay.vue';
 import { useRuntimeController } from './composables/useRuntimeController';
+import { createListeningCue } from './services/listeningCue';
 import { useRuntimeStore } from './stores/runtime';
 
 const runtime = useRuntimeStore();
 const {
   isListening,
+  isAudioReady = ref(false),
+  inputLevel = ref(0),
   savingSettings,
   settingsTestResult,
   testingSettings,
@@ -16,11 +19,38 @@ const {
   toggleListening,
   wakeUp,
 } = useRuntimeController();
+const listeningCue = createListeningCue();
 const now = ref(new Date());
 const settingsHolding = ref(false);
 const errorVisible = ref(false);
 let clockTimer;
 let settingsHoldTimer;
+
+const canIndicateListening = computed(() =>
+  !runtime.sleeping && !runtime.error && !runtime.waitingForPreviousTurn
+  && runtime.connectionState === 'READY'
+  && ['IDLE', 'LISTENING'].includes(runtime.turnState),
+);
+const listeningReady = computed(() => canIndicateListening.value && isAudioReady.value);
+const microphoneLevel = computed(() => {
+  const level = Number(inputLevel.value);
+  return listeningReady.value && Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+});
+const listeningStyle = computed(() => ({
+  '--listening-glow': listeningReady.value ? 0.12 + microphoneLevel.value * 0.5 : 0,
+  '--listening-frame': listeningReady.value ? 0.3 + microphoneLevel.value * 0.65 : 0,
+}));
+const statusLabel = computed(() => {
+  if (!canIndicateListening.value) return runtime.statusLabel;
+  if (listeningReady.value) return '我在聽';
+  if (isListening.value || runtime.turnState === 'LISTENING') return '麥克風準備中';
+  return runtime.statusLabel;
+});
+
+watch([isAudioReady, canIndicateListening], ([ready, eligible], [previousReady] = []) => {
+  if (!ready || !eligible) listeningCue.cancel();
+  else if (!previousReady) void listeningCue.play();
+}, { immediate: true, flush: 'sync' });
 
 const clock = computed(() =>
   new Intl.DateTimeFormat(runtime.settings.language || 'zh-TW', {
@@ -73,11 +103,13 @@ function handleSettingsKeyUp(event) {
 onBeforeUnmount(() => {
   window.clearInterval(clockTimer);
   cancelSettingsHold();
+  listeningCue.destroy();
 });
 </script>
 
 <template>
-  <main class="face-shell">
+  <main class="face-shell" :class="{ 'listening-ready': listeningReady }" :style="listeningStyle">
+    <div class="listening-ambient" aria-hidden="true" />
     <header class="top-bar">
       <span class="clock">{{ clock }}</span>
       <span class="connection-dot" :data-state="runtime.connectionState" aria-hidden="true" />
@@ -124,8 +156,14 @@ onBeforeUnmount(() => {
           :sleeping="runtime.sleeping"
           :turn-state="runtime.turnState"
         />
+        <span class="listening-frame" aria-hidden="true">
+          <i class="listening-corner top-left" />
+          <i class="listening-corner top-right" />
+          <i class="listening-corner bottom-left" />
+          <i class="listening-corner bottom-right" />
+        </span>
       </button>
-      <p class="status-label">{{ runtime.statusLabel }}</p>
+      <p class="status-label" :class="{ 'listening-label': listeningReady }">{{ statusLabel }}</p>
       <p v-if="runtime.transcript || runtime.assistantText" class="caption">
         {{ runtime.assistantText || runtime.transcript }}
       </p>
@@ -160,3 +198,56 @@ onBeforeUnmount(() => {
     />
   </main>
 </template>
+
+<style scoped>
+.listening-ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 48%, transparent 22%, #163e35 68%, #0c2a27 100%);
+  opacity: var(--listening-glow, 0);
+  transition: opacity 80ms linear;
+}
+
+.face-stage {
+  position: relative;
+}
+
+.face-control {
+  position: relative;
+}
+
+.listening-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: #80dcc0;
+  opacity: var(--listening-frame, 0);
+  transition: opacity 80ms linear;
+}
+
+.listening-corner {
+  position: absolute;
+  width: 24px;
+  height: 20px;
+  border-style: solid;
+  border-color: currentColor;
+  border-width: 0;
+}
+
+.top-left { top: 4%; left: 3%; border-top-width: 4px; border-left-width: 4px; }
+.top-right { top: 4%; right: 3%; border-top-width: 4px; border-right-width: 4px; }
+.bottom-left { bottom: 4%; left: 3%; border-bottom-width: 4px; border-left-width: 4px; }
+.bottom-right { bottom: 4%; right: 3%; border-bottom-width: 4px; border-right-width: 4px; }
+
+.listening-label {
+  color: #9bd8c6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .listening-ambient,
+  .listening-frame {
+    transition: none;
+  }
+}
+</style>
