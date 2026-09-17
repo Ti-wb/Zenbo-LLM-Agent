@@ -59,7 +59,7 @@ public class TlsTrustTest {
     }
 
     @Test public void hermesClientKeepsHostnameChecksAndRejectsOtherOriginsBeforeNetwork() throws Exception {
-        OkHttpClient client = TlsTrust.systemTrustBuilder(HttpUrl.get("https://hermes.example/p/grok/v1")).build();
+        OkHttpClient client = TlsTrust.systemTrustBuilder(HttpUrl.get("https://hermes.example/p/robot/v1")).build();
         assertSame(new OkHttpClient().hostnameVerifier(), client.hostnameVerifier());
         assertFalse(client.followRedirects());
         assertFalse(client.followSslRedirects());

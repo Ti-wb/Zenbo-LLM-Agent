@@ -39,15 +39,15 @@ public class HermesRecoveryTest {
                     String path = request.getPath();
                     order.add(request.getMethod() + " " + path);
                     if (path.endsWith("/models")) return response("{\"data\":[{\"id\":\"configured-profile-model\"}]}");
-                    if (path.equals("/p/grok/v1/capabilities")) return response(capabilities());
-                    if (path.equals("/zenbo/grok/v1/capabilities")) return response(plugin());
-                    if (path.equals("/p/grok/api/sessions/api_existing")) return response("{\"session\":{\"id\":\"api_existing\"}}");
+                    if (path.equals("/p/robot/v1/capabilities")) return response(capabilities());
+                    if (path.equals("/zenbo/robot/v1/capabilities")) return response(plugin());
+                    if (path.equals("/p/robot/api/sessions/api_existing")) return response("{\"session\":{\"id\":\"api_existing\"}}");
                     if (path.endsWith("/run_restored/stop")) return response("{\"run_id\":\"run_restored\",\"status\":\"stopping\"}");
                     if (path.endsWith("/run_restored")) {
                         if (polls.getAndIncrement() == 0) return new MockResponse().setResponseCode(503);
                         return response("{\"run_id\":\"run_restored\",\"status\":\"completed\",\"output\":\"do not replay\"}");
                     }
-                    if (path.equals("/p/grok/v1/runs") && "POST".equals(request.getMethod())) {
+                    if (path.equals("/p/robot/v1/runs") && "POST".equals(request.getMethod())) {
                         try { assertFalse(new JSONObject(request.getBody().readUtf8()).has("model")); }
                         catch (Throwable error) { failure.set(error); }
                         return response("{\"run_id\":\"run_next\",\"status\":\"started\"}");
@@ -72,7 +72,7 @@ public class HermesRecoveryTest {
                 }
             });
             HermesClient client = new HermesClient(settings, "ephemeral-test-key-for-hermes", new OkHttpClient(),
-                    new HermesEndpoints(server.url("/p/grok/v1"), true), new HermesTransport.Listener() {
+                    new HermesEndpoints(server.url("/p/robot/v1"), true), new HermesTransport.Listener() {
                 @Override public void onStateChanged(String state, String detail) {
                     // Another thread must be able to acquire the client monitor during callbacks.
                     CountDownLatch inspected = new CountDownLatch(1);
@@ -93,7 +93,7 @@ public class HermesRecoveryTest {
                 assertTrue("recovery did not become ready", ready.await(8, TimeUnit.SECONDS));
                 assertNull(failure.get());
                 assertEquals("READY", client.getStatus().getString("state"));
-                assertTrue(order.indexOf("POST /p/grok/v1/runs/run_restored/stop") < order.indexOf("GET /zenbo/grok/v1/device-channel"));
+                assertTrue(order.indexOf("POST /p/robot/v1/runs/run_restored/stop") < order.indexOf("GET /zenbo/robot/v1/device-channel"));
                 assertTrue(polls.get() >= 2);
                 assertTrue(frames.stream().noneMatch(frame -> frame.contains("run.activate")));
                 assertEquals("", settings.loadRemoteSessionState().activeRunId);

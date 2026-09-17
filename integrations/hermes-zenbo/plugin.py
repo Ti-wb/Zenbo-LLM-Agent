@@ -15,7 +15,7 @@ _SHARED_NAME = "_hermes_zenbo_runtime_v1"
 
 def shared():
     # Hermes loads plugins in per-profile Python namespaces. The listener-owner
-    # factory and grok's registered tools must address the same in-process broker.
+    # factory and profile-registered tools must address the same in-process broker.
     module = sys.modules.setdefault(_SHARED_NAME, types.ModuleType(_SHARED_NAME))
     return module
 

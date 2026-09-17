@@ -18,15 +18,15 @@ const call = (name, args) => ({
   arguments: args, timeoutMs: 5000, deadlineAt: '2026-09-17T00:00:05Z',
 });
 
-test('recorded grok discovery exposes native runs and an explicit grok model', () => {
-  const models = json('./fixtures/grok-models.json');
-  const capabilities = json('./fixtures/grok-capabilities.json');
+test('sanitized recorded discovery exposes native runs and a profile-managed model', () => {
+  const models = json('./fixtures/profile-models.json');
+  const capabilities = json('./fixtures/profile-capabilities.json');
   for (const fixture of [models, capabilities]) {
-    assert.equal(fixture.kind, 'recorded-read-only-response');
+    assert.equal(fixture.kind, 'sanitized-recorded-read-only-response');
     assert.equal(fixture.httpStatus, 200);
-    assert(fixture.source.includes('/hermes-api/p/grok/v1/'));
+    assert(fixture.source.includes('/hermes-api/p/robot/v1/'));
   }
-  assert(models.response.data.some((model) => model.id === 'grok'));
+  assert(models.response.data.some((model) => model.id === 'profile-model'));
   for (const feature of ['run_submission', 'run_status', 'run_events_sse', 'run_stop', 'session_resources']) {
     assert.equal(capabilities.response.features[feature], true, feature);
   }
@@ -84,9 +84,9 @@ test('ordered speech artifacts are nonempty and require bounded verifiable audio
   ]) assert(valid(value, speech).length > 0);
 });
 
-test('recorded grok run omits model and preserves session, SSE completion and idempotency', () => {
-  const fixture = json('./fixtures/grok-run.json');
-  assert.equal(fixture.kind, 'recorded-anonymized-live-run');
+test('sanitized recorded profile run omits model and preserves session, SSE completion and idempotency', () => {
+  const fixture = json('./fixtures/profile-run.json');
+  assert.equal(fixture.kind, 'sanitized-recorded-live-run');
   assert.equal(fixture.sessionDeleted, true);
   const step = (label) => fixture.steps.find((item) => item.label === label);
   const create = step('session-create');

@@ -7,24 +7,26 @@ API version must not be compared as if they were the same protocol.
 
 ## Profile routing and authentication
 
-The configured OpenAI-compatible base is
-`https://hermes.internal.c3land.org/hermes-api/p/grok/v1`.
-The selected profile owns its model and existing working STT/TTS configuration;
-Native must omit `model` entirely from run requests.
-Native retains the entire profile prefix. There is no fallback to the default
-profile or the retired `/agent/v1` API.
+The configured HTTPS profile API base ends in `/p/{profile}/v1`, for example
+`https://hermes.example.com/hermes-api/p/robot/v1`. The host and `robot` profile
+are placeholders. The selected profile must have its model and STT/TTS
+configured; Native must omit `model` entirely from run requests.
+Native retains the entire reverse-proxy and profile prefix. There is no fallback
+to another profile.
 
-| Capability | Public route |
+| Capability | Route relative to any reverse-proxy prefix |
 | --- | --- |
-| Hermes discovery | `GET /hermes-api/p/grok/v1/capabilities` |
-| Hermes sessions | `/hermes-api/p/grok/api/sessions` |
-| Hermes runs | `/hermes-api/p/grok/v1/runs` |
-| Plugin root | `/hermes-api/zenbo/grok/v1` |
+| Hermes discovery | `GET /p/{profile}/v1/capabilities` |
+| Hermes sessions | `/p/{profile}/api/sessions` |
+| Hermes runs | `/p/{profile}/v1/runs` |
+| Plugin root | `/zenbo/{profile}/v1` |
 
 All routes require `Authorization: Bearer <profile API key>`. Every plugin HTTP
 request and WebSocket upgrade additionally requires `X-Zenbo-Device-Id`.
-The plugin mounts `/zenbo/{profile}/v1` in the existing Hermes process; the
-reverse proxy supplies `/hermes-api`. All public traffic uses TLS on port 443.
+The plugin mounts `/zenbo/{profile}/v1` in the existing Hermes process.
+An optional reverse-proxy prefix such as `/hermes-api` precedes every route
+above. All remote traffic uses HTTPS/WSS on the configured origin; port 443 is
+the default, and explicitly configured HTTPS ports are supported.
 Unknown profiles and wrong keys fail; they never fall back to another profile.
 
 `GET /capabilities` at the plugin root returns:

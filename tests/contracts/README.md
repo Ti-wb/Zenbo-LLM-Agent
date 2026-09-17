@@ -7,7 +7,7 @@ The validator checks the loopback-only v2 route, cookie and origin boundary,
 write-only Hermes settings, Native-owned event sequence, ordered audio metadata,
 six strict tool schemas, and positive/negative HTTP/event fixtures. It resolves
 local schema references and separately checks PIN/fingerprint confirmation and
-one-use bootstrap token rejection. Old Agent Gateway contracts are not inputs.
+one-use bootstrap token rejection.
 
 `schema-validator.mjs` implements the JSON Schema keywords used here; it is a
 small fixture validator, not a production request validator or a general-purpose

@@ -46,27 +46,27 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
 
     def test_artifact_scope_digest_ttl_and_atomic_batch(self):
         store = audio.ArtifactStore(ttl=100)
-        manifest = store.add_many("grok", "robot", "principal", [wav_bytes(), b"ID3audio"])
+        manifest = store.add_many("robot", "device-1", "principal", [wav_bytes(), b"ID3audio"])
         self.assertEqual([item["mimeType"] for item in manifest], ["audio/wav", "audio/mpeg"])
         self.assertNotIn("path", json.dumps(manifest))
-        artifact = store.get(manifest[0]["artifactId"], "grok", "robot", "principal")
+        artifact = store.get(manifest[0]["artifactId"], "robot", "device-1", "principal")
         self.assertTrue(store.digest(artifact).startswith("sha-256="))
-        for identity in (("default", "robot", "principal"), ("grok", "other", "principal"), ("grok", "robot", "other")):
+        for identity in (("default", "device-1", "principal"), ("robot", "other", "principal"), ("robot", "device-1", "other")):
             with self.assertRaises(audio.Rejected):
                 store.get(manifest[0]["artifactId"], *identity)
         with self.assertRaises(audio.Rejected):
-            store.add_many("grok", "robot", "principal", [wav_bytes(), b"unsupported"])
+            store.add_many("robot", "device-1", "principal", [wav_bytes(), b"unsupported"])
         self.assertEqual(len(store.items), 2)
         artifact.expires = time.time() - 1
         with self.assertRaises(audio.Rejected):
-            store.get(manifest[0]["artifactId"], "grok", "robot", "principal")
+            store.get(manifest[0]["artifactId"], "robot", "device-1", "principal")
 
     async def test_stt_copies_context_and_deletes_original_on_success_and_failure(self):
         profile = contextvars.ContextVar("test_profile")
-        profile.set("grok")
+        profile.set("robot")
         paths = []
         def transcribe(path):
-            self.assertEqual(profile.get(), "grok")
+            self.assertEqual(profile.get(), "robot")
             paths.append(path)
             self.assertTrue(path.exists())
             return {"success": True, "transcript": "你好"}
@@ -108,14 +108,14 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tts_temp_directory_uses_current_profile_audio_scope_and_is_removed(self):
         profile = contextvars.ContextVar("tts_test_profile")
-        profile.set("grok")
-        parent = Path(self.profile_audio.name).resolve() / "grok" / "audio_cache"
+        profile.set("robot")
+        parent = Path(self.profile_audio.name).resolve() / "robot" / "audio_cache"
         paths = []
         def output_dir():
-            self.assertEqual(profile.get(), "grok")
+            self.assertEqual(profile.get(), "robot")
             return parent
         def speak(text, output_path):
-            self.assertEqual(profile.get(), "grok")
+            self.assertEqual(profile.get(), "robot")
             self.assertEqual(output_path.parent.parent, parent)
             self.assertEqual(output_path.parent.stat().st_mode & 0o777, 0o700)
             paths.append(output_path)

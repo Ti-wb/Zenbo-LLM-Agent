@@ -1,0 +1,20 @@
+{
+  "source": "https://hermes.example.com/hermes-api/p/robot/v1/models",
+  "httpStatus": 200,
+  "kind": "sanitized-recorded-read-only-response",
+  "response": {
+    "object": "list",
+    "data": [
+      {
+        "id": "profile-model",
+        "object": "model",
+        "created": 1704067200,
+        "owned_by": "hermes",
+        "permission": [],
+        "root": "profile-model",
+        "parent": null
+      }
+    ]
+  },
+  "normalization": "Recorded response with hostname, profile and model identifiers replaced by public examples; recording timestamp removed and response timestamps normalized. The source URL is an example, not a live endpoint."
+}

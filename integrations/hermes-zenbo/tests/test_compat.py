@@ -22,13 +22,13 @@ class CompatTests(unittest.TestCase):
             _resolve_request_profile=lambda request: request.profile,
             _expected_api_key=lambda: "configured-fixture-key",
             _check_auth=lambda request: None if request.valid else object(),
-            _request_owns_run=lambda request, run: request.profile == "grok" and run == "owned",
+            _request_owns_run=lambda request, run: request.profile == "robot" and run == "owned",
             _durable_run_status=lambda request, run: {"run_id": run, "session_id": "session", "status": "running"})
 
     def test_auth_requires_existing_profile_scope_valid_key_and_auth_success(self):
-        request = types.SimpleNamespace(profile="grok", valid=True)
+        request = types.SimpleNamespace(profile="robot", valid=True)
         self.assertFalse(self.compat.authenticate(request))
-        token = self.profile.set("grok")
+        token = self.profile.set("robot")
         try:
             self.assertTrue(self.compat.authenticate(request))
             request.valid = False
@@ -41,16 +41,16 @@ class CompatTests(unittest.TestCase):
 
     def test_run_authority_never_uses_unowned_status(self):
         self.assertIsNone(self.compat.run_status(types.SimpleNamespace(profile="default"), "owned"))
-        self.assertIsNone(self.compat.run_status(types.SimpleNamespace(profile="grok"), "other"))
-        self.assertEqual(self.compat.run_status(types.SimpleNamespace(profile="grok"), "owned")["session_id"], "session")
+        self.assertIsNone(self.compat.run_status(types.SimpleNamespace(profile="robot"), "other"))
+        self.assertEqual(self.compat.run_status(types.SimpleNamespace(profile="robot"), "owned")["session_id"], "session")
 
     def test_context_requires_api_session_and_actual_approval_run(self):
-        values = {"HERMES_SESSION_PLATFORM": "api_server", "HERMES_SESSION_PROFILE": "grok",
+        values = {"HERMES_SESSION_PLATFORM": "api_server", "HERMES_SESSION_PROFILE": "robot",
                   "HERMES_SESSION_ID": "session"}
         self.compat.session = types.SimpleNamespace(session_context_engaged=lambda: True,
                                                      get_session_env=lambda key, default: values.get(key, default))
         self.compat.approval = types.SimpleNamespace(get_current_session_key=lambda default: "actual-run")
-        self.assertEqual(self.compat.tool_identity("session"), ("grok", "session", "actual-run"))
+        self.assertEqual(self.compat.tool_identity("session"), ("robot", "session", "actual-run"))
         with self.assertRaises(module.IncompatibleHermes):
             self.compat.tool_identity("other-session")
         values["HERMES_SESSION_PLATFORM"] = "telegram"

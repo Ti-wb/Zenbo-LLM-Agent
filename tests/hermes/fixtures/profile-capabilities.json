@@ -1,8 +1,7 @@
 {
-  "source": "https://hermes.internal.c3land.org/hermes-api/p/grok/v1/capabilities",
-  "recordedAt": "2026-09-17T05:20:38.285991+00:00",
+  "source": "https://hermes.example.com/hermes-api/p/robot/v1/capabilities",
   "httpStatus": 200,
-  "kind": "recorded-read-only-response",
+  "kind": "sanitized-recorded-read-only-response",
   "response": {
     "object": "hermes.api_server.capabilities",
     "platform": "hermes-agent",
@@ -217,5 +216,6 @@
         "path": "/v1/artifacts/download/{artifact_id}"
       }
     }
-  }
+  },
+  "normalization": "Recorded response with hostname, profile and model identifiers replaced by public examples; recording timestamp removed and response timestamps normalized. The source URL is an example, not a live endpoint."
 }

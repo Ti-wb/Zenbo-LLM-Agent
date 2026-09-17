@@ -30,10 +30,10 @@ class FakeCompat:
         self.transcription_paths = []
 
     def authenticate(self, request):
-        return request.match_info["profile"] == "grok" and request.headers.get("Authorization") == "Bearer fixture"
+        return request.match_info["profile"] == "robot" and request.headers.get("Authorization") == "Bearer fixture"
 
     def principal(self, request):
-        return "grok-key-scope"
+        return "robot-key-scope"
 
     def run_status(self, request, run):
         return self.statuses.get(run)
@@ -72,7 +72,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         self.headers = {"Authorization": "Bearer fixture", "X-Zenbo-Device-Id": "robot"}
-        self.root = "/zenbo/grok/v1"
+        self.root = "/zenbo/robot/v1"
         self.turn = str(uuid.uuid4())
 
     async def asyncTearDown(self):
@@ -103,7 +103,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_ws_tool_result_and_cancel(self):
         socket = await self.bind()
         await self.activate(socket)
-        task = asyncio.create_task(self.runtime.broker.execute(("grok", "session", "run"), "stop_robot_following", {}))
+        task = asyncio.create_task(self.runtime.broker.execute(("robot", "session", "run"), "stop_robot_following", {}))
         call = await socket.receive_json()
         self.assertEqual(call["toolName"], "stop_robot_following")
         response = {"type": "tool.result", "sessionId": "session", "runId": "run", "turnId": self.turn,
@@ -113,7 +113,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await task, {"accepted": True})
         await socket.send_json(response)
         self.assertEqual((await socket.receive_json())["code"], "unknown_or_completed_call")
-        task = asyncio.create_task(self.runtime.broker.execute(("grok", "session", "run"), "go_to_sleep", {}))
+        task = asyncio.create_task(self.runtime.broker.execute(("robot", "session", "run"), "go_to_sleep", {}))
         await socket.receive_json()
         await socket.send_json({"type": "run.deactivate", "sessionId": "session", "runId": "run", "turnId": self.turn, "reason": "cancelled"})
         self.assertEqual((await socket.receive_json())["type"], "run.inactive")
@@ -166,7 +166,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         socket = await self.bind()
         self.compat.statuses["run"]["status"] = "completed"
         await self.activate(socket)
-        result = await self.runtime.broker.execute(("grok", "session", "run"), "stop_robot_following", {})
+        result = await self.runtime.broker.execute(("robot", "session", "run"), "stop_robot_following", {})
         self.assertEqual(result["error"]["code"], "run_inactive")
         response = await self.client.post(self.root + "/audio/speech", headers=self.headers,
                                           json={"text": "hello", "language": "en", "sessionId": "session", "runId": "run", "turnId": self.turn})

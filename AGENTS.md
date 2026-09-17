@@ -9,22 +9,25 @@ branch. Use Conventional Commits when committing or publishing.
 
 ## Architecture and trust boundaries
 
-This branch integrates the existing **Hermes grok profile**, rather than a
-separately developed Agent Gateway. The only server addition is one plugin in
-the existing Hermes process. Do not add another server, database or provider
-fallback without an explicit design decision.
+This project connects Zenbo to a configured Hermes profile. The only server
+addition is one plugin in the Hermes process. Do not add another server,
+database or provider fallback without an explicit design decision.
 
 - Vue renders PixelFace, captures WAV with VAD, manages interaction state and
   plays Native-validated audio. It only connects to `127.0.0.1:8787/api/v2`.
 - Android owns the loopback server, one-use fragment bootstrap, HttpOnly session,
   PIN authorization, Keystore credentials, Hermes lifecycle and ASUS SDK safety.
-- Native connects to `https://hermes.internal.c3land.org/hermes-api/p/grok/v1`,
-  retaining the profile prefix for all session/run operations. The profile owns
-  the model and existing STT/TTS configuration; omit `model` from Runs requests.
+- Native connects to an HTTPS base ending in `/p/{profile}/v1`, retaining the
+  profile and any reverse-proxy prefix for all session/run operations. For example,
+  `https://hermes.example.com/hermes-api/p/robot/v1` uses sample profile `robot`
+  and optional proxy prefix `/hermes-api`; replace both for the installation.
+  The profile owns the model and STT/TTS configuration; omit `model` from
+  Runs requests.
 - `apiKey` is write-only; public settings expose `hasApiKey` and `gatewayUrl`. There is
   no model selection. Underlying provider credentials stay in Hermes. Never put keys in
   Pinia, localStorage, build assets, APK, logs, fixtures or committed files.
-- The Hermes Zenbo plugin uses `/hermes-api/zenbo/grok/v1` over HTTPS/WSS 443.
+- The Hermes Zenbo plugin mounts `/zenbo/{profile}/v1` under the same optional
+  proxy prefix, using HTTPS/WSS on the configured origin.
   It reuses Hermes STT/TTS and tool execution context; no second process/port.
 - Android 6 / API 23 is the hard device compatibility baseline.
 

@@ -7,7 +7,7 @@ import okhttp3.HttpUrl;
 /** Derives all Hermes routes without ever dropping the explicitly selected profile. */
 public final class HermesEndpoints {
     public static final String DEFAULT_BASE_URL =
-            "https://hermes.internal.c3land.org/hermes-api/p/grok/v1";
+            "https://hermes.example.com/hermes-api/p/robot/v1";
 
     private final HttpUrl base;
     private final HttpUrl profileRoot;

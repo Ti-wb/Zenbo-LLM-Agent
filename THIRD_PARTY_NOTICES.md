@@ -72,7 +72,7 @@ The Apache License 2.0 text is available in this repository's
 
 ### OkHttp, Okio, and Kotlin runtime
 
-The native Agent Gateway client adds OkHttp and its runtime dependencies. The
+The native Hermes client uses OkHttp and its runtime dependencies. The
 versions below are the versions resolved in the Android debug runtime graph;
 release builds should re-check the resolved graph before distribution.
 

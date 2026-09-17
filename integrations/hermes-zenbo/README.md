@@ -2,8 +2,8 @@
 
 One drop-in Python plugin adds six allowlisted Zenbo tools and speech routes to
 Hermes' existing API process. It creates no server or database and changes no
-model/provider settings. Native omits model overrides and uses the `grok`
-profile's existing model, STT and TTS configuration.
+model/provider settings. Native omits model overrides and uses the selected
+profile's model, STT and TTS configuration.
 
 The normative wire and tool schemas are in
 [`contracts/hermes-zenbo`](../../contracts/hermes-zenbo/README.md).
@@ -11,12 +11,20 @@ The bundled `device-tools.json` is checked against that contract by tests.
 
 ## Enable and compatibility
 
-Install the same `zenbo` package in the listener-owner and `grok` profile plugin
-directories. Enable the plugin in both profiles and the `zenbo` toolset in
-`grok`'s API tool policy, then restart the existing API-owning gateway. Do not
-start a second listener. The plugin uses existing Hermes dependencies and never
-installs packages or updates Hermes. Unloading the plugin revokes device
-authority; applying a new plugin version requires a gateway restart.
+1. Configure a Hermes profile with a working conversation provider, STT and TTS.
+   Obtain its API access key and HTTPS profile URL.
+2. Install this directory as the `zenbo` plugin package using Hermes' plugin
+   installation layout. Enable it in the profile that owns the API listener and
+   in the selected conversation profile; if these are the same profile, one
+   installation is sufficient.
+3. Enable the `zenbo` toolset in the selected profile's API tool policy, then
+   restart the existing API-owning gateway. Keep a single API listener.
+4. Configure the HTTPS entry point to forward WebSocket and SSE streams, then
+   enter the profile URL and key in the Zenbo App and test the connection.
+
+The plugin uses Hermes' existing dependencies and never installs packages or
+updates Hermes. Unloading it revokes device authority; applying a new plugin
+version requires a gateway restart.
 
 Hermes' version string alone does not establish compatibility. At route mounting,
 `compat.py` checks profile/auth/run helpers and verifies that the API run's
@@ -31,12 +39,14 @@ Public `main` is a reference, not proof of the installed revision.
 
 ## Routes and device authority
 
-The profile API base is
-`https://hermes.internal.c3land.org/hermes-api/p/grok/v1`.
-The plugin root is
-`https://hermes.internal.c3land.org/hermes-api/zenbo/grok/v1` (TLS port 443).
-The proxy owns `/hermes-api`; the plugin mounts `/zenbo/{profile}/v1` in the
-existing aiohttp app, reusing Hermes profile middleware and `_check_auth`.
+For an example profile API base of
+`https://hermes.example.com/hermes-api/p/robot/v1`, the plugin root is
+`https://hermes.example.com/hermes-api/zenbo/robot/v1`.
+Replace the host and sample profile `robot` with your installation's values.
+`/hermes-api` is an optional reverse-proxy prefix, preserved by Native for all
+routes; omit or replace it to match your proxy. The plugin itself mounts
+`/zenbo/{profile}/v1` in the existing aiohttp app, reusing Hermes profile
+middleware and `_check_auth`. HTTPS and WSS share the configured origin.
 
 All routes require the profile Bearer key and `X-Zenbo-Device-Id`.
 Capabilities are available before device binding.

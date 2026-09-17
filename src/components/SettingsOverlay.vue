@@ -136,11 +136,11 @@ function testHermes() {
           type="url"
           inputmode="url"
           autocomplete="off"
-          placeholder="https://hermes.internal.c3land.org/hermes-api/p/grok/v1"
+          placeholder="https://hermes.example.com/hermes-api/p/robot/v1"
           pattern="https://.*"
           required
         />
-        <small>輸入包含 /hermes-api/p/grok/v1 的完整 Profile 位址。</small>
+        <small>輸入以 /p/{profile}/v1 結尾的完整 HTTPS 位址，並保留服務的反向代理前綴。</small>
       </label>
 
       <label>

@@ -61,7 +61,7 @@ export const TURN_STATES = TurnState;
 export const SUPPORTED_EMOTIONS = Object.freeze(Object.values(Emotion));
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  gatewayUrl: 'https://hermes.internal.c3land.org/hermes-api/p/grok/v1',
+  gatewayUrl: 'https://hermes.example.com/hermes-api/p/robot/v1',
   trustMode: 'SYSTEM_TRUST',
   certificatePin: '',
   hasApiKey: false,

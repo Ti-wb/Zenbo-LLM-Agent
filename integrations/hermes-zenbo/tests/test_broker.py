@@ -35,7 +35,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.send = send
         self.binding = self.broker.bind(
-            "grok", "device-1", "session-1", "principal-1", send, self.statuses.get
+            "robot", "device-1", "session-1", "principal-1", send, self.statuses.get
         )
 
     async def asyncTearDown(self):
@@ -50,7 +50,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
     def activate(self):
         self.broker.activate(self.binding, "run-1", "turn-1")
 
-    async def start_call(self, identity=("grok", "session-1", "run-1")):
+    async def start_call(self, identity=("robot", "session-1", "run-1")):
         self.sent.clear()
         task = asyncio.create_task(self.broker.execute(identity, "stop_robot_following", {}))
         self.tasks.append(task)
@@ -78,9 +78,9 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.activate()
         self.assertFalse(self.binding.enabled)
         self.assertEqual(self.binding.reason, "completed")
-        self.assertIs(self.broker.speech_binding("grok", "device-1", "session-1", "principal-1",
+        self.assertIs(self.broker.speech_binding("robot", "device-1", "session-1", "principal-1",
                                                 "run-1", "turn-1"), self.binding)
-        result = await self.broker.execute(("grok", "session-1", "run-1"), "stop_robot_following", {})
+        result = await self.broker.execute(("robot", "session-1", "run-1"), "stop_robot_following", {})
         self.assertEqual(result["error"]["code"], "run_inactive")
         self.assertEqual(self.events, [])
         self.reject("run_busy", self.broker.activate, self.binding, "run-1", "another-turn")
@@ -90,7 +90,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.activate()
         self.broker.deactivate(self.binding, "run-1", "turn-1", "cancelled")
         self.reject("speech_run_not_completed", self.broker.speech_binding,
-                    "grok", "device-1", "session-1", "principal-1", "run-1", "turn-1")
+                    "robot", "device-1", "session-1", "principal-1", "run-1", "turn-1")
         self.statuses["run-2"] = {"session_id": "session-1", "status": "completed"}
         self.broker.activate(self.binding, "run-2", "turn-2")
         self.assertFalse(self.binding.enabled)
@@ -102,22 +102,22 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_profile_session_device_and_principal_cannot_be_mixed(self):
         self.activate()
-        for identity in (("other", "session-1", "run-1"), ("grok", "other", "run-1")):
+        for identity in (("other", "session-1", "run-1"), ("robot", "other", "run-1")):
             result = await self.broker.execute(identity, "stop_robot_following", {})
             self.assertEqual(result["error"]["code"], "device_not_bound")
         for args in (("other", "device-1", "session-1", "principal-1"),
-                     ("grok", "other", "session-1", "principal-1"),
-                     ("grok", "device-1", "other", "principal-1"),
-                     ("grok", "device-1", "session-1", "other")):
+                     ("robot", "other", "session-1", "principal-1"),
+                     ("robot", "device-1", "other", "principal-1"),
+                     ("robot", "device-1", "session-1", "other")):
             self.reject("device_not_bound", self.broker.speech_binding, *args)
         self.assertEqual(self.events, [])
 
     async def test_duplicate_binding_preserves_original_channel(self):
-        self.reject("binding_conflict", self.broker.bind, "grok", "device-2", "session-1",
+        self.reject("binding_conflict", self.broker.bind, "robot", "device-2", "session-1",
                     "principal-1", self.send, self.statuses.get)
-        self.reject("device_busy", self.broker.bind, "grok", "device-1", "session-2",
+        self.reject("device_busy", self.broker.bind, "robot", "device-1", "session-2",
                     "principal-1", self.send, self.statuses.get)
-        self.assertIs(self.broker.bindings[("grok", "session-1")], self.binding)
+        self.assertIs(self.broker.bindings[("robot", "session-1")], self.binding)
 
     async def test_accepted_receipt_is_not_terminal(self):
         self.activate()
@@ -163,7 +163,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         self.binding.send = stalled_send
-        task = asyncio.create_task(self.broker.execute(("grok", "session-1", "run-1"),
+        task = asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
                                                        "stop_robot_following", {}))
         self.tasks.append(task)
         result = await asyncio.wait_for(task, 0.5)
@@ -186,7 +186,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.broker.deactivate(self.binding, "run-1", "turn-1", "cancelled")
         self.assertEqual((await task)["error"]["code"], "run_inactive")
         self.reject("run_busy", self.broker.activate, self.binding, "run-1", "turn-1")
-        result = await self.broker.execute(("grok", "session-1", "run-1"), "stop_robot_following", {})
+        result = await self.broker.execute(("robot", "session-1", "run-1"), "stop_robot_following", {})
         self.assertEqual(result["error"]["code"], "run_inactive")
         self.assertEqual(len(self.events), 1)
 
@@ -194,7 +194,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.activate()
         interrupted = False
         task = asyncio.create_task(self.broker.execute(
-            ("grok", "session-1", "run-1"), "stop_robot_following", {},
+            ("robot", "session-1", "run-1"), "stop_robot_following", {},
             interrupted=lambda: interrupted))
         self.tasks.append(task)
         await asyncio.wait_for(self.sent.wait(), 0.5)
@@ -208,10 +208,10 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         task, call = await self.start_call()
         self.broker.disconnect(self.binding)
         self.assertEqual((await task)["error"]["code"], "device_disconnected")
-        self.reject("binding_conflict", self.broker.bind, "grok", "device-1", "session-1",
+        self.reject("binding_conflict", self.broker.bind, "robot", "device-1", "session-1",
                     "principal-1", self.send, self.statuses.get)
         self.statuses["run-1"]["status"] = "cancelled"
-        replacement = self.broker.bind("grok", "device-1", "session-1", "principal-1",
+        replacement = self.broker.bind("robot", "device-1", "session-1", "principal-1",
                                        self.send, self.statuses.get)
         self.assertIsNot(replacement, self.binding)
         self.assertEqual(len(self.events), 1)
@@ -223,14 +223,14 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.statuses["run-1"]["status"] = "stopping"
         self.statuses["run-2"] = {"session_id": "session-1", "status": "running"}
         self.reject("run_busy", self.broker.activate, self.binding, "run-2", "turn-2")
-        result = await self.broker.execute(("grok", "session-1", "run-2"), "stop_robot_following", {})
+        result = await self.broker.execute(("robot", "session-1", "run-2"), "stop_robot_following", {})
         self.assertEqual(result["error"]["code"], "run_busy")
         self.statuses["run-1"]["status"] = "cancelled"
         self.broker.activate(self.binding, "run-2", "turn-2")
         self.assertTrue(self.binding.enabled)
 
     async def test_activation_race_waits_without_dispatch_then_sends_once(self):
-        task = asyncio.create_task(self.broker.execute(("grok", "session-1", "run-1"),
+        task = asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
                                                        "stop_robot_following", {}))
         self.tasks.append(task)
         await asyncio.sleep(0)
@@ -245,12 +245,12 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.events), 1)
 
     async def test_missing_activation_and_invalid_arguments_never_dispatch(self):
-        result = await self.broker.execute(("grok", "session-1", "run-1"), "stop_robot_following", {})
+        result = await self.broker.execute(("robot", "session-1", "run-1"), "stop_robot_following", {})
         self.assertEqual(result["error"]["code"], "run_inactive")
         self.activate()
         for tool, args in (("unknown", {}), ("look_at_user", {"doa": True}),
                            ("stop_robot_following", {"deviceId": "device-2"})):
-            result = await self.broker.execute(("grok", "session-1", "run-1"), tool, args)
+            result = await self.broker.execute(("robot", "session-1", "run-1"), tool, args)
             self.assertEqual(result["error"]["code"], "invalid_arguments")
         self.assertEqual(self.events, [])
 

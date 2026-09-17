@@ -25,19 +25,19 @@ public class HermesClientTest {
 
     @Test public void everyRouteRetainsTheSelectedProfileAndProxyPrefix() {
         HermesEndpoints endpoints = new HermesEndpoints(HermesEndpoints.DEFAULT_BASE_URL + "/");
-        assertEquals("grok", endpoints.profile());
-        assertEquals("/hermes-api/p/grok/v1/runs/run_abc/events", endpoints.runEvents("run_abc").encodedPath());
-        assertEquals("/hermes-api/p/grok/v1/runs/run_abc/stop", endpoints.runStop("run_abc").encodedPath());
-        assertEquals("/hermes-api/p/grok/api/sessions", endpoints.sessions().encodedPath());
-        assertEquals("/hermes-api/zenbo/grok/v1/device-channel", endpoints.deviceChannel().encodedPath());
-        assertEquals("/hermes-api/zenbo/grok/v1/audio/speech", endpoints.speech().encodedPath());
-        assertEquals("/hermes-api/zenbo/grok/v1/audio/transcriptions", endpoints.transcription().encodedPath());
+        assertEquals("robot", endpoints.profile());
+        assertEquals("/hermes-api/p/robot/v1/runs/run_abc/events", endpoints.runEvents("run_abc").encodedPath());
+        assertEquals("/hermes-api/p/robot/v1/runs/run_abc/stop", endpoints.runStop("run_abc").encodedPath());
+        assertEquals("/hermes-api/p/robot/api/sessions", endpoints.sessions().encodedPath());
+        assertEquals("/hermes-api/zenbo/robot/v1/device-channel", endpoints.deviceChannel().encodedPath());
+        assertEquals("/hermes-api/zenbo/robot/v1/audio/speech", endpoints.speech().encodedPath());
+        assertEquals("/hermes-api/zenbo/robot/v1/audio/transcriptions", endpoints.transcription().encodedPath());
     }
 
     @Test public void invalidEndpointsCannotSelectDefaultProfileOrSmuggleCredentials() {
-        for (String value : new String[]{"https://example.com/v1", "http://example.com/p/grok/v1",
-                "https://example.com/agent/v1", "https://key@example.com/p/grok/v1",
-                "https://example.com/p/grok/v1?api_key=secret", "https://example.com/p/grok/v1#fragment"}) {
+        for (String value : new String[]{"https://example.com/v1", "http://example.com/p/robot/v1",
+                "https://example.com/agent/v1", "https://key@example.com/p/robot/v1",
+                "https://example.com/p/robot/v1?api_key=secret", "https://example.com/p/robot/v1#fragment"}) {
             try { new HermesEndpoints(value); fail(value); }
             catch (IllegalArgumentException expected) { }
         }
@@ -46,7 +46,7 @@ public class HermesClientTest {
     @Test public void authorizationNeverPlacesTheKeyInTheUrlOrOldProtocolHeaders() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.enqueue(new MockResponse().setBody("{}"));
-            Request request = HermesClient.authorizedRequest(server.url("/p/grok/v1/runs"), KEY, "zenbo-test").get().build();
+            Request request = HermesClient.authorizedRequest(server.url("/p/robot/v1/runs"), KEY, "zenbo-test").get().build();
             try (Response ignored = new OkHttpClient().newCall(request).execute()) {
                 RecordedRequest observed = server.takeRequest();
                 assertEquals("Bearer " + KEY, observed.getHeader("Authorization"));
@@ -96,19 +96,19 @@ public class HermesClientTest {
 
     @Test public void discoveryChecksProfileCapabilitiesAndAllRequiredPluginTools() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
-            server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"grok\"}]}"));
+            server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"profile-model\"}]}"));
             server.enqueue(new MockResponse().setBody(capabilities().toString()));
             server.enqueue(new MockResponse().setBody(plugin().toString()));
             Capture capture = new Capture();
-            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/hermes-api/p/grok/v1"), true),
+            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/hermes-api/p/robot/v1"), true),
                     "zenbo", KEY, System.currentTimeMillis(), capture);
             capture.await();
             assertNull(capture.code);
             assertTrue(capture.result.getJSONObject("plugin").getBoolean("available"));
             assertFalse(capture.result.getJSONObject("plugin").getJSONObject("speech").getBoolean("sttConfigured"));
-            assertEquals("/hermes-api/p/grok/v1/models", server.takeRequest().getPath());
-            assertEquals("/hermes-api/p/grok/v1/capabilities", server.takeRequest().getPath());
-            assertEquals("/hermes-api/zenbo/grok/v1/capabilities", server.takeRequest().getPath());
+            assertEquals("/hermes-api/p/robot/v1/models", server.takeRequest().getPath());
+            assertEquals("/hermes-api/p/robot/v1/capabilities", server.takeRequest().getPath());
+            assertEquals("/hermes-api/zenbo/robot/v1/capabilities", server.takeRequest().getPath());
         }
     }
 
@@ -116,7 +116,7 @@ public class HermesClientTest {
         try (MockWebServer server = new MockWebServer()) {
             server.enqueue(new MockResponse().setBody("{\"data\":[]}"));
             Capture capture = new Capture();
-            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/p/grok/v1"), true),
+            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/p/robot/v1"), true),
                     "zenbo", KEY, 0L, capture);
             capture.await();
             assertEquals("GATEWAY_INCOMPATIBLE", capture.code);
@@ -126,12 +126,12 @@ public class HermesClientTest {
 
     @Test public void nonDurableIdempotencyRejectsUnsafeLostAcceptanceRecovery() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
-            server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"grok\"}]}"));
+            server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"profile-model\"}]}"));
             JSONObject caps = capabilities();
             caps.getJSONObject("features").getJSONObject("runs_idempotency").put("durable", false);
             server.enqueue(new MockResponse().setBody(caps.toString()));
             Capture capture = new Capture();
-            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/p/grok/v1"), true),
+            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/p/robot/v1"), true),
                     "zenbo", KEY, 0L, capture);
             capture.await();
             assertEquals("GATEWAY_INCOMPATIBLE", capture.code);
