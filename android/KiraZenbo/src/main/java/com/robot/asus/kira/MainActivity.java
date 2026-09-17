@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.WindowManager;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -111,11 +112,14 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
     @Override
     protected void onResume() {
         super.onResume();
+        // Keep the display awake only while this activity owns the foreground.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         RobotApiService.setRendererForeground(true);
     }
 
     @Override
     protected void onPause() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         RobotApiService.setRendererForeground(false);
         super.onPause();
     }
