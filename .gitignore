@@ -18,6 +18,8 @@ coverage
 .env
 .env.*
 !.env.example
+/secret/
+/.local/
 
 # Editor directories and files
 .vscode/*

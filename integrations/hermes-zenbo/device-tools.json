@@ -1,0 +1,244 @@
+{
+  "protocolVersion": "2.0",
+  "manifestVersion": "hermes-zenbo-1",
+  "tools": [
+    {
+      "name": "get_system_status",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Read robot readiness and movement state.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "robotReady": {
+            "type": "boolean"
+          },
+          "moving": {
+            "type": "boolean"
+          },
+          "androidSdk": {
+            "type": "integer"
+          },
+          "robotModel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accepted",
+          "robotReady",
+          "moving",
+          "androidSdk",
+          "robotModel"
+        ]
+      },
+      "sideEffect": "none",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "start_robot_following",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Start following the user through the Native safety boundary.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enablePreview": {
+            "type": "boolean"
+          },
+          "largePreview": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "sideEffect": "physical",
+      "idempotent": false,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "stop_robot_following",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Stop all active robot following behavior.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "sideEffect": "physical",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "look_at_user",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Look toward the user at the supplied direction of arrival.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "doa": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          }
+        },
+        "required": [
+          "doa"
+        ]
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "sideEffect": "physical",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "show_emotion",
+      "owner": "web",
+      "version": "1.0.0",
+      "description": "Stage an allowlisted emotion for the start of answer playback.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "emotion": {
+            "type": "string",
+            "enum": [
+              "NEUTRAL",
+              "HAPPY",
+              "CURIOUS",
+              "CONCERNED",
+              "EXCITED"
+            ]
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30000
+          }
+        },
+        "required": [
+          "emotion"
+        ]
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "emotion": {
+            "type": "string",
+            "enum": [
+              "NEUTRAL",
+              "HAPPY",
+              "CURIOUS",
+              "CONCERNED",
+              "EXCITED"
+            ]
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30000
+          }
+        },
+        "required": [
+          "ok",
+          "emotion",
+          "durationMs"
+        ]
+      },
+      "sideEffect": "ui",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "go_to_sleep",
+      "owner": "web",
+      "version": "1.0.0",
+      "description": "Stop interaction and put the renderer to sleep.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "sleeping": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "sleeping"
+        ]
+      },
+      "sideEffect": "ui",
+      "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    }
+  ]
+}

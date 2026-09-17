@@ -1,0 +1,10 @@
+name: zenbo
+version: 1.0.0
+description: Profile-scoped Zenbo device tools and speech on the existing Hermes API server
+provides_tools:
+  - get_system_status
+  - start_robot_following
+  - stop_robot_following
+  - look_at_user
+  - show_emotion
+  - go_to_sleep
