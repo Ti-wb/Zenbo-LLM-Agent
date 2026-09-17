@@ -33,6 +33,22 @@ not call the SDK. Enabling requires a successful persistent save. Storage failur
 returns HTTP 500 `INTERNAL_ERROR`; failed persistence of off still leaves runtime
 permission off, and the renderer refreshes status instead of restoring permission.
 
+`/status` and every `local.robot.state` carry `battery: {percentage, charging}`:
+percentage is an integer from 0 to 100 or null; charging is boolean or null.
+Null means unavailable, never zero battery. These are UI status fields, not
+additions to the fixed `get_system_status` tool schema.
+
+`POST /api/v2/conversation/new-session` accepts only `{}` with the renderer cookie,
+exact Origin and UUID `Idempotency-Key`. It returns 202 `ConversationResponse`
+with cleared text, no active turn, the same local session UUID and a continuing
+cursor. Native enters CONNECTING before the response and becomes READY only
+after the fresh remote device binding. `/status.turnBusy` remains true for active,
+unsettled or rotating work. Busy requests return 409 `TURN_BUSY`; a non-ready
+Gateway returns 503 `GATEWAY_OFFLINE`. Reusing an accepted key returns its original
+response without rotating again. A failed persistent reset returns 500
+`INTERNAL_ERROR` and preserves the old conversation/connection. This command
+changes no provider or device settings and never deletes old remote history.
+
 Protocol 2.0 is installed together with its renderer in one APK. Old `/api/v1`
 and Agent Gateway settings do not silently fall back or migrate credentials to
 another profile; an operator completes Hermes setup explicitly.

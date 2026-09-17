@@ -11,7 +11,12 @@
     "activeTurnId": null,
     "lastSequence": 0,
     "protocolVersion": "2.0",
-    "motionEnabled": false
+    "motionEnabled": false,
+    "battery": {
+      "percentage": null,
+      "charging": null
+    },
+    "turnBusy": false
   },
   "error": null
 }

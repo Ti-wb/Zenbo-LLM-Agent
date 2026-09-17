@@ -32,7 +32,7 @@ assert(api.components.schemas.ConversationData.required.includes('lastSequence')
 const expectedOperations = {
   '/bootstrap': ['post'], '/status': ['get'], '/motion': ['put'], '/settings': ['get', 'put'],
   '/settings/setup': ['post'], '/settings/unlock': ['post'], '/settings/test': ['post'],
-  '/conversation': ['get'], '/conversation/turns': ['post'], '/conversation/cancel': ['post'],
+  '/conversation': ['get'], '/conversation/new-session': ['post'], '/conversation/turns': ['post'], '/conversation/cancel': ['post'],
   '/conversation/tool-calls/{callId}': ['put'], '/conversation/playback': ['post'],
   '/conversation/audio/{artifactId}': ['get'], '/events': ['get'],
 };
@@ -80,6 +80,27 @@ assert(!api.paths['/motion'].put.parameters.some((item) => item.$ref?.includes('
 assert(event.$defs.robotState.required.includes('motionEnabled'));
 assert.equal(event.$defs.robotState.properties.motionEnabled.type, 'boolean');
 assert.equal(event.$defs.robotState.properties.motionEnabled.default, false);
+assert(schemas.StatusData.required.includes('battery'));
+assert(schemas.StatusData.required.includes('turnBusy'));
+assert.equal(schemas.StatusData.properties.turnBusy.type, 'boolean');
+assert.equal(schemas.StatusData.properties.battery.$ref, '#/components/schemas/BatteryState');
+assert(event.$defs.robotState.required.includes('battery'));
+assert.equal(event.$defs.robotState.properties.battery.$ref, '../openapi.json#/components/schemas/BatteryState');
+assert.deepEqual(schemas.BatteryState.required, ['percentage', 'charging']);
+assert.equal(schemas.BatteryState.additionalProperties, false);
+assert.deepEqual(schemas.BatteryState.properties.percentage.type, ['integer', 'null']);
+assert.equal(schemas.BatteryState.properties.percentage.minimum, 0);
+assert.equal(schemas.BatteryState.properties.percentage.maximum, 100);
+assert.deepEqual(schemas.BatteryState.properties.charging.type, ['boolean', 'null']);
+assert.equal(schemas.NewSessionRequest.additionalProperties, false);
+assert.deepEqual(schemas.NewSessionRequest.properties, {});
+const newSession = api.paths['/conversation/new-session'].post;
+assert.equal(newSession.requestBody.content['application/json'].schema.$ref, '#/components/schemas/NewSessionRequest');
+assert.equal(newSession.responses['202'].content['application/json'].schema.$ref, '#/components/schemas/ConversationResponse');
+assert(newSession.parameters.some((item) => item.$ref === '#/components/parameters/IdempotencyKey'));
+assert.deepEqual(Object.keys(newSession.responses).sort(), ['202', '400', '401', '403', '409', '500', '503']);
+assert.equal(conversationEvent.$defs.sessionSnapshot.$ref, '../openapi.json#/components/schemas/ConversationData');
+
 
 
 for (const schema of [event.$defs.localControlEnvelope, conversationEvent]) {
@@ -127,6 +148,8 @@ const mapping = {
   'local-settings-test-request': [schemas.SettingsTestRequest, api],
   'local-settings-test-response': [schemas.SettingsTestResponse, api],
   'local-conversation-response': [schemas.ConversationResponse, api],
+  'local-new-session-request': [schemas.NewSessionRequest, api],
+  'local-new-session-response': [schemas.ConversationResponse, api],
   'local-text-turn': [schemas.TextTurnRequest, api],
   'local-cancel-turn': [schemas.CancelTurnRequest, api],
 };
@@ -143,6 +166,15 @@ for (const group of ['valid', 'invalid']) {
       const prefix = Object.keys(mapping).find((item) => file.startsWith(item));
       assert(prefix, `No fixture schema: ${file}`);
       errors = validateJsonSchema(value, ...mapping[prefix]);
+      if (value.type === 'session.snapshot') {
+        if (value.data?.lastSequence !== value.sequence) errors.push('Snapshot cursor differs from envelope sequence');
+        if (value.data?.sessionId !== value.sessionId) errors.push('Snapshot session differs from envelope session');
+      }
+      if (file.startsWith('local-new-session-response')) {
+        if (value.data?.activeTurnId !== null || value.data?.turnState !== 'IDLE') errors.push('New session must have no active turn');
+        if (value.data?.transcript !== '' || value.data?.assistantText !== '') errors.push('New session must clear displayed text');
+      }
+
       if (file.startsWith('local-settings-setup') && value.pin !== value.confirmPin) errors.push('PIN confirmation mismatch');
       if (file.startsWith('local-settings-') && ('certificatePin' in value || 'confirmedFingerprint' in value) && value.certificatePin !== value.confirmedFingerprint) errors.push('Fingerprint mismatch');
     }

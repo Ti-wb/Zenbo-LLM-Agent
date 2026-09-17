@@ -7,15 +7,16 @@
     "settingsUnlocked": false,
     "gatewayState": "READY",
     "robotReady": true,
-    "activeSessionId": null,
+    "activeSessionId": "20000000-0000-4000-8000-000000000001",
     "activeTurnId": null,
     "lastSequence": 0,
     "protocolVersion": "2.0",
     "motionEnabled": false,
     "battery": {
-      "percentage": null,
-      "charging": null
+      "percentage": 101,
+      "charging": false
     },
     "turnBusy": false
-  }
+  },
+  "error": null
 }

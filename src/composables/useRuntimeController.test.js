@@ -49,6 +49,7 @@ function fakeTransport({ status, conversation }) {
     getRuntimeSettings: vi.fn().mockResolvedValue({ pinConfigured: true }),
     getRuntimeStatus: vi.fn().mockResolvedValue(status),
     setMotionEnabled: vi.fn(),
+    startNewSession: vi.fn(),
     getConversation: vi.fn().mockResolvedValue(conversation),
     resetCursor: vi.fn(),
     connectEvents: vi.fn(),
@@ -282,18 +283,21 @@ describe('Native motion preference', () => {
 
   it('reads the persisted value at startup and synchronizes Native controls and reconnect status', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY', motionEnabled: true }, conversation: initial });
+    const transport = fakeTransport({ status: { gatewayState: 'READY', motionEnabled: true, battery: { percentage: 82, charging: true } }, conversation: initial });
     const { app, controller, runtime } = await mountController({ transport, conversation: initial });
     expect(runtime.motionEnabled).toBe(true);
+    expect(runtime.batteryLabel).toBe('82%');
+    expect(runtime.battery.charging).toBe(true);
     let confirm;
     transport.setMotionEnabled.mockImplementationOnce(() => new Promise((resolve) => { confirm = resolve; }));
     const pending = controller.setMotionEnabled(true);
     await transport.emit('event', {
       protocolVersion: '2.0', eventId: '00000000-0000-4000-8000-000000000004',
       sequence: 4, type: 'local.robot.state', timestamp: '2026-09-17T00:00:00.000Z',
-      data: { ready: true, moving: false, motionEnabled: false },
+      data: { ready: true, moving: false, motionEnabled: false, battery: { percentage: null, charging: null } },
     });
     expect(runtime.motionEnabled).toBe(false);
+    expect(runtime.batteryLabel).toBe('--%');
     expect(runtime.robotReady).toBe(true);
     confirm({ motionEnabled: true, moving: true });
     await pending;
@@ -336,6 +340,121 @@ describe('listening startup cancellation', () => {
     await controller.wakeUp();
     expect(timers.scheduleInactivity).toHaveBeenCalledOnce();
     expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    app.unmount();
+  });
+});
+
+describe('new conversation', () => {
+  const initial = {
+    sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3,
+    transcript: '原本的問題', assistantText: '原本的回答',
+  };
+  const ready = { gatewayState: 'READY', turnBusy: false, lastSequence: 3 };
+  const empty = (lastSequence) => ({ ...initial, lastSequence, transcript: '', assistantText: '' });
+  const gateway = (sequence, state) => ({
+    protocolVersion: '2.0', eventId: `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`,
+    type: 'local.gateway.state', sequence, timestamp: '2026-09-17T00:00:00.000Z', data: { state },
+  });
+  const snapshot = (sequence) => ({
+    protocolVersion: '2.0', type: RuntimeEventType.SESSION_SNAPSHOT, sequence, data: empty(sequence),
+  });
+
+  it('gates capture and duplicate taps until the accepted cursor has a newer READY, even before HTTP completion', async () => {
+    const transport = fakeTransport({ status: ready, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await controller.wakeUp();
+    await vadCallbacks.onSpeechStart();
+    let finishOldPause;
+    vad.pause.mockImplementationOnce(() => new Promise((resolve) => { finishOldPause = resolve; }));
+    const oldSpeech = vadCallbacks.onSpeechEnd({ blob: new Blob(['old'], { type: 'audio/wav' }) });
+    let accept;
+    transport.startNewSession.mockImplementation(() => new Promise((resolve) => { accept = resolve; }));
+    const change = controller.startNewSession();
+    expect(controller.newSessionPending.value).toBe(true);
+    expect(await controller.startNewSession()).toBe(false);
+    await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
+    vad.start.mockClear();
+    await controller.wakeUp();
+    await vadCallbacks.onSpeechStart();
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['during reset'], { type: 'audio/wav' }) });
+    await transport.emit('event', gateway(4, 'READY')); // Old binding is not completion.
+    expect(controller.newSessionPending.value).toBe(true);
+    await transport.emit('event', gateway(5, 'CONNECTING'));
+    transport.getConversation.mockResolvedValueOnce(empty(7));
+    transport.getRuntimeStatus.mockResolvedValueOnce({ ...ready, lastSequence: 7 });
+    await transport.emit('event', snapshot(6)); // The snapshot read already includes READY at 7.
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(controller.newSessionPending.value).toBe(true);
+    accept(empty(6));
+    expect(await change).toBe(true);
+    finishOldPause();
+    await oldSpeech;
+    expect(controller.newSessionPending.value).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.lastSequence).toBe(7);
+    expect(vad.start).toHaveBeenCalledOnce();
+    expect(transport.startNewSession).toHaveBeenCalledOnce();
+    expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('clears old conversation only after acceptance and preserves sleep until the new binding is READY', async () => {
+    const transport = fakeTransport({ status: ready, conversation: initial });
+    const { app, controller, runtime, vad } = await mountController({ transport, conversation: initial });
+    runtime.goToSleep();
+    runtime.queueEmotion(Emotion.HAPPY);
+    const settingsBefore = { ...runtime.settings };
+    let accept;
+    transport.startNewSession.mockImplementation(() => new Promise((resolve) => { accept = resolve; }));
+    const change = controller.startNewSession();
+    await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
+    expect(runtime.assistantText).toBe('原本的回答');
+    expect(runtime.pendingEmotion).toBe(Emotion.HAPPY);
+    accept(empty(5));
+    await change;
+    expect(runtime.transcript).toBe('');
+    expect(runtime.assistantText).toBe('');
+    expect(runtime.pendingEmotion).toBe('');
+    expect(controller.newSessionPending.value).toBe(true);
+    await transport.emit('event', gateway(4, 'CONNECTING'));
+    transport.getConversation.mockResolvedValueOnce(empty(5));
+    transport.getRuntimeStatus.mockResolvedValueOnce({ ...ready, gatewayState: 'CONNECTING', turnBusy: true, lastSequence: 5 });
+    await transport.emit('event', snapshot(5));
+    expect(controller.newSessionPending.value).toBe(true);
+    await transport.emit('event', gateway(6, 'READY'));
+    expect(controller.newSessionPending.value).toBe(false);
+    expect(runtime.sleeping).toBe(true);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.settings).toEqual(settingsBefore);
+    expect(vad.start).toHaveBeenCalledOnce(); // Initial boot only.
+    app.unmount();
+  });
+
+  it('keeps busy/error feedback inline, preserves captions, and rechecks Native on the next tap', async () => {
+    const transport = fakeTransport({ status: ready, conversation: initial });
+    const { app, controller, runtime, vad } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    transport.getRuntimeStatus.mockResolvedValueOnce({ ...ready, turnBusy: true });
+    expect(await controller.startNewSession()).toBe(false);
+    expect(transport.startNewSession).not.toHaveBeenCalled();
+    expect(controller.newSessionMessage.value).toBe('上一輪還在結束，請稍後再試');
+    transport.startNewSession.mockRejectedValueOnce(Object.assign(new Error('Busy'), { code: 'TURN_BUSY' }));
+    expect(await controller.startNewSession()).toBe(false);
+    expect(transport.startNewSession).toHaveBeenCalledOnce();
+    expect(transport.getRuntimeStatus).toHaveBeenCalledTimes(3);
+    expect(runtime.transcript).toBe('原本的問題');
+    expect(runtime.assistantText).toBe('原本的回答');
+    expect(runtime.error).toBe('');
+    expect(runtime.settingsOpen).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    for (const state of [TURN_STATES.UPLOADING, TURN_STATES.THINKING, TURN_STATES.SPEAKING]) {
+      runtime.turnState = state;
+      runtime.activeTurnId = 'active-turn';
+      expect(controller.canStartNewSession.value).toBe(false);
+      expect(await controller.startNewSession()).toBe(false);
+    }
+    expect(transport.startNewSession).toHaveBeenCalledOnce();
     app.unmount();
   });
 });

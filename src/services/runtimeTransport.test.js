@@ -88,6 +88,20 @@ describe('RuntimeTransport', () => {
     expect(transport.bootstrapped).toBe(false);
     expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:8787/api/v2/bootstrap');
   });
+
+  it('starts a conversation with an empty body and caller-owned idempotency key', async () => {
+    const snapshot = { sessionId: 'local-session', activeTurnId: null, turnState: 'IDLE', lastSequence: 8, transcript: '', assistantText: '' };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(snapshot, 202));
+    const transport = new RuntimeTransport({ fetchImpl });
+    await expect(transport.startNewSession('00000000-0000-4000-8000-000000000001')).resolves.toEqual(snapshot);
+    const [url, request] = fetchImpl.mock.calls[0];
+    expect(url).toBe('http://127.0.0.1:8787/api/v2/conversation/new-session');
+    expect(request.method).toBe('POST');
+    expect(request.credentials).toBe('include');
+    expect(request.headers['Idempotency-Key']).toBe('00000000-0000-4000-8000-000000000001');
+    expect(JSON.parse(request.body)).toEqual({});
+    expect(transport.cursor).toBe(0);
+  });
   it('exchanges the one-time fragment secret for an HttpOnly cookie session', async () => {
     const fetchImpl = vi
       .fn()

@@ -30,13 +30,29 @@ The four controls are `local.gateway.state`, `local.robot.state`,
 `local.screen.state`, and `local.interaction`. They also advance the local
 sequence. Their strict data schemas exclude keys and authorization values.
 `local.robot.state.data` always contains `ready`, `moving`, and `motionEnabled`
-booleans, including initial and recovery frames. `motionEnabled` is the persisted
-Native motion permission, which defaults to false; it is not a robot readiness
-or movement indication.
+booleans plus `battery: {percentage, charging}`, including initial and recovery
+frames. Battery percentage is 0–100 or null; charging is boolean or null. Null
+means unknown. `motionEnabled` is the persisted Native motion permission, which
+defaults to false; it is not a robot readiness or movement indication.
 
 Web-owned tool calls use `PUT /api/v2/conversation/tool-calls/{callId}`. Native
 validates the allowlist, owner, correlation and deadline before returning the
 result on the Hermes plugin channel. There is no renderer tool registration.
+
+## New session
+
+An accepted new-session command clears the old local conversation/replay buffer
+without resetting the sequence, then emits CONNECTING and `session.snapshot`.
+Existing subscribers receive consecutive new events; a reconnect with an old
+cursor uses authoritative status/conversation recovery, never old-session audio
+or tool replay.
+The snapshot's `data` is the existing `ConversationData` shape: the local session
+UUID matches the envelope, `activeTurnId` is null, `turnState` is IDLE, both text
+fields are empty, and `data.lastSequence` equals the envelope sequence. Its
+202 HTTP response contains that same snapshot. Neither the local session UUID
+nor the monotonic event cursor resets. A fresh remote `device.bound` ends the
+rotation and permits READY; repeated use of the same operation key emits no
+second reset. Remote session IDs remain Native-only.
 
 ## Cancel and recovery
 

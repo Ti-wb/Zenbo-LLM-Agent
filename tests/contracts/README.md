@@ -1,7 +1,8 @@
 # Local Runtime 2.0 and Hermes Zenbo contract checks
 
 Run `npm run test:contracts` from the repository root. No running service,
-credentials, device or installed Python package is required.
+credentials, device or installed Python package is required. All fixtures here
+are synthetic contract examples, not recorded device or service observations.
 
 The validator checks the loopback-only v2 route, cookie and origin boundary,
 write-only Hermes settings, Native-owned event sequence, ordered audio metadata,

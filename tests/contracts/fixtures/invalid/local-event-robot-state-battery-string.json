@@ -8,7 +8,7 @@
     "moving": true,
     "motionEnabled": true,
     "battery": {
-      "percentage": null,
+      "percentage": "42",
       "charging": null
     }
   },

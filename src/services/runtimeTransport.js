@@ -210,6 +210,14 @@ export class RuntimeTransport {
     });
   }
 
+  startNewSession(idempotencyKey = this.randomUuidImpl()) {
+    return this.request(`${LOCAL_API_PREFIX}/conversation/new-session`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({}),
+    });
+  }
+
   async getConversation() {
     const payload = await this.request(`${LOCAL_API_PREFIX}/conversation`, { method: 'GET' });
     if (payload?.sessionId) {

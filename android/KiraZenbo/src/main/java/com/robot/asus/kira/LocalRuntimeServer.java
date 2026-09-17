@@ -56,6 +56,7 @@ public final class LocalRuntimeServer {
     private final LoopbackAsyncHttpServer server = new LoopbackAsyncHttpServer();
     private final Set<WebSocket> clients = Collections.synchronizedSet(new HashSet<>());
     private final LinkedHashMap<String, JSONObject> completedOperations = new LinkedHashMap<>();
+    private final Object newSessionLock = new Object();
     private final SecureRandom secureRandom = new SecureRandom();
 
     private volatile boolean started;
@@ -162,6 +163,32 @@ public final class LocalRuntimeServer {
         registerStatusRoute("/api/v2/status$");
         registerConversationRoute("/api/v2/conversation$");
         registerMultipartTurnRoute("/api/v2/conversation/turns$");
+        server.addAction("POST", "/api/v2/conversation/new-session$", (request, response) -> {
+            if (!requireSession(request, response)) return;
+            String operationKey = requireIdempotencyKey(request, response, "new-session");
+            if (operationKey == null) return;
+            // Cover both cache lookup and acceptance, including simultaneous retries of one operation.
+            synchronized (newSessionLock) {
+                if (sendCachedOperation(operationKey, response, 202)) return;
+                try {
+                    if (request.getBody() == null || !(request.getBody().get() instanceof JSONObject)) {
+                        throw new JSONException("Expected an empty JSON object");
+                    }
+                    requireOnlyKeys(readJson(request));
+                    JSONObject accepted = coordinator.startNewSession();
+                    cacheOperation(operationKey, accepted);
+                    sendJson(response, 202, accepted);
+                } catch (RemoteSessionCoordinator.GatewayUnavailableException error) {
+                    sendError(response, 503, "GATEWAY_OFFLINE", "裝置正在重新連線，請稍後再開啟新對話。");
+                } catch (IllegalStateException error) {
+                    sendError(response, 500, "INTERNAL_ERROR", "Could not save the new conversation state");
+                } catch (JSONException error) {
+                    boolean busy = "TURN_BUSY".equals(error.getMessage());
+                    sendError(response, busy ? 409 : 400, busy ? "TURN_BUSY" : "INVALID_REQUEST",
+                            busy ? "The current conversation is still busy" : "Expected an empty JSON object");
+                }
+            }
+        }, headers -> new JSONObjectBody());
 
         server.addAction("PUT", "/api/v2/motion$", (request, response) -> {
             if (!requireSession(request, response)) return;
@@ -538,6 +565,8 @@ public final class LocalRuntimeServer {
                     "gatewayState", coordinator.getGatewayState(),
                     "robotReady", robotGateway.isReady(),
                     "motionEnabled", coordinatorStatus.optBoolean("motionEnabled", false),
+                    "battery", coordinatorStatus.optJSONObject("battery"),
+                    "turnBusy", coordinatorStatus.optBoolean("turnBusy", false),
                     "activeSessionId", activeSessionId,
                     "activeTurnId", activeTurnId == null || activeTurnId.isEmpty() ? JSONObject.NULL : activeTurnId
             ));

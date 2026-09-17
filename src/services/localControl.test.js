@@ -20,7 +20,7 @@ describe('decodeLocalControl', () => {
       { state: 'READY' },
       { kind: 'gateway', state: 'READY', detail: '', errorCode: '' },
     ],
-    ['local.robot.state', { ready: true, moving: false, motionEnabled: false }, { kind: 'robot', ready: true, moving: false, motionEnabled: false }],
+    ['local.robot.state', { ready: true, moving: false, motionEnabled: false, battery: { percentage: 75, charging: true } }, { kind: 'robot', ready: true, moving: false, motionEnabled: false, battery: { percentage: 75, charging: true } }],
     ['local.screen.state', { state: 'OFF' }, { kind: 'screen', state: 'OFF' }],
     ['local.interaction', { kind: 'HEAD_PRESS' }, { kind: 'interaction', interaction: 'HEAD_PRESS' }],
   ])('decodes %s with the Native cursor', (type, data, expected) => {
@@ -36,13 +36,26 @@ describe('decodeLocalControl', () => {
     );
     expect(
       decodeLocalControl(
-        localControl('local.robot.state', { ready: true, moving: false, motionEnabled: false, token: 'x' }),
+        localControl('local.robot.state', { ready: true, moving: false, motionEnabled: false, battery: { percentage: null, charging: null }, token: 'x' }),
       ),
     ).toMatchObject({ kind: 'invalid' });
     for (const motionEnabled of [undefined, 'true']) {
       expect(decodeLocalControl(localControl('local.robot.state', {
-        ready: true, moving: false, motionEnabled,
+        ready: true, moving: false, motionEnabled, battery: { percentage: null, charging: null },
       }))).toMatchObject({ kind: 'invalid' });
+    }
+  });
+
+  it('accepts unknown battery data but rejects invalid or extra battery fields', () => {
+    const data = { ready: true, moving: false, motionEnabled: false };
+    expect(decodeLocalControl(localControl('local.robot.state', {
+      ...data, battery: { percentage: null, charging: null },
+    }))).toMatchObject({ kind: 'robot', battery: { percentage: null, charging: null } });
+    for (const battery of [undefined, { percentage: 101, charging: false },
+      { percentage: -1, charging: false }, { percentage: 50.5, charging: false },
+      { percentage: 50, charging: 'true' }, { percentage: 50, charging: false, extra: true }]) {
+      expect(decodeLocalControl(localControl('local.robot.state', { ...data, battery })))
+        .toMatchObject({ kind: 'invalid' });
     }
   });
 

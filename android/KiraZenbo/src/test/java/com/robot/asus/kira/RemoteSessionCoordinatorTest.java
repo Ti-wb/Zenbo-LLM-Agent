@@ -73,6 +73,64 @@ public class RemoteSessionCoordinatorTest {
         assertEquals(1, count("stt.final"));
     }
 
+    @Test public void newSessionResetsSnapshotWithoutChangingLocalIdentityOrReleasingTheBindingGate() throws Exception {
+        String oldTurn = startText();
+        finishRun();
+        for (int i = 0; i < transport.artifacts.length(); i++) {
+            playback(oldTurn, transport.artifacts.getJSONObject(i).getString("artifactId"), "started");
+            playback(oldTurn, transport.artifacts.getJSONObject(i).getString("artifactId"), "completed");
+        }
+        String localSession = coordinator.getSessionId();
+        long before = coordinator.getLastSequence();
+        JSONObject accepted = coordinator.startNewSession();
+        assertEquals(localSession, accepted.getString("sessionId"));
+        assertEquals(before + 2, accepted.getLong("lastSequence"));
+        assertEquals("", accepted.getString("transcript"));
+        assertEquals("", accepted.getString("assistantText"));
+        assertTrue(accepted.isNull("activeTurnId"));
+        assertEquals("CONNECTING", coordinator.getGatewayState());
+        assertTrue(coordinator.getStatus().getBoolean("turnBusy"));
+        JSONObject event = latest("session.snapshot");
+        assertEquals(event.getLong("sequence"), event.getJSONObject("data").getLong("lastSequence"));
+        assertEquals(2, coordinator.getConversation().length());
+        coordinator.onStateChanged("READY", "old queued state");
+        assertEquals("CONNECTING", coordinator.getGatewayState());
+        try { coordinator.startNewSession(); fail("Rotation must be single-flight"); }
+        catch (JSONException expected) { assertEquals("TURN_BUSY", expected.getMessage()); }
+        assertBusy();
+        assertEquals(1, transport.rotations);
+        transport.state = "READY";
+        coordinator.onStateChanged("READY", "");
+        assertFalse(coordinator.getStatus().getBoolean("turnBusy"));
+        startText();
+        assertEquals(2, transport.submissions);
+    }
+
+    @Test public void rejectedNewSessionPreservesConversationIncludingAnUncertainCancelledRun() throws Exception {
+        String turn = startText();
+        JSONObject before = coordinator.getConversationSnapshot(0);
+        try { coordinator.startNewSession(); fail("An active turn must not be discarded"); }
+        catch (JSONException expected) { assertEquals("TURN_BUSY", expected.getMessage()); }
+        assertEquals(before.toString(), coordinator.getConversationSnapshot(0).toString());
+        coordinator.cancelActiveTurn(turn, "user_interaction", new Capture());
+        assertNull(coordinator.getActiveTurnId());
+        assertTrue(coordinator.getStatus().getBoolean("turnBusy"));
+        try { coordinator.startNewSession(); fail("Remote uncertainty must remain gated"); }
+        catch (JSONException expected) { assertEquals("TURN_BUSY", expected.getMessage()); }
+        assertEquals(0, transport.rotations);
+    }
+
+    @Test public void batteryStatusAndEveryRobotStateIncludeTheSameNullableReading() throws Exception {
+        assertTrue(coordinator.getStatus().getJSONObject("battery").isNull("percentage"));
+        coordinator.updateBattery(BatteryState.fromReading(73, 100, 2, true));
+        assertEquals(73, coordinator.getStatus().getJSONObject("battery").getInt("percentage"));
+        assertEquals(73, latest("local.robot.state").getJSONObject("data").getJSONObject("battery").getInt("percentage"));
+        coordinator.publishRobotEvent("robotUnavailable", object());
+        assertEquals(73, latest("local.robot.state").getJSONObject("data").getJSONObject("battery").getInt("percentage"));
+        JSONArray recovery = coordinator.getLocalRecoveryFrames();
+        assertEquals(73, recovery.getJSONObject(1).getJSONObject("data").getJSONObject("battery").getInt("percentage"));
+    }
+
     @Test public void cancelledTranscriptionCannotCreateAnOldRun() throws Exception {
         transport.deferTranscription = true;
         String old = UUID.randomUUID().toString();
@@ -440,7 +498,8 @@ public class RemoteSessionCoordinatorTest {
     }
     private static class FakeTransport implements HermesTransport {
         static final byte[] AUDIO = "audio fixture".getBytes(StandardCharsets.UTF_8);
-        int submissions; int syntheses; int stops; int statusReads;
+        int submissions; int syntheses; int stops; int statusReads; int rotations;
+        String state = "READY";
         String submittedText; String runId = "run-remote"; String runStatus = "running";
         boolean deferTranscription; boolean deferSubmission; boolean deferDownload; boolean deferToolTerminal;
         ResultCallback toolTerminal;
@@ -450,8 +509,9 @@ public class RemoteSessionCoordinatorTest {
         List<JSONObject> toolUpdates = new ArrayList<>();
         public void start() { }
         public void reload() { }
+        public NewSessionResult startNewSession() { rotations++; state = "CONNECTING"; return NewSessionResult.STARTED; }
         public void shutdown() { }
-        public JSONObject getStatus() { return object("state", "READY"); }
+        public JSONObject getStatus() { return object("state", state); }
         public String getRemoteSessionId() { return "hermes-session"; }
         public void submitText(String id, String text, String language, ResultCallback callback) {
             submissions++; submittedText = text; submission = callback;

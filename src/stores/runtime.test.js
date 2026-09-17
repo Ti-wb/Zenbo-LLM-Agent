@@ -12,6 +12,18 @@ import {
 describe('runtime store', () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it('keeps unknown battery readings distinct from zero percent', () => {
+    const store = useRuntimeStore();
+    expect(store.batteryLabel).toBe('--%');
+    store.setBattery({ percentage: 0, charging: true });
+    expect(store.batteryLabel).toBe('0%');
+    expect(store.battery.charging).toBe(true);
+    store.setBattery({ percentage: 73, charging: false });
+    expect(store.batteryLabel).toBe('73%');
+    store.setBattery({ percentage: null, charging: null });
+    expect(store.batteryLabel).toBe('--%');
+  });
+
   it('exposes only the approved Gateway, Turn, and Emotion enum values', () => {
     expect(Object.values(GatewayState)).toEqual([
       'UNCONFIGURED',
@@ -140,7 +152,7 @@ describe('runtime store', () => {
     expect(store.applyEnvelope(ready)).toBe(true);
     store.commitEnvelope(ready);
     expect(store.lastSequence).toBe(1);
-    const robot = { protocolVersion: '2.0', type: 'local.robot.state', sequence: 2, data: { ready: true, moving: false, motionEnabled: false } };
+    const robot = { protocolVersion: '2.0', type: 'local.robot.state', sequence: 2, data: { ready: true, moving: false, motionEnabled: false, battery: { percentage: null, charging: null } } };
     expect(store.applyEnvelope(robot)).toBe(true);
     store.commitEnvelope(robot);
     expect(store.lastSequence).toBe(2);

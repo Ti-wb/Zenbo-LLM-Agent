@@ -117,8 +117,17 @@ public final class GatewaySettings {
     }
 
     synchronized void clearRemoteSessionState() {
+        String sessionId = preferences.getString(KEY_REMOTE_SESSION_ID, null);
+        String identity = preferences.getString(KEY_SESSION_GATEWAY_IDENTITY, null);
+        String runId = preferences.getString(KEY_ACTIVE_RUN_ID, null);
+        String pending = preferences.getString(KEY_PENDING_SUBMISSION, null);
         if (!preferences.edit().remove(KEY_REMOTE_SESSION_ID).remove(KEY_SESSION_GATEWAY_IDENTITY)
                 .remove(KEY_ACTIVE_RUN_ID).remove(KEY_PENDING_SUBMISSION).commit()) {
+            // SharedPreferences updates memory even if the disk commit fails. Keep the current
+            // session usable when a new-conversation request could not be saved.
+            preferences.edit().putString(KEY_REMOTE_SESSION_ID, sessionId)
+                    .putString(KEY_SESSION_GATEWAY_IDENTITY, identity).putString(KEY_ACTIVE_RUN_ID, runId)
+                    .putString(KEY_PENDING_SUBMISSION, pending).commit();
             throw new IllegalStateException("Could not clear Hermes session");
         }
     }

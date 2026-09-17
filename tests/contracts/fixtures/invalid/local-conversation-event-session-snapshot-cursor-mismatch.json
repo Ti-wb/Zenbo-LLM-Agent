@@ -10,7 +10,7 @@
     "sessionId": "20000000-0000-4000-8000-000000000001",
     "activeTurnId": null,
     "turnState": "IDLE",
-    "lastSequence": 1,
+    "lastSequence": 0,
     "transcript": "",
     "assistantText": ""
   }

@@ -5,7 +5,11 @@
   "timestamp": "2026-07-17T08:00:01.000Z",
   "data": {
     "ready": true,
-    "moving": true
+    "moving": true,
+    "battery": {
+      "percentage": null,
+      "charging": null
+    }
   },
   "sequence": 1
 }

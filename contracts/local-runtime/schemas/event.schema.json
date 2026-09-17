@@ -119,7 +119,8 @@
       "required": [
         "ready",
         "moving",
-        "motionEnabled"
+        "motionEnabled",
+        "battery"
       ],
       "properties": {
         "ready": {
@@ -131,6 +132,9 @@
         "motionEnabled": {
           "type": "boolean",
           "default": false
+        },
+        "battery": {
+          "$ref": "../openapi.json#/components/schemas/BatteryState"
         }
       }
     },

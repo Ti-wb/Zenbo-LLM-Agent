@@ -64,6 +64,14 @@ function isDateTime(value) {
   );
 }
 
+function isBattery(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    hasExactKeys(value, ['percentage', 'charging']) &&
+    (value.percentage === null || (Number.isInteger(value.percentage) &&
+      value.percentage >= 0 && value.percentage <= 100)) &&
+    (value.charging === null || typeof value.charging === 'boolean');
+}
+
 export function decodeLocalControl(envelope) {
   const type = String(envelope?.type || '');
   if (!type.startsWith('local.')) return null;
@@ -98,11 +106,11 @@ export function decodeLocalControl(envelope) {
           }
         : { kind: 'invalid', message: 'Invalid local gateway state.' };
     case 'local.robot.state':
-      return hasExactKeys(data, ['ready', 'moving', 'motionEnabled']) &&
+      return hasExactKeys(data, ['ready', 'moving', 'motionEnabled', 'battery']) &&
         typeof data.ready === 'boolean' &&
         typeof data.moving === 'boolean' &&
-        typeof data.motionEnabled === 'boolean'
-        ? { kind: 'robot', ready: data.ready, moving: data.moving, motionEnabled: data.motionEnabled }
+        typeof data.motionEnabled === 'boolean' && isBattery(data.battery)
+        ? { kind: 'robot', ready: data.ready, moving: data.moving, motionEnabled: data.motionEnabled, battery: data.battery }
         : { kind: 'invalid', message: 'Invalid local robot state.' };
     case 'local.screen.state':
       return hasExactKeys(data, ['state']) && (data.state === 'ON' || data.state === 'OFF')

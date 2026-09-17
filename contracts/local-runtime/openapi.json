@@ -366,6 +366,61 @@
         }
       }
     },
+    "/conversation/new-session": {
+      "post": {
+        "operationId": "startNewConversationSession",
+        "summary": "Start a fresh Hermes session without changing device settings or deleting history",
+        "description": "Requires the renderer session cookie, exact Origin and a UUID Idempotency-Key, without a settings PIN. Reject active, unsettled or rotating work with 409 TURN_BUSY and a non-ready gateway with 503 GATEWAY_OFFLINE. On acceptance Native synchronously enters CONNECTING and emits session.snapshot with cleared transcript/assistant text. The 202 ConversationResponse retains the local session UUID and its lastSequence equals that snapshot event sequence; the cursor never resets. Rotation keeps status.turnBusy true until the new remote device binding is acknowledged, then Native emits READY. Replaying the same key returns the original accepted response without another rotation. Old remote history and device settings are preserved. Persistence failure returns 500 INTERNAL_ERROR and leaves the original conversation and connection intact.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Session rotation accepted; empty local conversation snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        }
+      }
+    },
     "/conversation/turns": {
       "post": {
         "operationId": "createConversationTurn",
@@ -961,7 +1016,9 @@
           "activeTurnId",
           "lastSequence",
           "protocolVersion",
-          "motionEnabled"
+          "motionEnabled",
+          "battery",
+          "turnBusy"
         ],
         "properties": {
           "runtimeReady": {
@@ -1004,6 +1061,13 @@
             "type": "boolean",
             "default": false,
             "description": "Persisted Native permission for following and looking toward the user. Defaults to false."
+          },
+          "battery": {
+            "$ref": "#/components/schemas/BatteryState"
+          },
+          "turnBusy": {
+            "type": "boolean",
+            "description": "True while a turn, unsettled previous run, or new-session rotation is in progress."
           }
         }
       },
@@ -1828,6 +1892,38 @@
             }
           }
         ]
+      },
+      "BatteryState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "percentage",
+          "charging"
+        ],
+        "properties": {
+          "percentage": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Current Native battery percentage, or null when unavailable."
+          },
+          "charging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Current Native charging state, or null when unavailable."
+          }
+        }
+      },
+      "NewSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "An empty JSON object. Profile, provider, credentials and history deletion are not configurable through this command."
       }
     }
   }

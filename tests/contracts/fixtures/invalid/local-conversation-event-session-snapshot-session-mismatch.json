@@ -7,7 +7,7 @@
   "type": "session.snapshot",
   "timestamp": "2026-07-17T08:00:01.000Z",
   "data": {
-    "sessionId": "20000000-0000-4000-8000-000000000001",
+    "sessionId": "20000000-0000-4000-8000-000000000099",
     "activeTurnId": null,
     "turnState": "IDLE",
     "lastSequence": 1,

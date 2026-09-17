@@ -95,6 +95,8 @@ export const useRuntimeStore = defineStore('runtime', {
     robotReady: false,
     robotMoving: false,
     motionEnabled: false,
+    battery: { percentage: null, charging: null },
+    turnBusy: false,
     activeTurnId: '',
     lastSequence: 0,
     transcript: '',
@@ -114,6 +116,10 @@ export const useRuntimeStore = defineStore('runtime', {
   }),
 
   getters: {
+    batteryLabel(state) {
+      return `${state.battery.percentage === null ? '--' : state.battery.percentage}%`;
+    },
+
     effectiveEmotion(state) {
       if (state.connectionState !== CONNECTION_STATES.READY) return Emotion.NEUTRAL;
       if (state.turnState === TURN_STATES.LISTENING) return Emotion.CURIOUS;
@@ -166,6 +172,15 @@ export const useRuntimeStore = defineStore('runtime', {
   },
 
   actions: {
+    setBattery(battery) {
+      const percentage = battery?.percentage;
+      this.battery = {
+        percentage: Number.isInteger(percentage) && percentage >= 0 && percentage <= 100
+          ? percentage : null,
+        charging: typeof battery?.charging === 'boolean' ? battery.charging : null,
+      };
+    },
+
     transition(event, payload = {}) {
       if (['speech_started', 'wake', 'failed'].includes(event)) this.recoveryNotice = '';
       if (['reset', 'speech_started', 'failed', 'wake'].includes(event)) {

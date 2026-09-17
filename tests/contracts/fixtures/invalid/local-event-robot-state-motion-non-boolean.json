@@ -6,7 +6,11 @@
   "data": {
     "ready": true,
     "moving": true,
-    "motionEnabled": 1
+    "motionEnabled": 1,
+    "battery": {
+      "percentage": null,
+      "charging": null
+    }
   },
   "sequence": 1
 }

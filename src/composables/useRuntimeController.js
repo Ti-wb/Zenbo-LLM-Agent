@@ -79,6 +79,8 @@ export function useRuntimeController(options = {}) {
   const settingsTestResult = ref(null);
   const motionUpdating = ref(false);
   const motionError = ref('');
+  const newSessionPending = ref(false);
+  const newSessionMessage = ref('');
   const started = ref(false);
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
@@ -87,13 +89,31 @@ export function useRuntimeController(options = {}) {
   let speechTurnId = '';
   let activePlaylist = null;
   let pendingVoiceTurn = null;
+  let newSessionBarrier = null;
+  let latestReadySequence = 0;
+
+  const canStartNewSession = computed(() => !newSessionPending.value &&
+    runtime.connectionState === CONNECTION_STATES.READY &&
+    (runtime.turnState === TURN_STATES.LISTENING ||
+      (!runtime.activeTurnId && [TURN_STATES.IDLE, TURN_STATES.ERROR].includes(runtime.turnState))));
 
   function captureIsCurrent(generation = listeningGeneration) {
     return generation === listeningGeneration &&
-      !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
+      !newSessionPending.value && !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
   }
 
-  async function applyGatewayState(state, detail = '') {
+  async function finishNewSessionIfReady() {
+    if (!newSessionPending.value || newSessionBarrier === null ||
+        latestReadySequence <= newSessionBarrier || runtime.connectionState !== CONNECTION_STATES.READY) return;
+    newSessionPending.value = false;
+    newSessionBarrier = null;
+    runtime.turnBusy = false;
+    newSessionMessage.value = '已開始新對話';
+    await enterListening();
+  }
+
+  async function applyGatewayState(state, detail = '', sequence = 0) {
+    if (state === CONNECTION_STATES.READY) latestReadySequence = Math.max(latestReadySequence, sequence);
     const reconnecting = [
       CONNECTION_STATES.OFFLINE, CONNECTION_STATES.CONNECTING, CONNECTION_STATES.DEGRADED,
     ].includes(state);
@@ -111,6 +131,7 @@ export function useRuntimeController(options = {}) {
       if (localOnly) runtime.transition('reset', { turnId: '' });
       await pauseListening();
     } else if (state === CONNECTION_STATES.READY) {
+      if (newSessionPending.value) return finishNewSessionIfReady();
       await enterListening();
     }
   }
@@ -118,7 +139,56 @@ export function useRuntimeController(options = {}) {
   function applyNativeRobotStatus(status) {
     robotStateRevision += 1;
     runtime.motionEnabled = status?.motionEnabled === true;
+    runtime.setBattery(status?.battery);
+    runtime.turnBusy = status?.turnBusy === true;
     if (typeof status?.robotReady === 'boolean') runtime.robotReady = status.robotReady;
+  }
+
+  async function startNewSession() {
+    if (!canStartNewSession.value) return false;
+    newSessionPending.value = true;
+    newSessionBarrier = null;
+    newSessionMessage.value = '';
+    timers.clearAll();
+    speechTurnId = '';
+    pendingVoiceTurn = null;
+    runtime.waitingForPreviousTurn = false;
+    // Only local capture is discarded here. Keep captions/emotion until Native
+    // accepts the reset, and leave the user's sleep/wake choice unchanged.
+    runtime.activeTurnId = '';
+    runtime.turnState = TURN_STATES.IDLE;
+    await pauseListening();
+    try {
+      const status = await transport.getRuntimeStatus();
+      applyNativeRobotStatus(status);
+      if (status?.turnBusy) throw Object.assign(new Error(), { code: 'TURN_BUSY' });
+      const state = normalizedGatewayState(status?.gateway?.state || status?.gatewayState);
+      if (state !== CONNECTION_STATES.READY) {
+        await applyGatewayState(state);
+        throw Object.assign(new Error(), { code: 'GATEWAY_OFFLINE' });
+      }
+      const snapshot = await transport.startNewSession(createId());
+      if (!Number.isInteger(snapshot?.lastSequence) || snapshot.lastSequence < 1 ||
+          snapshot.turnState !== TURN_STATES.IDLE || snapshot.activeTurnId) {
+        throw new Error('Invalid new conversation response.');
+      }
+      newSessionBarrier = snapshot.lastSequence;
+      runtime.setSession(snapshot);
+      runtime.transition('reset', { turnId: '', transcript: '', assistantText: '', error: '' });
+      runtime.recoveryNotice = '';
+      // The HTTP cursor is a barrier, not permission to skip local events.
+      // READY may already have arrived while its HTTP response was in flight.
+      await finishNewSessionIfReady();
+      return true;
+    } catch (error) {
+      newSessionPending.value = false;
+      newSessionBarrier = null;
+      newSessionMessage.value = error.code === 'TURN_BUSY'
+        ? '上一輪還在結束，請稍後再試'
+        : error.code === 'GATEWAY_OFFLINE' ? '連線恢復後再試一次' : '無法建立新對話，請稍後再試';
+      await enterListening();
+      return false;
+    }
   }
 
   async function setMotionEnabled(enabled) {
@@ -197,6 +267,7 @@ export function useRuntimeController(options = {}) {
       if (runtime.activeTurnId) await transport.cancelTurn(runtime.activeTurnId, 'barge_in');
       if (!captureIsCurrent(generation)) return;
       speechTurnId = createId();
+      newSessionMessage.value = '';
       runtime.transition('speech_started', {
         turnId: speechTurnId, transcript: '', assistantText: '', error: '',
       });
@@ -279,7 +350,17 @@ export function useRuntimeController(options = {}) {
     await applyAuthoritativeConversation(conversation, errorMessage);
     const gateway = status?.gateway || status || {};
     const state = normalizedGatewayState(gateway.state || status?.gatewayState);
-    await applyGatewayState(state, runtime.error || errorMessage);
+    await applyGatewayState(state, runtime.error || errorMessage, status?.lastSequence || 0);
+  }
+
+  async function synchronizeNewSession() {
+    await applyAuthoritativeConversation(await transport.getConversation());
+    // The snapshot may include events newer than its reset envelope. Read
+    // connection state afterwards so a skipped READY still satisfies the barrier.
+    const status = await transport.getRuntimeStatus();
+    applyNativeRobotStatus(status);
+    await applyGatewayState(normalizedGatewayState(status?.gateway?.state || status?.gatewayState),
+      '', status?.lastSequence || 0);
   }
 
   tools.register({
@@ -433,6 +514,10 @@ export function useRuntimeController(options = {}) {
       // Native recovery controls may jump over evicted history. Refresh the
       // authoritative conversation instead of applying an incomplete sequence.
       if (localControl.kind === 'gateway' && envelope.sequence !== runtime.lastSequence + 1) {
+        if (newSessionPending.value) {
+          await synchronizeNewSession();
+          return;
+        }
         await refreshAuthoritativeRuntime(localControl.detail);
         if (runtime.connectionState === CONNECTION_STATES.READY) {
           runtime.recoveryNotice = '連線已恢復，請重新說一次';
@@ -445,13 +530,14 @@ export function useRuntimeController(options = {}) {
       }
       switch (localControl.kind) {
         case 'gateway':
-          await applyGatewayState(localControl.state, localControl.detail);
+          await applyGatewayState(localControl.state, localControl.detail, envelope.sequence);
           break;
         case 'robot':
           robotStateRevision += 1;
           runtime.robotReady = localControl.ready;
           runtime.robotMoving = localControl.moving;
           runtime.motionEnabled = localControl.motionEnabled;
+          runtime.setBattery(localControl.battery);
           break;
         case 'screen':
           if (localControl.state === 'OFF') await enterSleep('screen-off');
@@ -535,10 +621,11 @@ export function useRuntimeController(options = {}) {
 
     switch (type) {
       case RuntimeEventType.SESSION_READY:
-        await applyGatewayState(CONNECTION_STATES.READY);
+        await applyGatewayState(CONNECTION_STATES.READY, '', envelope.sequence);
         break;
       case RuntimeEventType.SESSION_SNAPSHOT:
-        await applyAuthoritativeConversation(await transport.getConversation());
+        if (newSessionPending.value) await synchronizeNewSession();
+        else await applyAuthoritativeConversation(await transport.getConversation());
         return;
       case RuntimeEventType.TURN_ACCEPTED:
         runtime.transition('transcription_started', { turnId });
@@ -752,6 +839,7 @@ export function useRuntimeController(options = {}) {
     timers.clearResume();
     if (
       runtime.connectionState !== CONNECTION_STATES.READY ||
+      newSessionPending.value ||
       runtime.sleeping ||
       runtime.turnState !== TURN_STATES.IDLE ||
       runtime.activeTurnId
@@ -762,7 +850,7 @@ export function useRuntimeController(options = {}) {
     speechTurnId = '';
     await vad.start();
     if (request !== listeningGeneration || !vad.isRunning.value) return;
-    if (runtime.sleeping || runtime.connectionState !== CONNECTION_STATES.READY) {
+    if (runtime.sleeping || newSessionPending.value || runtime.connectionState !== CONNECTION_STATES.READY) {
       await pauseListening();
       return;
     }
@@ -834,6 +922,10 @@ export function useRuntimeController(options = {}) {
       transport.on('runtimeConnected', async () => {
         if (runtime.connectionState !== CONNECTION_STATES.DEGRADED) return;
         try {
+          if (newSessionPending.value && newSessionBarrier !== null) {
+            await synchronizeNewSession();
+            return;
+          }
           // Preserve the committed cursor so retained tool/audio events replay.
           // A Native recovery control requests a snapshot if history was evicted.
           const status = await transport.getRuntimeStatus();
@@ -890,6 +982,10 @@ export function useRuntimeController(options = {}) {
     motionUpdating,
     motionError,
     setMotionEnabled,
+    canStartNewSession,
+    newSessionPending,
+    newSessionMessage,
+    startNewSession,
     savingSettings,
     settingsTestResult,
     testingSettings,

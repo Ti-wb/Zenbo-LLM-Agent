@@ -13,11 +13,15 @@ const {
   inputLevel = ref(0),
   motionUpdating = ref(false),
   motionError = ref(''),
+  canStartNewSession = ref(false),
+  newSessionPending = ref(false),
+  newSessionMessage = ref(''),
   savingSettings,
   settingsTestResult,
   testingSettings,
   saveSettings,
   setMotionEnabled,
+  startNewSession,
   testSettings,
   toggleListening,
   wakeUp,
@@ -31,6 +35,7 @@ let settingsHoldTimer;
 
 const canIndicateListening = computed(() =>
   !runtime.sleeping && !runtime.error && !runtime.waitingForPreviousTurn
+  && !newSessionPending.value
   && runtime.connectionState === 'READY'
   && ['IDLE', 'LISTENING'].includes(runtime.turnState),
 );
@@ -43,10 +48,15 @@ const listeningStyle = computed(() => ({
   '--listening-frame': listeningReady.value ? 0.3 + microphoneLevel.value * 0.65 : 0,
 }));
 const statusLabel = computed(() => {
+  if (newSessionPending.value && !runtime.sleeping) return '正在建立新對話';
   if (!canIndicateListening.value) return runtime.statusLabel;
   if (listeningReady.value) return '我在聽';
   if (isListening.value || runtime.turnState === 'LISTENING') return '麥克風準備中';
   return runtime.statusLabel;
+});
+const batteryDescription = computed(() => {
+  const charge = runtime.battery.charging === true ? '，充電中' : '';
+  return runtime.battery.percentage === null ? `電量未知${charge}` : `電量 ${runtime.batteryLabel}${charge}`;
 });
 
 watch([isAudioReady, canIndicateListening], ([ready, eligible], [previousReady] = []) => {
@@ -112,8 +122,17 @@ onBeforeUnmount(() => {
 <template>
   <main class="face-shell" :class="{ 'listening-ready': listeningReady }" :style="listeningStyle">
     <header class="top-bar">
-      <span class="clock">{{ clock }}</span>
-      <span class="connection-dot" :data-state="runtime.connectionState" aria-hidden="true" />
+      <div class="device-indicators">
+        <span class="clock">{{ clock }}</span>
+        <span class="battery-readout" :class="{ charging: runtime.battery.charging === true }" role="img" :aria-label="batteryDescription">
+          <span class="battery-icon" aria-hidden="true">
+            <i :style="{ width: `${runtime.battery.percentage ?? 0}%` }" />
+          </span>
+          <span aria-hidden="true">{{ runtime.batteryLabel }}</span>
+          <span v-if="runtime.battery.charging === true" class="charging-mark" aria-hidden="true">ϟ</span>
+        </span>
+        <span class="connection-dot" :data-state="runtime.connectionState" aria-hidden="true" />
+      </div>
       <button
         class="icon-button"
         type="button"
@@ -122,6 +141,19 @@ onBeforeUnmount(() => {
       >
         {{ isListening ? '●' : '○' }}
       </button>
+      <div class="session-control">
+        <button
+          class="new-session-button"
+          type="button"
+          :disabled="!canStartNewSession || !startNewSession"
+          :aria-busy="newSessionPending"
+          :title="newSessionPending ? '正在建立新對話' : canStartNewSession ? '保留設定，開始一段新對話' : '連線就緒並結束目前回合後可建立新對話'"
+          @click="startNewSession?.()"
+        >
+          {{ newSessionPending ? '建立中…' : '新對話' }}
+        </button>
+        <p v-if="newSessionMessage" class="session-message" role="status">{{ newSessionMessage }}</p>
+      </div>
       <div class="motion-control">
         <button
           class="motion-toggle"
@@ -216,12 +248,59 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.motion-control {
+.device-indicators {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-right: auto;
+  white-space: nowrap;
+}
+
+.device-indicators .clock { margin-right: 0; }
+.top-bar > .icon-button { flex-shrink: 0; }
+
+.battery-readout {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 66px;
+  color: #a8bfc4;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.battery-readout.charging { color: #9edcc4; }
+.charging-mark { font-size: 17px; line-height: 1; }
+
+.battery-icon {
+  position: relative;
+  display: block;
+  width: 22px;
+  height: 12px;
+  padding: 2px;
+  border: 2px solid currentColor;
+}
+
+.battery-icon::after {
+  position: absolute;
+  content: '';
+  width: 2px;
+  height: 6px;
+  right: -4px;
+  top: 1px;
+  background: currentColor;
+}
+
+.battery-icon i { display: block; height: 100%; background: currentColor; }
+
+.motion-control,
+.session-control {
   position: relative;
   flex-shrink: 0;
 }
 
-.motion-toggle {
+.motion-toggle,
+.new-session-button {
   min-width: 86px;
   height: 48px;
   flex-shrink: 0;
@@ -243,17 +322,20 @@ onBeforeUnmount(() => {
   color: #a3e8cf;
 }
 
-.motion-toggle:focus-visible {
+.motion-toggle:focus-visible,
+.new-session-button:focus-visible {
   outline: 2px solid #80dcc0;
   outline-offset: 3px;
 }
 
-.motion-toggle:disabled {
+.motion-toggle:disabled,
+.new-session-button:disabled {
   opacity: 0.55;
   cursor: default;
 }
 
-.motion-error {
+.motion-error,
+.session-message {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
@@ -267,6 +349,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.session-message {
+  width: 196px;
+  border-color: #34474b;
+  color: #b4d4d2;
 }
 
 .face-stage {
@@ -305,8 +393,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 480px) {
-  .top-bar { gap: 6px; }
-  .motion-toggle { min-width: 74px; padding: 0 10px; font-size: 12px; }
+  .face-shell { --face-top-bar-height: calc(var(--face-safe-top) + 84px); }
+  .top-bar { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .device-indicators { width: 100%; }
+  .device-indicators .connection-dot { margin-left: auto; }
+  .motion-toggle,
+  .new-session-button { min-width: 74px; padding: 0 10px; font-size: 12px; }
+  .session-message { left: 0; right: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

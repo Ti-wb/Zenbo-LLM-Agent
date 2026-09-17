@@ -48,6 +48,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     private boolean stopped;
     private boolean announcedReady;
     private boolean motionEnabled;
+    private boolean newSessionPending;
+    private BatteryState battery = BatteryState.UNKNOWN;
     private String connectionState = "OFFLINE";
     private String transcript = "";
     private String assistantText = "";
@@ -117,6 +119,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         generation++;
         active = null;
         announcedReady = false;
+        newSessionPending = false;
         gatewayClient.reload();
     }
     public synchronized void stop() {
@@ -133,6 +136,29 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     }
     public synchronized String getGatewayState() { return GatewayStateMapper.normalize(connectionState); }
     public synchronized boolean isMotionEnabled() { return motionEnabled; }
+    synchronized void updateBattery(BatteryState reading) {
+        if (stopped) return;
+        battery = reading;
+        publishRobotState();
+    }
+
+    public synchronized JSONObject startNewSession() throws JSONException {
+        if (active != null || newSessionPending) throw new JSONException("TURN_BUSY");
+        if (stopped || !"READY".equals(getGatewayState())) throw new GatewayUnavailableException();
+        HermesTransport.NewSessionResult result = gatewayClient.startNewSession();
+        if (result == HermesTransport.NewSessionResult.BUSY) throw new JSONException("TURN_BUSY");
+        if (result != HermesTransport.NewSessionResult.STARTED) throw new GatewayUnavailableException();
+        newSessionPending = true;
+        generation++;
+        transcript = "";
+        assistantText = "";
+        conversation.clear();
+        onStateChanged("CONNECTING", "");
+        JSONObject snapshot = getConversationSnapshot(sequence);
+        snapshot.put("lastSequence", sequence + 1);
+        emit("session.snapshot", null, snapshot);
+        return snapshot;
+    }
     public synchronized JSONObject setMotionEnabled(boolean enabled) {
         if (enabled) {
             // Never grant hardware authority before its durable preference is saved.
@@ -166,13 +192,15 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         frames.put(emit("local.gateway.state", null, json("state", getGatewayState(),
                 "detail", interrupted ? "畫面重新連線，上一輪已停止，請重新提問。" : "")));
         frames.put(emit("local.robot.state", null,
-                json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving(), "motionEnabled", motionEnabled)));
+                json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving(), "motionEnabled", motionEnabled,
+                        "battery", battery.toJson())));
         return frames;
     }
     public synchronized JSONObject getStatus() {
         return json("sessionId", sessionId, "gateway", gatewayClient.getStatus(),
                 "robotReady", robotGateway.isReady(), "motionEnabled", motionEnabled, "lastSequence", sequence,
-                "conversationEvents", conversation.size(), "turnBusy", active != null);
+                "conversationEvents", conversation.size(), "turnBusy", active != null || newSessionPending,
+                "battery", battery.toJson());
     }
     public synchronized JSONObject getConversationSnapshot(long ignored) {
         return json("sessionId", sessionId, "activeTurnId", nullable(getActiveTurnId()),
@@ -181,7 +209,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     }
 
     public synchronized JSONObject submitTurn(JSONObject input) throws JSONException {
-        if (active != null) throw new JSONException("TURN_BUSY");
+        if (active != null || newSessionPending) throw new JSONException("TURN_BUSY");
         if (stopped || !"READY".equals(getGatewayState())) throw new GatewayUnavailableException();
         String id = input.getString("clientTurnId");
         if (!UUID.fromString(id).toString().equalsIgnoreCase(id)) throw new JSONException("Invalid clientTurnId");
@@ -257,6 +285,11 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
 
     @Override public synchronized void onStateChanged(String state, String detail) {
         if (stopped) return;
+        if (newSessionPending && "READY".equals(state)) {
+            // A previously queued READY callback must not complete the new-session barrier.
+            if (!"READY".equals(gatewayClient.getStatus().optString("state"))) return;
+            newSessionPending = false;
+        }
         connectionState = GatewayStateMapper.normalize(state);
         emit("local.gateway.state", null, json("state", connectionState,
                 "detail", safeDetail(detail)));
@@ -748,12 +781,13 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         } else if ("initComplete".equals(type) || "onStateChange".equals(type)) {
             publishRobotState();
         } else if ("robotUnavailable".equals(type) || "DeviceShutdown".equals(type)) {
-            emit("local.robot.state", null, json("ready", false, "moving", false, "motionEnabled", motionEnabled));
+            emit("local.robot.state", null, json("ready", false, "moving", false, "motionEnabled", motionEnabled,
+                    "battery", battery.toJson()));
         }
     }
     private void publishRobotState() {
         emit("local.robot.state", null, json("ready", robotGateway.isReady(), "moving", robotGateway.isMoving(),
-                "motionEnabled", motionEnabled));
+                "motionEnabled", motionEnabled, "battery", battery.toJson()));
     }
     private static boolean requiresMotionPermission(String name) {
         return "start_robot_following".equals(name) || "look_at_user".equals(name);

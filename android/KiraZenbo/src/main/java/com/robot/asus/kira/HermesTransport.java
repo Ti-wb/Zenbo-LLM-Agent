@@ -4,6 +4,7 @@ import org.json.JSONObject;
 
 /** Native-only Hermes and Zenbo-plugin boundary; the renderer never receives credentials. */
 public interface HermesTransport {
+    enum NewSessionResult { STARTED, BUSY, OFFLINE }
     interface ResultCallback {
         void onSuccess(JSONObject result);
         void onError(String code, String message);
@@ -22,6 +23,7 @@ public interface HermesTransport {
 
     void start();
     void reload();
+    NewSessionResult startNewSession();
     void shutdown();
     JSONObject getStatus();
     String getRemoteSessionId();

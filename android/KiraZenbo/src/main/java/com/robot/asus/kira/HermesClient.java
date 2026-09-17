@@ -127,6 +127,37 @@ public final class HermesClient implements HermesTransport {
         updateState("OFFLINE", "");
     }
 
+    @Override public NewSessionResult startNewSession() {
+        final int epoch;
+        final DetachedTransport detached;
+        synchronized (this) {
+            GatewaySettings.RemoteSessionState saved = settings.loadRemoteSessionState();
+            if (submitting || activeRunId != null || settings.loadPendingSubmission() != null
+                    || (saved != null && !saved.activeRunId.isEmpty())) return NewSessionResult.BUSY;
+            if (!running || !deviceBound || !"READY".equals(state)) return NewSessionResult.OFFLINE;
+            // Commit before revoking the old connection. Only our session pointers are removed;
+            // Hermes history, profile configuration and all credentials remain untouched.
+            settings.clearRemoteSessionState();
+            epoch = ++generation;
+            sessionId = null;
+            activeTurnId = null;
+            runTurns.clear();
+            deviceCalls.clear();
+            terminalRuns.clear();
+            revokedRuns.clear();
+            detached = detachTransport();
+            state = "CONNECTING";
+            detail = "";
+            enqueueState(epoch, state, detail);
+        }
+        // Use the existing serial lifecycle executor; never invoke listeners under the client lock.
+        scheduler.execute(() -> {
+            detached.close();
+            if (isCurrent(epoch)) connect(epoch);
+        });
+        return NewSessionResult.STARTED;
+    }
+
     private synchronized DetachedTransport detachTransport() {
         DetachedTransport detached = new DetachedTransport(eventCall, deviceSocket, http,
                 new java.util.ArrayList<>(pendingAcks.values()));
@@ -437,7 +468,7 @@ public final class HermesClient implements HermesTransport {
                     if (closeable.isSuccessful() && closeable.body() != null
                             && closeable.header("Content-Type", "").startsWith("text/event-stream")) {
                         readEvents(closeable.body().source(), (type, payload) -> {
-                            if (isCurrent(epoch)) handleRunEvent(runId, type, payload);
+                            if (isCurrent(epoch)) handleRunEvent(runId, type, payload, epoch);
                         });
                     }
                 } catch (Exception ignored) {
@@ -474,16 +505,16 @@ public final class HermesClient implements HermesTransport {
         }
     }
 
-    private void handleRunEvent(String runId, String type, JSONObject payload) {
-        if (isTerminal(runId) || !runId.equals(payload.optString("run_id", runId))) return;
+    private void handleRunEvent(String runId, String type, JSONObject payload, int epoch) {
+        if (!isCurrent(epoch) || isTerminal(runId) || !runId.equals(payload.optString("run_id", runId))) return;
         if ("message.delta".equals(type) || "assistant.delta".equals(type)) {
             listener.onRunEvent(runId, "assistant.delta", json("text", payload.optString("delta", "")));
         } else if ("run.completed".equals(type)) {
-            finishRun(runId, "run.completed", payload);
+            finishRun(runId, "run.completed", payload, epoch);
         } else if ("run.cancelled".equals(type)) {
-            finishRun(runId, type, payload);
+            finishRun(runId, type, payload, epoch);
         } else if ("run.failed".equals(type) || "run.interrupted".equals(type)) {
-            finishRun(runId, "run.failed", json("code", "HERMES_RUN_FAILED", "message", "Hermes run failed"));
+            finishRun(runId, "run.failed", json("code", "HERMES_RUN_FAILED", "message", "Hermes run failed"), epoch);
         } else if ("approval.request".equals(type)) {
             // The robot UI has no approval workflow: fail closed and settle the actual server run.
             stopRun(runId, NO_OP);
@@ -493,9 +524,9 @@ public final class HermesClient implements HermesTransport {
     private synchronized boolean isTerminal(String runId) { return terminalRuns.contains(runId); }
     private synchronized boolean isRevoked(String runId) { return revokedRuns.contains(runId); }
 
-    private void finishRun(String runId, String type, JSONObject payload) {
+    private void finishRun(String runId, String type, JSONObject payload, int epoch) {
         synchronized (this) {
-            if (!terminalRuns.add(runId)) return;
+            if (!isCurrent(epoch) || !terminalRuns.add(runId)) return;
             if (terminalRuns.size() > 128) terminalRuns.remove(terminalRuns.iterator().next());
             deactivate(runId, terminalDeactivationReason(type));
             if (runId.equals(activeRunId)) {
@@ -508,8 +539,11 @@ public final class HermesClient implements HermesTransport {
             listener.onRunEvent(runId, "assistant.final", json("text", payload.optString("output", "")));
         }
         listener.onRunEvent(runId, type, payload);
-        if (deviceSocket == null && running) openDeviceChannel(generation);
-        else if (deviceBound && running) updateState("READY", "");
+        synchronized (this) {
+            if (!isCurrent(epoch)) return;
+            if (deviceSocket == null) openDeviceChannel(epoch);
+            else if (deviceBound) updateState("READY", "");
+        }
     }
 
     private void pollRun(String runId, int epoch) {
@@ -520,7 +554,7 @@ public final class HermesClient implements HermesTransport {
                 String status = result.optString("status", "");
                 if ("completed".equals(status) || "cancelled".equals(status)
                         || "failed".equals(status) || "interrupted".equals(status)) {
-                    handleRunEvent(runId, "run." + status, result);
+                    handleRunEvent(runId, "run." + status, result, epoch);
                 } else {
                     if ("waiting_for_approval".equals(status)) stopRun(runId, NO_OP);
                     listener.onRunEvent(runId, "run.running", json("status", status));

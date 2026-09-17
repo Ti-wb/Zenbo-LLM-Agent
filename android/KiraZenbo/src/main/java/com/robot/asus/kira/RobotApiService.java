@@ -14,6 +14,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Build;
+import android.os.BatteryManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -62,6 +63,7 @@ public class RobotApiService extends Service {
     private RemoteSessionCoordinator sessionCoordinator;
     private LocalRuntimeServer localRuntimeServer;
     private BroadcastReceiver screenEventReceiver;
+    private BroadcastReceiver batteryReceiver;
     private SensorManager sensorManager;
     private SensorEventListener headTouchListener;
 
@@ -134,6 +136,7 @@ public class RobotApiService extends Service {
                 robotGateway
         );
         sessionCoordinator.setLocalPublisher(localRuntimeServer::publish);
+        registerBatteryReceiver();
         try {
             localRuntimeServer.start(8787);
             activeLocalRuntime = localRuntimeServer;
@@ -374,6 +377,21 @@ public class RobotApiService extends Service {
         registerReceiver(screenEventReceiver, filter);
     }
 
+    private void registerBatteryReceiver() {
+        batteryReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                if (sessionCoordinator == null || !Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) return;
+                sessionCoordinator.updateBattery(BatteryState.fromReading(
+                        intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1),
+                        intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1),
+                        intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN),
+                        intent.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)));
+            }
+        };
+        // The sticky initial broadcast provides the first reading; later changes use the same receiver.
+        registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel serviceChannel = new NotificationChannel(
@@ -399,6 +417,10 @@ public class RobotApiService extends Service {
         robotApiInitialized = false;
         localRuntimeReady = false;
         activeLocalRuntime = null;
+        if (batteryReceiver != null) {
+            unregisterReceiver(batteryReceiver);
+            batteryReceiver = null;
+        }
         if (screenEventReceiver != null) {
             try {
                 unregisterReceiver(screenEventReceiver);

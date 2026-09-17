@@ -285,31 +285,7 @@
       }
     },
     "sessionSnapshot": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "state",
-        "lastSequence"
-      ],
-      "properties": {
-        "state": {
-          "enum": [
-            "active",
-            "closing"
-          ]
-        },
-        "lastSequence": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "activeTurnId": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
-        }
-      }
+      "$ref": "../openapi.json#/components/schemas/ConversationData"
     },
     "sttFinal": {
       "type": "object",
