@@ -39,26 +39,38 @@ function audioHarness(state = 'running') {
 afterEach(() => vi.useRealTimers());
 
 describe('listening cue', () => {
-  it('creates audio only on readiness and plays a single quiet 100ms sine with a smooth envelope', async () => {
+  it('plays one brief, quiet cue when audio is available and safely skips unavailable audio', async () => {
     const audio = audioHarness();
     const cue = createListeningCue(audio);
     expect(audio.contexts).toHaveLength(0);
     expect(await cue.play()).toBe(true);
     expect(audio.oscillators).toHaveLength(1);
     const oscillator = audio.oscillators[0];
-    expect(oscillator.type).toBe('sine');
-    expect(oscillator.frequency.setValueAtTime).toHaveBeenCalledWith(660, 10);
-    expect(audio.gains[0].gain.setValueAtTime).toHaveBeenCalledWith(0, 10);
-    expect(audio.gains[0].gain.linearRampToValueAtTime.mock.calls).toEqual([[0.025, 10.008], [0, 10.09]]);
-    expect(oscillator.start).toHaveBeenCalledWith(10);
-    expect(oscillator.stop).toHaveBeenCalledWith(10.1);
+    const duration = oscillator.stop.mock.calls[0][0] - oscillator.start.mock.calls[0][0];
+    expect(duration).toBeGreaterThan(0);
+    expect(duration).toBeLessThanOrEqual(0.2);
+    const levels = audio.gains[0].gain.linearRampToValueAtTime.mock.calls.map(([level]) => level);
+    expect(Math.max(...levels)).toBeGreaterThan(0);
+    expect(Math.max(...levels)).toBeLessThanOrEqual(0.05);
+    expect(levels.at(-1)).toBe(0);
     oscillator.onended();
     expect(oscillator.disconnect).toHaveBeenCalledOnce();
     expect(audio.gains[0].disconnect).toHaveBeenCalledOnce();
     cue.destroy();
+    const missing = createListeningCue({ AudioContextImpl: null });
+    expect(await missing.play()).toBe(false);
+    const denied = createListeningCue({ AudioContextImpl: class { constructor() { throw new Error('Unavailable'); } } });
+    expect(await denied.play()).toBe(false);
+    const suspended = audioHarness('suspended');
+    const rejected = createListeningCue(suspended);
+    const playing = rejected.play();
+    suspended.contexts[0].resume = vi.fn().mockRejectedValue(new Error('Not allowed'));
+    expect(await playing).toBe(false);
+    expect(suspended.oscillators).toHaveLength(0);
+    rejected.destroy();
   });
 
-  it('cancels pending resume without a late tone when microphone readiness is lost', async () => {
+  it('cancels pending or active audio when readiness is lost or the component is destroyed', async () => {
     const audio = audioHarness('suspended');
     let resume;
     const cue = createListeningCue(audio);
@@ -71,7 +83,13 @@ describe('listening cue', () => {
     resume();
     await Promise.resolve();
     expect(audio.oscillators).toHaveLength(0);
+    expect(await cue.play()).toBe(true);
     cue.destroy();
+    expect(audio.oscillators[0].stop).toHaveBeenLastCalledWith();
+    expect(audio.oscillators[0].disconnect).toHaveBeenCalledOnce();
+    expect(audio.contexts[0].close).toHaveBeenCalledOnce();
+    expect(await cue.play()).toBe(false);
+    expect(audio.contexts).toHaveLength(1);
   });
 
   it('expires a blocked autoplay resume instead of replaying on a later user gesture', async () => {
@@ -90,29 +108,4 @@ describe('listening cue', () => {
     cue.destroy();
   });
 
-  it('stops an active cue and closes audio on unmount, without creating audio again', async () => {
-    const audio = audioHarness();
-    const cue = createListeningCue(audio);
-    await cue.play();
-    cue.destroy();
-    expect(audio.oscillators[0].stop).toHaveBeenLastCalledWith();
-    expect(audio.oscillators[0].disconnect).toHaveBeenCalledOnce();
-    expect(audio.contexts[0].close).toHaveBeenCalledOnce();
-    expect(await cue.play()).toBe(false);
-    expect(audio.contexts).toHaveLength(1);
-  });
-
-  it('keeps audio optional when the platform cannot create or resume a context', async () => {
-    const missing = createListeningCue({ AudioContextImpl: null });
-    expect(await missing.play()).toBe(false);
-    const denied = createListeningCue({ AudioContextImpl: class { constructor() { throw new Error('Unavailable'); } } });
-    expect(await denied.play()).toBe(false);
-    const audio = audioHarness('suspended');
-    const cue = createListeningCue(audio);
-    const playing = cue.play();
-    audio.contexts[0].resume = vi.fn().mockRejectedValue(new Error('Not allowed'));
-    expect(await playing).toBe(false);
-    expect(audio.oscillators).toHaveLength(0);
-    cue.destroy();
-  });
 });

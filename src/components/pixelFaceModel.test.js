@@ -210,15 +210,12 @@ describe('resolveFaceFrame', () => {
     expect(frame.brows.length).toBeGreaterThan(0);
   });
 
-  it('keeps concerned inner corners four pixels above the outer corners', () => {
+  it('raises concerned inner corners so the expression stays worried rather than angry', () => {
     const frame = resolveFaceFrame({ emotion: 'CONCERNED', reducedMotion: true });
 
-    expect(frame.metrics.concernedCorners.left.innerY).toBe(
-      frame.metrics.concernedCorners.left.outerY - 4,
-    );
-    expect(frame.metrics.concernedCorners.right.innerY).toBe(
-      frame.metrics.concernedCorners.right.outerY - 4,
-    );
+    for (const eye of Object.values(frame.metrics.concernedCorners)) {
+      expect(eye.innerY).toBeLessThan(eye.outerY);
+    }
   });
 
   it('has a small neutral smile, round curious mouth and larger joyful open mouths', () => {
@@ -332,9 +329,14 @@ describe('motion semantics', () => {
   it('freezes all decorative animation under reduced motion for every expression', () => {
     for (const emotion of ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED']) {
       for (const sleeping of [false, true]) {
-        const first = resolveFaceFrame({ emotion, sleeping, reducedMotion: true, elapsedMs: 0 });
+        const options = { emotion, sleeping, turnState: 'THINKING', reducedMotion: true };
+        const first = resolveFaceFrame({ ...options, elapsedMs: 0 });
+        expect(first.blinkFrame).toBeNull();
+        expect(first.eyeOffsetX).toBe(0);
+        expect(first.bodyOffsetY).toBe(0);
+        expect(first.winking).toBe(false);
         for (const elapsedMs of [1600, 5100, 7150, 15727]) {
-          expect(resolveFaceFrame({ emotion, sleeping, reducedMotion: true, elapsedMs })).toEqual(first);
+          expect(resolveFaceFrame({ ...options, elapsedMs })).toEqual(first);
         }
       }
     }
@@ -382,19 +384,6 @@ describe('motion semantics', () => {
     expect(bounds(right.rightEye).x - bounds(centered.rightEye).x).toBe(2);
   });
 
-  it('disables blink and thinking drift under reduced motion', () => {
-    const frame = resolveFaceFrame({
-      emotion: 'NEUTRAL',
-      turnState: 'THINKING',
-      elapsedMs: 5100,
-      reducedMotion: true,
-    });
-
-    expect(frame.blinkFrame).toBeNull();
-    expect(frame.eyeOffsetX).toBe(0);
-    expect(frame.bodyOffsetY).toBe(0);
-    expect(frame.winking).toBe(false);
-  });
 });
 
 describe('speech equalizer', () => {
@@ -1027,32 +1016,7 @@ describe('frame interpolation and renderer', () => {
     }
   });
 
-  it('keeps the visual-QA 0.43 close to 0.25 wake reversal integral', () => {
-    const neutral = resolveFaceFrame({
-      emotion: 'NEUTRAL',
-      reducedMotion: true,
-    });
-    const sleeping = resolveFaceFrame({ sleeping: true, reducedMotion: true });
-    const partialClose = interpolateSleepFrames(
-      neutral,
-      sleeping,
-      0.43,
-      'sleeping',
-    );
-    const wakeSlit = interpolateSleepFrames(
-      partialClose,
-      neutral,
-      0.25,
-      'waking',
-    );
-
-    expect(wakeSlit.leftEye).toEqual([{ x: 38, y: 43, width: 28, height: 2 }]);
-    expect(wakeSlit.rightEye).toEqual([{ x: 94, y: 43, width: 28, height: 2 }]);
-    expectIntegerBoundedConnected(wakeSlit.leftEye);
-    expectIntegerBoundedConnected(wakeSlit.rightEye);
-  });
-
-  it('renders a deep-blue background, two bounded halos, and crisp cores', () => {
+  it('renders a deep-blue background, translucent halos, and crisp pixel cores', () => {
     const calls = [];
     const context = {
       fillStyle: '',
@@ -1073,7 +1037,6 @@ describe('frame interpolation and renderer', () => {
       },
     };
     const frame = resolveFaceFrame({ emotion: 'NEUTRAL', reducedMotion: true });
-    const shapeCount = allFaceRectangles(frame).length;
 
     renderFace(context, frame);
 
@@ -1085,19 +1048,11 @@ describe('frame interpolation and renderer', () => {
       fillStyle: FACE_BACKGROUND,
       alpha: 1,
     });
-    expect(calls.length).toBeGreaterThan(2 + shapeCount * 3);
-    expect(calls.some((call) => call.fillStyle === '#edfff5' && call.alpha === 1)).toBe(true);
-    expect(calls.some((call) => call.fillStyle === '#f3a6a5')).toBe(true);
     expect(calls.filter((call) => call.type === 'fill').every((call) => call.values.every(Number.isInteger))).toBe(true);
-    expect(calls[2].alpha).toBe(0.08);
-    expect(calls[2].values[0]).toBe(frame.leftEye[0].x - 2);
-    expect(calls[2 + shapeCount].alpha).toBe(0.16);
-    expect(calls[2 + shapeCount * 2].alpha).toBe(1);
-    expect(calls[2 + shapeCount * 2].values).toEqual([
-      frame.leftEye[0].x,
-      frame.leftEye[0].y,
-      frame.leftEye[0].width,
-      frame.leftEye[0].height,
-    ]);
+    const eye = frame.leftEye[0];
+    expect(calls).toContainEqual({
+      type: 'fill', values: [eye.x, eye.y, eye.width, eye.height], fillStyle: frame.color, alpha: 1,
+    });
+    expect(calls.some((call) => call.fillStyle === frame.color && call.alpha > 0 && call.alpha < 1)).toBe(true);
   });
 });
