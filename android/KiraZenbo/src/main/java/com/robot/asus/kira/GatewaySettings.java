@@ -237,14 +237,14 @@ public final class GatewaySettings {
         if (context != null) {
             String robotName = context.optString("robotName", "").trim();
             String language = context.optString("language", "").trim();
-            if (robotName.isEmpty() || robotName.length() > 64) throw new JSONException("context.robotName is invalid");
+            if (robotName.isEmpty() || ProtocolStrings.length(robotName) > 64) throw new JSONException("context.robotName is invalid");
             if (!language.matches("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")) throw new JSONException("context.language is invalid");
             editor.putString(KEY_ROBOT_NAME, robotName);
             editor.putString(KEY_LANGUAGE, language);
         }
         if (input.has("robotName")) {
             String value = input.optString("robotName", "").trim();
-            if (value.isEmpty() || value.length() > 40) throw new JSONException("robotName is invalid");
+            if (value.isEmpty() || ProtocolStrings.length(value) > 40) throw new JSONException("robotName is invalid");
             editor.putString(KEY_ROBOT_NAME, value);
         }
         if (input.has("language")) {

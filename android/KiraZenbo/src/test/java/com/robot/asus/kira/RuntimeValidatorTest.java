@@ -14,9 +14,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class RuntimeValidatorTest {
+    @Test
+    public void protocolLengthsUseUnicodeCodePointsAndNeverSplitSurrogatePairs() {
+        String emoji = "\uD83E\uDD16";
+        String valid = emoji.repeat(16_000);
+        LocalRuntimeServer.validateTextTurnLength(valid);
+        assertThrows(IllegalArgumentException.class,
+                () -> LocalRuntimeServer.validateTextTurnLength(valid + emoji));
+        String truncated = ProtocolStrings.truncate("a".repeat(511) + emoji + "z", 512);
+        assertEquals("a".repeat(511) + emoji, truncated);
+        assertEquals(512, ProtocolStrings.length(truncated));
+    }
+
     @Test
     public void validatesPcm16Mono16kWavAndDeclaredDuration() {
         byte[] wav = wav(16_000, 1, 16, 1_000);

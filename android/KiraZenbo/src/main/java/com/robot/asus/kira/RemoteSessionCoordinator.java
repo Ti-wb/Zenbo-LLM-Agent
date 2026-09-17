@@ -195,7 +195,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                     synchronized (RemoteSessionCoordinator.this) {
                         if (!current(turn) || turn.cancelled) return;
                         String text = result.optString("text", "").trim();
-                        if (text.isEmpty() || text.length() > 16_000) {
+                        if (text.isEmpty() || ProtocolStrings.length(text) > 16_000) {
                             failTurn(turn, "INVALID_TRANSCRIPT", "Speech recognition returned no usable text");
                             return;
                         }
@@ -284,7 +284,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         if (turn.cancelled || turn.remoteTerminal) return;
         if ("assistant.delta".equals(type)) {
             String delta = payload.optString("text", "");
-            if (assistantText.length() + delta.length() <= 16_000) assistantText += delta;
+            if (ProtocolStrings.length(assistantText) + ProtocolStrings.length(delta) <= 16_000) assistantText += delta;
         } else if ("assistant.final".equals(type)) {
             captureText(payload);
         } else if ("run.running".equals(type) || "run.started".equals(type)) {
@@ -294,7 +294,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
 
     private void captureText(JSONObject payload) {
         String text = payload.optString("text", payload.optString("output_text", payload.optString("output", ""))).trim();
-        if (!text.isEmpty()) assistantText = text.substring(0, Math.min(16_000, text.length()));
+        if (!text.isEmpty()) assistantText = ProtocolStrings.truncate(text, 16_000);
     }
     private void handleRunStatus(Turn turn, JSONObject result) {
         String status = result.optString("status", result.optString("state", ""));

@@ -5,6 +5,21 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class GatewaySettingsTest {
+    @Test public void robotNameLimitsCountUnicodeCodePoints() throws Exception {
+        GatewaySettings settings = new GatewaySettings(new MemoryPreferences());
+        String emoji = "\uD83E\uDD16";
+        settings.update(new JSONObject().put("context", new JSONObject()
+                .put("robotName", emoji.repeat(64)).put("language", "zh-TW")));
+        assertEquals(64, ProtocolStrings.length(settings.getRobotName()));
+        assertThrows(org.json.JSONException.class, () -> settings.update(new JSONObject()
+                .put("context", new JSONObject().put("robotName", emoji.repeat(65))
+                        .put("language", "zh-TW"))));
+        settings.update(new JSONObject().put("robotName", emoji.repeat(40)));
+        assertEquals(40, ProtocolStrings.length(settings.getRobotName()));
+        assertThrows(org.json.JSONException.class,
+                () -> settings.update(new JSONObject().put("robotName", emoji.repeat(41))));
+    }
+
     @Test public void defaultsUseTheExplicitProfileWithoutModelOverride() throws Exception {
         GatewaySettings settings = new GatewaySettings(new MemoryPreferences());
         assertEquals(HermesEndpoints.DEFAULT_BASE_URL, settings.getGatewayUrl());

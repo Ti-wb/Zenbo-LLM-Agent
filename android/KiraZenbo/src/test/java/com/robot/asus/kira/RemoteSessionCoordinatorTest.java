@@ -86,6 +86,21 @@ public class RemoteSessionCoordinatorTest {
         assertEquals(1, transport.submissions);
     }
 
+    @Test public void speechAndAssistantTextLimitsPreserveUnicodeCodePoints() throws Exception {
+        String emoji = "\uD83E\uDD16";
+        String valid = emoji.repeat(16_000);
+        transport.deferTranscription = true;
+        coordinator.submitTurn(object("clientTurnId", UUID.randomUUID().toString(),
+                "audioBase64", "fixture", "language", "zh-TW"));
+        transport.transcription.onSuccess(object("text", valid));
+        assertEquals(valid, transport.submittedText);
+        coordinator.onRunEvent("run-remote", "assistant.delta", object("text", valid));
+        assertEquals(valid, coordinator.getConversationSnapshot(0).getString("assistantText"));
+        String finalText = "a".repeat(15_999) + emoji;
+        coordinator.onRunEvent("run-remote", "assistant.final", object("text", finalText + "z"));
+        assertEquals(finalText, coordinator.getConversationSnapshot(0).getString("assistantText"));
+    }
+
     @Test public void cancellationDuringSubmissionWaitsForRemoteRunTerminalBeforeNextTurn() throws Exception {
         transport.deferSubmission = true;
         String turn = startText();
