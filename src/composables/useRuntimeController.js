@@ -29,6 +29,10 @@ function eventPayload(envelope) {
   return envelope?.data || {};
 }
 
+function isRecoverableDisconnect(error) {
+  return error?.code === 'GATEWAY_OFFLINE' && error.retryable === true;
+}
+
 export function gatewayErrorState(error) {
   const codeStates = {
     GATEWAY_UNCONFIGURED: CONNECTION_STATES.UNCONFIGURED,
@@ -84,6 +88,33 @@ export function useRuntimeController(options = {}) {
   let activePlaylist = null;
   let pendingVoiceTurn = null;
 
+  function captureIsCurrent(generation = listeningGeneration) {
+    return generation === listeningGeneration &&
+      !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
+  }
+
+  async function applyGatewayState(state, detail = '') {
+    const reconnecting = [
+      CONNECTION_STATES.OFFLINE, CONNECTION_STATES.CONNECTING, CONNECTION_STATES.DEGRADED,
+    ].includes(state);
+    runtime.setConnection(state, runtime.turnState === TURN_STATES.ERROR
+      ? runtime.error
+      : reconnecting || state === CONNECTION_STATES.READY ? '' : detail);
+    if (reconnecting) {
+      timers.clearAll();
+      // LISTENING and TURN_BUSY audio have not been accepted by Native. An
+      // uploaded/remote turn keeps its identity until Native sends a terminal.
+      const localOnly = runtime.turnState === TURN_STATES.LISTENING || pendingVoiceTurn?.retryPending;
+      speechTurnId = '';
+      pendingVoiceTurn = null;
+      runtime.waitingForPreviousTurn = false;
+      if (localOnly) runtime.transition('reset', { turnId: '' });
+      await pauseListening();
+    } else if (state === CONNECTION_STATES.READY) {
+      await enterListening();
+    }
+  }
+
   function applyNativeRobotStatus(status) {
     robotStateRevision += 1;
     runtime.motionEnabled = status?.motionEnabled === true;
@@ -115,7 +146,8 @@ export function useRuntimeController(options = {}) {
   }
 
   async function submitPendingVoiceTurn(pending) {
-    if (pendingVoiceTurn !== pending || runtime.sleeping) return;
+    if (pendingVoiceTurn !== pending || !captureIsCurrent()) return;
+    pending.retryPending = false;
     try {
       const response = await transport.uploadVoiceTurn({
         turnId: pending.turnId,
@@ -130,8 +162,16 @@ export function useRuntimeController(options = {}) {
         runtime.transition('transcription_started', { turnId: pending.turnId });
       }
     } catch (error) {
+      // Native may reject the multipart request before creating a turn, so no
+      // terminal event exists. A turn.accepted event moves us past UPLOADING.
+      if (isRecoverableDisconnect(error) && runtime.activeTurnId === pending.turnId &&
+          runtime.turnState === TURN_STATES.UPLOADING) {
+        await convergeTurnError('', true);
+        return;
+      }
       if (pendingVoiceTurn !== pending || runtime.sleeping) return;
       if (error.code === 'TURN_BUSY') {
+        pending.retryPending = true;
         runtime.waitingForPreviousTurn = true;
         timers.scheduleTurnRetry(() => { void submitPendingVoiceTurn(pending); });
         return;
@@ -149,21 +189,27 @@ export function useRuntimeController(options = {}) {
 
   const vad = options.vad || (options.createVAD || useVAD)({
     onSpeechStart: async () => {
-      if (runtime.sleeping) return;
+      const generation = listeningGeneration;
+      if (!captureIsCurrent(generation)) return;
       timers.clearInactivity();
       if (playback.isPlaying.value) await stopResponse('barge-in');
+      if (!captureIsCurrent(generation)) return;
       if (runtime.activeTurnId) await transport.cancelTurn(runtime.activeTurnId, 'barge_in');
+      if (!captureIsCurrent(generation)) return;
       speechTurnId = createId();
       runtime.transition('speech_started', {
         turnId: speechTurnId, transcript: '', assistantText: '', error: '',
       });
     },
     onSpeechEnd: async ({ blob }) => {
-      if (runtime.sleeping || !speechTurnId) return;
+      if (!captureIsCurrent() || !speechTurnId) return;
       timers.clearInactivity();
       const turnId = speechTurnId;
       speechTurnId = '';
-      await pauseListening();
+      const paused = pauseListening();
+      const generation = listeningGeneration;
+      await paused;
+      if (!captureIsCurrent(generation) || runtime.activeTurnId !== turnId) return;
       runtime.transition('upload_started', { turnId });
       pendingVoiceTurn = { turnId, blob };
       await submitPendingVoiceTurn(pendingVoiceTurn);
@@ -204,14 +250,15 @@ export function useRuntimeController(options = {}) {
     },
   });
 
-  async function convergeTurnError(message = 'Agent turn failed.') {
+  async function convergeTurnError(message = 'Agent turn failed.', reconnectable = false) {
     timers.clearAll();
     speechTurnId = '';
     await Promise.allSettled([pauseListening(), stopResponse('turn-error')]);
-    runtime.transition('failed', {
+    runtime.transition(reconnectable ? 'reset' : 'failed', {
       turnId: '',
-      error: message || 'Agent turn failed.',
+      error: reconnectable ? '' : message || 'Agent turn failed.',
     });
+    if (reconnectable) await enterListening();
   }
 
   async function applyAuthoritativeConversation(conversation = {}, errorMessage = '') {
@@ -232,20 +279,7 @@ export function useRuntimeController(options = {}) {
     await applyAuthoritativeConversation(conversation, errorMessage);
     const gateway = status?.gateway || status || {};
     const state = normalizedGatewayState(gateway.state || status?.gatewayState);
-    runtime.setConnection(
-      state,
-      state === CONNECTION_STATES.READY && runtime.turnState !== TURN_STATES.ERROR
-        ? ''
-        : runtime.error || errorMessage,
-    );
-    if (
-      state === CONNECTION_STATES.READY &&
-      !runtime.sleeping &&
-      runtime.turnState === TURN_STATES.IDLE &&
-      !runtime.activeTurnId
-    ) {
-      await enterListening();
-    }
+    await applyGatewayState(state, runtime.error || errorMessage);
   }
 
   tools.register({
@@ -411,8 +445,7 @@ export function useRuntimeController(options = {}) {
       }
       switch (localControl.kind) {
         case 'gateway':
-          runtime.setConnection(localControl.state, localControl.detail);
-          if (localControl.state === CONNECTION_STATES.READY) await enterListening();
+          await applyGatewayState(localControl.state, localControl.detail);
           break;
         case 'robot':
           robotStateRevision += 1;
@@ -502,14 +535,7 @@ export function useRuntimeController(options = {}) {
 
     switch (type) {
       case RuntimeEventType.SESSION_READY:
-        runtime.setConnection(CONNECTION_STATES.READY);
-        if (
-          !runtime.sleeping &&
-          runtime.turnState === TURN_STATES.IDLE &&
-          !runtime.activeTurnId
-        ) {
-          await enterListening();
-        }
+        await applyGatewayState(CONNECTION_STATES.READY);
         break;
       case RuntimeEventType.SESSION_SNAPSHOT:
         await applyAuthoritativeConversation(await transport.getConversation());
@@ -574,6 +600,7 @@ export function useRuntimeController(options = {}) {
       case RuntimeEventType.TURN_ERROR:
         await convergeTurnError(
           payload.message || payload.error?.message || payload.error || 'Agent turn failed.',
+          isRecoverableDisconnect(payload.error),
         );
         break;
       case RuntimeEventType.TURN_CANCELLED:
@@ -802,16 +829,7 @@ export function useRuntimeController(options = {}) {
   onMounted(async () => {
     disposers.push(
       transport.on('connection', async ({ state }) => {
-        runtime.setConnection(state);
-        if (state === CONNECTION_STATES.READY) {
-          if (
-            !runtime.sleeping &&
-            runtime.turnState === TURN_STATES.IDLE &&
-            !runtime.activeTurnId
-          ) {
-            await enterListening();
-          }
-        }
+        await applyGatewayState(state);
       }),
       transport.on('runtimeConnected', async () => {
         if (runtime.connectionState !== CONNECTION_STATES.DEGRADED) return;
@@ -821,7 +839,7 @@ export function useRuntimeController(options = {}) {
           const status = await transport.getRuntimeStatus();
           applyNativeRobotStatus(status);
           const gateway = status?.gateway || status || {};
-          runtime.setConnection(normalizedGatewayState(gateway.state || status?.gatewayState));
+          await applyGatewayState(normalizedGatewayState(gateway.state || status?.gatewayState));
         } catch (error) {
           runtime.setConnection(gatewayErrorState(error), error.message);
           throw error;

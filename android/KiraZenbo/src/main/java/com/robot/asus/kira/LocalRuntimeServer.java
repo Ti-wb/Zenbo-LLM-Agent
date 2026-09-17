@@ -612,6 +612,8 @@ public final class LocalRuntimeServer {
                 JSONObject accepted = coordinator.submitTurn(input);
                 cacheOperation(operationKey, accepted);
                 sendJson(response, 202, accepted);
+            } catch (RemoteSessionCoordinator.GatewayUnavailableException error) {
+                sendError(response, 503, "GATEWAY_OFFLINE", "裝置連線尚未恢復，請稍後再說一次。");
             } catch (JSONException error) {
                 sendError(response, "TURN_BUSY".equals(error.getMessage()) ? 409 : 400,
                         "TURN_BUSY".equals(error.getMessage()) ? "TURN_BUSY" : "INVALID_REQUEST", error.getMessage());

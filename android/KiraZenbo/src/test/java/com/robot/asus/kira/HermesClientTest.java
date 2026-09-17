@@ -94,6 +94,22 @@ public class HermesClientTest {
         }
     }
 
+    @Test public void speechRecoveryReadsOnlyTheBoundedAllowlistedErrorCode() throws Exception {
+        String known = "{\"error\":{\"code\":\"device_not_bound\",\"message\":\"" + KEY + "\"}}";
+        String[] bodies = {known, known.replace("device_not_bound", "private_provider_error"),
+                "not json " + KEY, known + " ".repeat(4096)};
+        for (int index = 0; index < bodies.length; index++) {
+            try (Response response = new Response.Builder().request(new Request.Builder().url("https://example.com/audio").build())
+                    .protocol(okhttp3.Protocol.HTTP_1_1).code(400).message("Bad Request")
+                    .header("Content-Type", "application/json")
+                    .body(okhttp3.ResponseBody.create(bodies[index], okhttp3.MediaType.get("application/json"))).build()) {
+                String code = HermesClient.speechErrorCode(response);
+                assertEquals(index == 0 ? "HERMES_DEVICE_NOT_BOUND" : "HERMES_INVALID_REQUEST", code);
+                assertFalse(code.contains(KEY));
+            }
+        }
+    }
+
     @Test public void discoveryChecksProfileCapabilitiesAndAllRequiredPluginTools() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"profile-model\"}]}"));

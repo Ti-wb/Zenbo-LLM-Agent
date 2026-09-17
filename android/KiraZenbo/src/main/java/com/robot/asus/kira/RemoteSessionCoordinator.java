@@ -28,6 +28,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Owns Local Runtime v2 state. Hermes run/SSE frames are never forwarded to the Web UI. */
 public final class RemoteSessionCoordinator implements HermesTransport.Listener {
     public interface LocalPublisher { void publish(JSONObject message); }
+    static final class GatewayUnavailableException extends JSONException {
+        GatewayUnavailableException() { super("Hermes device binding is reconnecting"); }
+    }
     private static final int MAX_CONVERSATION_EVENTS = 100;
     private static final long TERMINAL_TOOL_RETENTION_MS = 5 * 60_000L;
     private final RobotOperations robotGateway;
@@ -179,7 +182,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
 
     public synchronized JSONObject submitTurn(JSONObject input) throws JSONException {
         if (active != null) throw new JSONException("TURN_BUSY");
-        if (stopped || !"READY".equals(getGatewayState())) throw new JSONException("Hermes is not ready");
+        if (stopped || !"READY".equals(getGatewayState())) throw new GatewayUnavailableException();
         String id = input.getString("clientTurnId");
         if (!UUID.fromString(id).toString().equalsIgnoreCase(id)) throw new JSONException("Invalid clientTurnId");
         Turn turn = new Turn(id, ++generation, input.optString("language", "zh-TW"));
@@ -206,7 +209,9 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                 }
                 @Override public void onError(String code, String message) {
                     synchronized (RemoteSessionCoordinator.this) {
-                        if (current(turn) && !turn.cancelled) failTurn(turn, code, "Speech recognition failed");
+                        if (current(turn) && !turn.cancelled) failTurn(turn, code,
+                                "GATEWAY_OFFLINE".equals(code)
+                                        ? "裝置連線已中斷，請在連線恢復後再說一次。" : "Speech recognition failed");
                     }
                 }
             });
@@ -772,7 +777,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         turn.artifacts.clear();
         terminalizeTools(turn, "TURN_CANCELLED");
         robotGateway.emergencyStop();
-        emit("turn.error", turn.id, json("error", toolError(safeCode(code), message)));
+        emit("turn.error", turn.id, json("error", json("code", safeCode(code), "message", message,
+                "retryable", "GATEWAY_OFFLINE".equals(code))));
         if (turn.runId != null && !turn.remoteTerminal) requestRemoteStop(turn);
         else if (!turn.submitting) active = null;
     }

@@ -125,6 +125,7 @@ export class RuntimeTransport {
       if (!payload.ok) {
         const error = new Error(payloadMessage(payload, 'Local runtime request failed.'));
         error.code = payload.error?.code || '';
+        error.retryable = payload.error?.retryable === true;
         error.requestId = payload.requestId || '';
         throw error;
       }

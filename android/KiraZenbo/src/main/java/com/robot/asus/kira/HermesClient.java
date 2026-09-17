@@ -39,6 +39,7 @@ import okio.BufferedSource;
 public final class HermesClient implements HermesTransport {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final int MAX_JSON_BYTES = 2 * 1024 * 1024;
+    private static final int MAX_PLUGIN_ERROR_BYTES = 4096;
     private static final int MAX_AUDIO_BYTES = 10 * 1024 * 1024;
     private final GatewaySettings settings;
     private final DeviceCredentialStore credentials;
@@ -101,6 +102,7 @@ public final class HermesClient implements HermesTransport {
 
     @Override public void reload() {
         final int epoch;
+        final DetachedTransport detached;
         synchronized (this) {
             epoch = ++generation;
             sessionId = null;
@@ -111,40 +113,47 @@ public final class HermesClient implements HermesTransport {
             terminalRuns.clear();
             revokedRuns.clear();
             submitting = false;
+            detached = detachTransport();
         }
-        closeTransport();
+        detached.close();
         if (isCurrent(epoch)) connect(epoch);
     }
 
     @Override public void shutdown() {
-        synchronized (this) { running = false; generation++; }
-        closeTransport();
+        final DetachedTransport detached;
+        synchronized (this) { running = false; generation++; detached = detachTransport(); }
+        detached.close();
         scheduler.shutdownNow();
         updateState("OFFLINE", "");
     }
 
-    private void closeTransport() {
+    private synchronized DetachedTransport detachTransport() {
+        DetachedTransport detached = new DetachedTransport(eventCall, deviceSocket, http,
+                new java.util.ArrayList<>(pendingAcks.values()));
+        eventCall = null;
+        deviceSocket = null;
+        deviceBound = false;
+        pendingAcks.clear();
+        return detached;
+    }
+
+    private static final class DetachedTransport {
+        final Call event;
+        final WebSocket socket;
+        final OkHttpClient http;
         final java.util.List<ResultCallback> callbacks;
-        final Call oldEvent;
-        final WebSocket oldSocket;
-        final OkHttpClient oldHttp;
-        synchronized (this) {
-            oldEvent = eventCall;
-            eventCall = null;
-            oldSocket = deviceSocket;
-            deviceSocket = null;
-            deviceBound = false;
-            oldHttp = http;
-            callbacks = new java.util.ArrayList<>(pendingAcks.values());
-            pendingAcks.clear();
+        DetachedTransport(Call event, WebSocket socket, OkHttpClient http, java.util.List<ResultCallback> callbacks) {
+            this.event = event; this.socket = socket; this.http = http; this.callbacks = callbacks;
         }
-        if (oldEvent != null) oldEvent.cancel();
-        if (oldSocket != null) oldSocket.cancel();
-        if (oldHttp != null) {
-            oldHttp.dispatcher().cancelAll();
-            oldHttp.connectionPool().evictAll();
+        void close() {
+            if (event != null) event.cancel();
+            if (socket != null) socket.cancel();
+            if (http != null) {
+                http.dispatcher().cancelAll();
+                http.connectionPool().evictAll();
+            }
+            for (ResultCallback callback : callbacks) callback.onError("GATEWAY_OFFLINE", "Hermes device channel closed");
         }
-        for (ResultCallback callback : callbacks) callback.onError("GATEWAY_OFFLINE", "Hermes device channel closed");
     }
 
     @Override public synchronized String getRemoteSessionId() { return sessionId; }
@@ -168,6 +177,7 @@ public final class HermesClient implements HermesTransport {
                     ? TlsTrust.pinnedBuilder(endpoints.base().host(), settings.getCertificatePin())
                     : TlsTrust.systemTrustBuilder(endpoints.base());
             http = builder.followRedirects(false).followSslRedirects(false)
+                    .dispatcher(new okhttp3.Dispatcher()).connectionPool(new okhttp3.ConnectionPool())
                     .connectTimeout(15, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS)
                     .writeTimeout(45, TimeUnit.SECONDS).build();
             updateState("CONNECTING", "Checking Hermes profile and Zenbo plugin");
@@ -237,32 +247,47 @@ public final class HermesClient implements HermesTransport {
     }
 
     private void openDeviceChannel(int epoch) {
-        if (!isCurrent(epoch)) return;
-        deviceSocket = http.newWebSocket(request(endpoints.deviceChannel()).build(), new WebSocketListener() {
-            @Override public void onOpen(WebSocket socket, Response response) {
-                if (!isCurrent(epoch)) { socket.cancel(); return; }
-                deviceSocket = socket;
-                sendControl(json("type", "device.bind", "sessionId", sessionId), "device.bound", new ResultCallback() {
-                    @Override public void onSuccess(JSONObject result) {
-                        if (!isCurrent(epoch)) return;
-                        deviceBound = true;
-                        updateState("READY", "");
-                    }
-                    @Override public void onError(String code, String message) { connectionFailure(epoch, code); }
-                });
-            }
-            @Override public void onMessage(WebSocket socket, String text) {
-                if (!isCurrent(epoch) || text.length() > MAX_JSON_BYTES) return;
-                try { handleDeviceMessage(new JSONObject(text)); }
-                catch (Exception error) { connectionFailure(epoch, "GATEWAY_INCOMPATIBLE"); }
-            }
-            @Override public void onClosed(WebSocket socket, int code, String reason) {
-                if (isCurrent(epoch)) channelLost(epoch);
-            }
-            @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
-                if (isCurrent(epoch)) channelLost(epoch);
-            }
-        });
+        synchronized (this) {
+            if (!isCurrent(epoch)) return;
+            deviceSocket = http.newWebSocket(request(endpoints.deviceChannel()).build(), new WebSocketListener() {
+                @Override public void onOpen(WebSocket socket, Response response) {
+                    if (!isCurrentSocket(epoch, socket)) { socket.cancel(); return; }
+                    sendControl(json("type", "device.bind", "sessionId", sessionId), "device.bound", new ResultCallback() {
+                        @Override public void onSuccess(JSONObject result) {
+                            synchronized (HermesClient.this) {
+                                if (!isCurrentSocket(epoch, socket)) return;
+                            deviceBound = true;
+                            state = "READY";
+                            detail = "";
+                            enqueueState(epoch, "READY", "");
+                        }
+                        }
+                        @Override public void onError(String code, String message) { connectionFailure(epoch, code); }
+                    }, epoch, socket);
+                }
+                @Override public void onMessage(WebSocket socket, String text) {
+                    if (!isCurrentSocket(epoch, socket) || text.length() > MAX_JSON_BYTES) return;
+                    try { handleDeviceMessage(new JSONObject(text), epoch, socket); }
+                    catch (Exception error) { connectionFailure(epoch, "GATEWAY_INCOMPATIBLE"); }
+                }
+                @Override public void onClosing(WebSocket socket, int code, String reason) {
+                    // The server may already have discarded the binding before close completes.
+                    // Do not wait for onClosed while continuing to advertise READY.
+                    socket.close(1000, null);
+                    if (isCurrentSocket(epoch, socket)) channelLost(epoch);
+                }
+                @Override public void onClosed(WebSocket socket, int code, String reason) {
+                    if (isCurrentSocket(epoch, socket)) channelLost(epoch);
+                }
+                @Override public void onFailure(WebSocket socket, Throwable error, Response response) {
+                    if (isCurrentSocket(epoch, socket)) channelLost(epoch);
+                }
+            });
+        }
+    }
+
+    private synchronized boolean isCurrentSocket(int epoch, WebSocket socket) {
+        return isCurrent(epoch) && deviceSocket == socket;
     }
 
     private void channelLost(int epoch) {
@@ -271,20 +296,25 @@ public final class HermesClient implements HermesTransport {
     }
 
     private void connectionFailure(int epoch, String code) {
-        if (!isCurrent(epoch)) return;
+        final int reconnectEpoch;
+        final DetachedTransport detached;
         String failureState = "GATEWAY_AUTH".equals(code) ? "AUTH_ERROR"
                 : "GATEWAY_TLS".equals(code) ? "TLS_ERROR"
                 : "GATEWAY_INCOMPATIBLE".equals(code) ? "INCOMPATIBLE" : "OFFLINE";
-        updateState(failureState, code);
-        if ("GATEWAY_AUTH".equals(code) || "GATEWAY_TLS".equals(code)
-                || "GATEWAY_INCOMPATIBLE".equals(code)) return;
-        final int reconnectEpoch;
         synchronized (this) {
             if (!isCurrent(epoch)) return;
             reconnectEpoch = ++generation;
+            detached = detachTransport();
+            state = failureState;
+            detail = code;
+            enqueueState(reconnectEpoch, failureState, code);
         }
-        closeTransport();
-        scheduler.schedule(() -> connect(reconnectEpoch), 3, TimeUnit.SECONDS);
+        detached.close();
+        if ("GATEWAY_AUTH".equals(code) || "GATEWAY_TLS".equals(code)
+                || "GATEWAY_INCOMPATIBLE".equals(code)) return;
+        synchronized (this) {
+            if (isCurrent(reconnectEpoch)) scheduler.schedule(() -> connect(reconnectEpoch), 3, TimeUnit.SECONDS);
+        }
     }
 
     @Override public void submitText(String turnId, String text, String language, ResultCallback callback) {
@@ -298,7 +328,7 @@ public final class HermesClient implements HermesTransport {
         final String currentSession;
         final boolean ready;
         synchronized (this) {
-            ready = running && "READY".equals(state) && activeRunId == null && !submitting;
+            ready = running && deviceBound && "READY".equals(state) && activeRunId == null && !submitting;
             epoch = generation;
             currentSession = sessionId;
             if (ready) { submitting = true; activeTurnId = turnId; }
@@ -543,6 +573,10 @@ public final class HermesClient implements HermesTransport {
     }
 
     @Override public void transcribe(JSONObject input, ResultCallback callback) {
+        if (!running || !deviceBound || !"READY".equals(state)) {
+            callback.onError("GATEWAY_OFFLINE", "Hermes device binding is reconnecting");
+            return;
+        }
         try {
             byte[] audio = Base64.decode(input.getString("audioBase64"), Base64.DEFAULT);
             int duration = input.getInt("durationMs");
@@ -556,7 +590,7 @@ public final class HermesClient implements HermesTransport {
                     .addFormDataPart("language", input.optString("language", settings.getLanguage()))
                     .addFormDataPart("sessionId", sessionId).addFormDataPart("turnId", turnId)
                     .addFormDataPart("durationMs", String.valueOf(duration)).build();
-            executeJson(request(endpoints.transcription()).post(body).build(), callback);
+            executeSpeech(request(endpoints.transcription()).post(body).build(), callback);
         } catch (Exception error) { callback.onError("INVALID_AUDIO", "Recording is invalid"); }
     }
 
@@ -568,7 +602,7 @@ public final class HermesClient implements HermesTransport {
         }
         JSONObject body = json("text", text, "language", language, "sessionId", sessionId,
                 "runId", runId, "turnId", turnId);
-        executeJson(request(endpoints.speech()).post(jsonBody(body)).build(), new ResultCallback() {
+        executeSpeech(request(endpoints.speech()).post(jsonBody(body)).build(), new ResultCallback() {
             @Override public void onSuccess(JSONObject result) {
                 JSONArray artifacts = result.optJSONArray("artifacts");
                 try {
@@ -631,12 +665,13 @@ public final class HermesClient implements HermesTransport {
         } catch (Exception error) { callback.onError("INVALID_ARTIFACT", "Audio metadata is invalid or expired"); }
     }
 
-    private void handleDeviceMessage(JSONObject message) {
+    private void handleDeviceMessage(JSONObject message, int epoch, WebSocket socket) {
         String type = message.optString("type", "");
         if ("tool.call".equals(type)) {
             final boolean admitted;
             synchronized (this) {
-                admitted = sessionId != null && sessionId.equals(message.optString("sessionId"))
+                admitted = isCurrentSocket(epoch, socket)
+                        && sessionId != null && sessionId.equals(message.optString("sessionId"))
                         && activeRunId != null && activeRunId.equals(message.optString("runId"))
                         && activeTurnId != null && activeTurnId.equals(message.optString("turnId"))
                         && !terminalRuns.contains(activeRunId) && !revokedRuns.contains(activeRunId);
@@ -651,6 +686,7 @@ public final class HermesClient implements HermesTransport {
         if ("error".equals(type)) {
             final java.util.List<ResultCallback> callbacks;
             synchronized (this) {
+                if (!isCurrentSocket(epoch, socket)) return;
                 callbacks = new java.util.ArrayList<>(pendingAcks.values());
                 pendingAcks.clear();
             }
@@ -659,6 +695,7 @@ public final class HermesClient implements HermesTransport {
         }
         final ResultCallback callback;
         synchronized (this) {
+            if (!isCurrentSocket(epoch, socket)) return;
             if (("device.bound".equals(type) || "run.active".equals(type))
                     && !message.optString("sessionId").equals(sessionId)) return;
             if ("run.active".equals(type) && (activeRunId == null || !activeRunId.equals(message.optString("runId"))
@@ -670,10 +707,15 @@ public final class HermesClient implements HermesTransport {
     }
 
     private void sendControl(JSONObject message, String ackKey, ResultCallback callback) {
+        sendControl(message, ackKey, callback, -1, null);
+    }
+
+    private void sendControl(JSONObject message, String ackKey, ResultCallback callback,
+                             int expectedEpoch, WebSocket expectedSocket) {
         final WebSocket socket;
         final boolean occupied;
         synchronized (this) {
-            socket = deviceSocket;
+            socket = expectedSocket == null || isCurrentSocket(expectedEpoch, expectedSocket) ? deviceSocket : null;
             occupied = pendingAcks.containsKey(ackKey);
             if (socket != null && !occupied) pendingAcks.put(ackKey, callback);
         }
@@ -681,7 +723,7 @@ public final class HermesClient implements HermesTransport {
             callback.onError("GATEWAY_OFFLINE", "Hermes device channel is unavailable"); return;
         }
         if (!socket.send(message.toString())) {
-            synchronized (this) { pendingAcks.remove(ackKey); }
+            synchronized (this) { if (pendingAcks.get(ackKey) == callback) pendingAcks.remove(ackKey); }
             callback.onError("GATEWAY_OFFLINE", "Hermes device channel is unavailable"); return;
         }
         scheduler.schedule(() -> {
@@ -758,7 +800,40 @@ public final class HermesClient implements HermesTransport {
         executeJson(http, request, callback);
     }
 
+    void executeSpeech(Request request, ResultCallback callback) {
+        final int epoch;
+        final OkHttpClient client;
+        final boolean ready;
+        synchronized (this) {
+            epoch = generation;
+            client = http;
+            ready = running && deviceBound && "READY".equals(state);
+        }
+        if (!ready) {
+            callback.onError("GATEWAY_OFFLINE", "Hermes device binding is reconnecting");
+            return;
+        }
+        executeJson(client, request, new ResultCallback() {
+            @Override public void onSuccess(JSONObject result) {
+                if (isCurrent(epoch) && deviceBound) callback.onSuccess(result);
+                else callback.onError("GATEWAY_OFFLINE", "Hermes device binding changed; retry this turn");
+            }
+            @Override public void onError(String code, String message) {
+                if ("HERMES_DEVICE_NOT_BOUND".equals(code)) {
+                    // Only the generation that sent this audio may invalidate its binding.
+                    if (isCurrent(epoch)) connectionFailure(epoch, "GATEWAY_OFFLINE");
+                    callback.onError("GATEWAY_OFFLINE", "Hermes device binding changed; retry this turn");
+                } else callback.onError(code, message);
+            }
+        }, true);
+    }
+
     static void executeJson(OkHttpClient client, Request request, ResultCallback callback) {
+        executeJson(client, request, callback, false);
+    }
+
+    private static void executeJson(OkHttpClient client, Request request, ResultCallback callback,
+                                    boolean pluginSpeech) {
         client.newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call call, IOException error) {
                 callback.onError(networkErrorCode(error), "Hermes network request failed");
@@ -766,12 +841,26 @@ public final class HermesClient implements HermesTransport {
             @Override public void onResponse(Call call, Response response) {
                 try (Response closeable = response) {
                     if (!closeable.isSuccessful() || closeable.body() == null) {
-                        callback.onError(gatewayErrorForHttpStatus(closeable.code()), safeGatewayFailureDetail(closeable.code())); return;
+                        callback.onError(pluginSpeech ? speechErrorCode(closeable) : gatewayErrorForHttpStatus(closeable.code()),
+                                safeGatewayFailureDetail(closeable.code())); return;
                     }
                     callback.onSuccess(new JSONObject(new String(readBounded(closeable.body(), MAX_JSON_BYTES), StandardCharsets.UTF_8)));
                 } catch (Exception error) { callback.onError("GATEWAY_INCOMPATIBLE", "Hermes returned an invalid response"); }
             }
         });
+    }
+
+    static String speechErrorCode(Response response) {
+        String fallback = gatewayErrorForHttpStatus(response.code());
+        if (response.code() != 400 || response.body() == null
+                || !response.header("Content-Type", "").split(";", 2)[0].trim().equalsIgnoreCase("application/json")) return fallback;
+        try {
+            JSONObject body = new JSONObject(new String(readBounded(response.body(), MAX_PLUGIN_ERROR_BYTES), StandardCharsets.UTF_8));
+            JSONObject error = body.optJSONObject("error");
+            // Never forward arbitrary provider codes, messages, paths or response bodies.
+            if (error != null && "device_not_bound".equals(error.opt("code"))) return "HERMES_DEVICE_NOT_BOUND";
+        } catch (Exception ignored) { }
+        return fallback;
     }
 
     static byte[] readBounded(ResponseBody body, int limit) throws IOException {
@@ -829,8 +918,24 @@ public final class HermesClient implements HermesTransport {
     }
     private synchronized boolean isCurrent(int epoch) { return running && generation == epoch; }
     private void updateState(String next, String reason) {
-        synchronized (this) { state = next; detail = reason; }
-        listener.onStateChanged(next, reason);
+        synchronized (this) {
+            state = next;
+            detail = reason;
+            enqueueState(generation, next, reason);
+        }
+    }
+    // Enqueue while holding the transition lock; deliver in order without holding it.
+    private void enqueueState(int epoch, String next, String reason) {
+        try {
+            scheduler.execute(() -> {
+                synchronized (HermesClient.this) {
+                    if (generation != epoch || !next.equals(state) || !reason.equals(detail)) return;
+                }
+                listener.onStateChanged(next, reason);
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // Shutdown still updates getStatus(), but no longer delivers callbacks.
+        }
     }
     private static final ResultCallback NO_OP = new ResultCallback() {
         @Override public void onSuccess(JSONObject result) { }

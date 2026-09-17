@@ -364,6 +364,133 @@ describe('gateway error recovery state', () => {
   });
 });
 
+describe('automatic gateway reconnect', () => {
+  function gatewayState(sequence, state) {
+    return {
+      protocolVersion: '2.0', eventId: `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`,
+      type: 'local.gateway.state', sequence, timestamp: '2026-09-17T00:00:00.000Z',
+      data: { state, detail: state === 'READY' ? '' : 'Gateway is reconnecting.' },
+    };
+  }
+
+  it('discards capture across a disconnect and listens for fresh speech after READY without a settings error', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks, timers } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    vad.pause.mockImplementation(async () => { vad.isRunning.value = false; });
+    await controller.wakeUp();
+    await vadCallbacks.onSpeechStart();
+    let finishPause;
+    vad.pause.mockImplementationOnce(() => new Promise((resolve) => { finishPause = resolve; }));
+    const oldSpeech = vadCallbacks.onSpeechEnd({ blob: new Blob(['old voice'], { type: 'audio/wav' }) });
+    await transport.emit('event', gatewayState(4, 'OFFLINE'));
+    expect(runtime.micEnabled).toBe(false);
+    expect(timers.clearAll).toHaveBeenCalled();
+    expect(runtime.error).toBe('');
+    expect(runtime.settingsOpen).toBe(false);
+    await vadCallbacks.onSpeechStart();
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['offline voice'], { type: 'audio/wav' }) });
+    await transport.emit('event', gatewayState(5, 'CONNECTING'));
+    expect(runtime.statusLabel).toBe('正在連線');
+    await transport.emit('event', gatewayState(6, 'READY'));
+    finishPause();
+    await oldSpeech;
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    await vadCallbacks.onSpeechStart();
+    const fresh = new Blob(['fresh voice'], { type: 'audio/wav' });
+    await vadCallbacks.onSpeechEnd({ blob: fresh });
+    expect(transport.uploadVoiceTurn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ audio: fresh }));
+    app.unmount();
+  });
+
+  it.each([false, true])('waits for an explicit recoverable terminal, including when it arrives after READY: %s', async (terminalAfterReady) => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.TRANSCRIBING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, runtime, vad } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await transport.emit('event', gatewayState(4, 'OFFLINE'));
+    await transport.emit('event', gatewayState(5, 'CONNECTING'));
+    if (terminalAfterReady) {
+      await transport.emit('event', gatewayState(6, 'READY'));
+      expect(runtime.activeTurnId).toBe('turn-1');
+      expect(vad.start).not.toHaveBeenCalled();
+    }
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TURN_ERROR, sequence: terminalAfterReady ? 7 : 6,
+      turnId: 'turn-1', data: { error: { code: 'GATEWAY_OFFLINE', retryable: true, message: '連線中斷，正在重新連線。' } },
+    });
+    if (!terminalAfterReady) {
+      expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+      expect(vad.start).not.toHaveBeenCalled();
+      await transport.emit('event', gatewayState(7, 'READY'));
+    }
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.error).toBe('');
+    expect(vad.start).toHaveBeenCalledOnce();
+    expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it.each([false, true])('settles an upload rejected before Native acceptance without replay, even after READY: %s', async (rejectionAfterReady) => {
+    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    let rejectUpload;
+    const wireTransport = new RuntimeTransport({
+      fetchImpl: () => new Promise((resolve) => { rejectUpload = resolve; }),
+    });
+    transport.uploadVoiceTurn.mockImplementation(wireTransport.uploadVoiceTurn.bind(wireTransport));
+    const { app, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await vadCallbacks.onSpeechStart();
+    const upload = vadCallbacks.onSpeechEnd({ blob: new Blob([new Uint8Array(44)], { type: 'audio/wav' }) });
+    await vi.waitFor(() => expect(rejectUpload).toBeTypeOf('function'));
+    await transport.emit('event', gatewayState(4, 'OFFLINE'));
+    if (rejectionAfterReady) await transport.emit('event', gatewayState(5, 'READY'));
+    expect(runtime.turnState).toBe(TURN_STATES.UPLOADING);
+    rejectUpload(new Response(JSON.stringify({
+      ok: false, data: null, requestId: 'request-1',
+      error: { code: 'GATEWAY_OFFLINE', retryable: true, message: '連線中斷，正在重新連線。' },
+    }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+    await upload;
+    if (!rejectionAfterReady) {
+      expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+      await transport.emit('event', gatewayState(5, 'READY'));
+    }
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.error).toBe('');
+    expect(vad.start).toHaveBeenCalledTimes(2); // Initial boot and recovered listening.
+    expect(transport.uploadVoiceTurn).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('preserves manual sleep while reconnecting and ignores the old turn terminal after READY', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.TRANSCRIBING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, runtime, vad } = await mountController({ transport, conversation: initial });
+    await transport.emit('event', gatewayState(4, 'OFFLINE'));
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: 'local.screen.state', sequence: 5,
+      eventId: '00000000-0000-4000-8000-000000000005', timestamp: '2026-09-17T00:00:00.000Z', data: { state: 'OFF' },
+    });
+    await transport.emit('event', gatewayState(6, 'CONNECTING'));
+    await transport.emit('event', gatewayState(7, 'READY'));
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TURN_ERROR, sequence: 8, turnId: 'turn-1',
+      data: { error: { code: 'GATEWAY_OFFLINE', retryable: true, message: '連線中斷，正在重新連線。' } },
+    });
+    expect(runtime.sleeping).toBe(true);
+    expect(runtime.micEnabled).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.error).toBe('');
+    expect(vad.start).not.toHaveBeenCalled();
+    app.unmount();
+  });
+});
+
 describe('runtime authoritative recovery', () => {
   it('handles cancellation without waiting for the first audio artifact download', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
@@ -509,6 +636,7 @@ describe('runtime authoritative recovery', () => {
     await transport.emit('event', {
       protocolVersion: '2.0', sequence: 4, type: RuntimeEventType.TURN_ACCEPTED, turnId, data: {},
     });
+    expect(runtime.turnState).toBe(TURN_STATES.TRANSCRIBING);
     await transport.emit('event', {
       protocolVersion: '2.0', sequence: 5, type: RuntimeEventType.STT_FINAL, turnId, data: { text: '新的語音' },
     });

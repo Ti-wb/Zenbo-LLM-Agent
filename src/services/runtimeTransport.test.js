@@ -146,6 +146,7 @@ describe('RuntimeTransport', () => {
     await expect(transport.getRuntimeStatus()).rejects.toMatchObject({
       message: 'Renderer session expired.',
       code: 'UNAUTHORIZED',
+      retryable: false,
       requestId: '00000000-0000-4000-8000-000000000099',
     });
   });

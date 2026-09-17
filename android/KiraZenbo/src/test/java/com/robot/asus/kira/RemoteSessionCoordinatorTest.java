@@ -86,6 +86,39 @@ public class RemoteSessionCoordinatorTest {
         assertEquals(1, transport.submissions);
     }
 
+    @Test public void lostSpeechBindingReleasesTheTurnForANewUserRecording() throws Exception {
+        transport.deferTranscription = true;
+        coordinator.submitTurn(object("clientTurnId", UUID.randomUUID().toString(), "audioBase64", "fixture"));
+        coordinator.onStateChanged("OFFLINE", "GATEWAY_OFFLINE");
+        transport.transcription.onError("GATEWAY_OFFLINE", "private remote detail");
+        JSONObject error = latest("turn.error").getJSONObject("data").getJSONObject("error");
+        assertEquals("GATEWAY_OFFLINE", error.getString("code"));
+        assertTrue(error.getBoolean("retryable"));
+        assertFalse(error.getString("message").contains("private"));
+        assertNull(coordinator.getActiveTurnId());
+        assertEquals(0, transport.submissions);
+        coordinator.onStateChanged("READY", "");
+        coordinator.submitTurn(object("clientTurnId", UUID.randomUUID().toString(), "audioBase64", "new recording"));
+        transport.transcription.onSuccess(object("text", "new user utterance"));
+        assertEquals(1, transport.submissions);
+    }
+
+    @Test public void disconnectedSubmissionIsRejectedBeforeCreatingAnyTurn() throws Exception {
+        coordinator.onStateChanged("OFFLINE", "GATEWAY_OFFLINE");
+        long before = coordinator.getLastSequence();
+        try {
+            startText();
+            fail("A disconnected gateway must reject an unaccepted turn");
+        } catch (RemoteSessionCoordinator.GatewayUnavailableException expected) { }
+        assertNull(coordinator.getActiveTurnId());
+        assertEquals(before, coordinator.getLastSequence());
+        assertEquals(0, count("turn.accepted"));
+        assertEquals(0, transport.submissions);
+        coordinator.onStateChanged("READY", "");
+        startText();
+        assertEquals(1, transport.submissions);
+    }
+
     @Test public void speechAndAssistantTextLimitsPreserveUnicodeCodePoints() throws Exception {
         String emoji = "\uD83E\uDD16";
         String valid = emoji.repeat(16_000);
