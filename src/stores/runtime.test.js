@@ -51,6 +51,48 @@ describe('runtime store', () => {
     expect(nextTurnState(TURN_STATES.IDLE, 'unknown')).toBe(TURN_STATES.IDLE);
   });
 
+  it('explains why the device is not ready instead of inviting speech while disconnected', () => {
+    const store = useRuntimeStore();
+    store.recoveryNotice = '連線已恢復';
+    const cases = [
+      [CONNECTION_STATES.TLS_ERROR, '連線憑證需要處理'],
+      [CONNECTION_STATES.AUTH_ERROR, '連線驗證失敗'],
+      [CONNECTION_STATES.OFFLINE, '尚未連線'],
+      [CONNECTION_STATES.CONNECTING, '正在連線'],
+      [CONNECTION_STATES.DEGRADED, '正在恢復連線'],
+      [CONNECTION_STATES.UNCONFIGURED, '請先完成設定'],
+      [CONNECTION_STATES.INCOMPATIBLE, '服務版本不相容'],
+    ];
+    for (const [connection, label] of cases) {
+      store.setConnection(connection);
+      expect(store.statusLabel).toBe(label);
+      expect(store.turnState).toBe(TURN_STATES.IDLE);
+    }
+  });
+
+  it('keeps sleep and pending cancellation ahead of connection status', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.TLS_ERROR);
+    store.waitingForPreviousTurn = true;
+    expect(store.statusLabel).toBe('等待前一個回合結束');
+    store.sleeping = true;
+    expect(store.statusLabel).toBe('休眠中');
+  });
+
+  it('preserves ready conversation and recovery labels without changing the active turn', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    expect(store.statusLabel).toBe('準備好了');
+    store.transition('speech_started', { turnId: 'active-turn' });
+    expect(store.statusLabel).toBe('我在聽');
+    store.transition('playback_started');
+    expect(store.statusLabel).toBe('說話中');
+    expect(store.activeTurnId).toBe('active-turn');
+    store.transition('reset');
+    store.recoveryNotice = '連線中斷，請再說一次';
+    expect(store.statusLabel).toBe('連線中斷，請再說一次');
+  });
+
   it('atomically applies an authoritative snapshot even when its cursor jumps', () => {
     const store = useRuntimeStore();
     store.lastSequence = 2;

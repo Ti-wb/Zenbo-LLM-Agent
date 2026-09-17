@@ -134,6 +134,18 @@ export const useRuntimeStore = defineStore('runtime', {
     statusLabel(state) {
       if (state.sleeping) return '休眠中';
       if (state.waitingForPreviousTurn) return '等待前一個回合結束';
+      if (state.connectionState !== CONNECTION_STATES.READY) {
+        const connectionLabels = {
+          [CONNECTION_STATES.UNCONFIGURED]: '請先完成設定',
+          [CONNECTION_STATES.CONNECTING]: '正在連線',
+          [CONNECTION_STATES.DEGRADED]: '正在恢復連線',
+          [CONNECTION_STATES.AUTH_ERROR]: '連線驗證失敗',
+          [CONNECTION_STATES.TLS_ERROR]: '連線憑證需要處理',
+          [CONNECTION_STATES.INCOMPATIBLE]: '服務版本不相容',
+          [CONNECTION_STATES.OFFLINE]: '尚未連線',
+        };
+        return connectionLabels[state.connectionState] ?? '尚未連線';
+      }
       if (state.recoveryNotice && [TURN_STATES.IDLE, TURN_STATES.LISTENING].includes(state.turnState)) {
         return state.recoveryNotice;
       }
