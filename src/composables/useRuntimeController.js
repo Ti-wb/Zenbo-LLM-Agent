@@ -121,7 +121,9 @@ export function useRuntimeController(options = {}) {
       if (playback.isPlaying.value) await stopResponse('barge-in');
       if (runtime.activeTurnId) await transport.cancelTurn(runtime.activeTurnId, 'barge_in');
       speechTurnId = createId();
-      runtime.transition('speech_started', { turnId: speechTurnId, error: '' });
+      runtime.transition('speech_started', {
+        turnId: speechTurnId, transcript: '', assistantText: '', error: '',
+      });
     },
     onSpeechEnd: async ({ blob }) => {
       if (runtime.sleeping || !speechTurnId) return;

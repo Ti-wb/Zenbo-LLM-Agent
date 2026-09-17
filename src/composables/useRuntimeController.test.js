@@ -429,6 +429,44 @@ describe('runtime authoritative recovery', () => {
     app.unmount();
   });
 
+  it('clears captions only on actual speech and preserves later events when the upload ACK arrives late', async () => {
+    const initial = {
+      sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3,
+      transcript: '上一句語音', assistantText: '上一輪回答',
+    };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await controller.wakeUp();
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.assistantText).toBe('上一輪回答');
+    await vadCallbacks.onSpeechStart();
+    expect(runtime.transcript).toBe('');
+    expect(runtime.assistantText).toBe('');
+    const turnId = runtime.activeTurnId;
+    let acceptUpload;
+    transport.uploadVoiceTurn.mockImplementation(() => new Promise((resolve) => { acceptUpload = resolve; }));
+    const upload = vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });
+    await vi.waitFor(() => expect(acceptUpload).toBeTypeOf('function'));
+    await transport.emit('event', {
+      protocolVersion: '2.0', sequence: 4, type: RuntimeEventType.TURN_ACCEPTED, turnId, data: {},
+    });
+    await transport.emit('event', {
+      protocolVersion: '2.0', sequence: 5, type: RuntimeEventType.STT_FINAL, turnId, data: { text: '新的語音' },
+    });
+    expect(runtime.turnState).toBe(TURN_STATES.THINKING);
+    expect(runtime.transcript).toBe('新的語音');
+    await transport.emit('event', {
+      protocolVersion: '2.0', sequence: 6, type: RuntimeEventType.AGENT_TEXT_FINAL, turnId, data: { text: '新的回答' },
+    });
+    acceptUpload({ state: 'accepted', turnId, clientTurnId: turnId });
+    await upload;
+    expect(runtime.turnState).toBe(TURN_STATES.SYNTHESIZING);
+    expect(runtime.assistantText).toBe('新的回答');
+    expect(runtime.lastSequence).toBe(6);
+    app.unmount();
+  });
+
   it('waits for TURN_BUSY with the same recorded audio and turn UUID, then accepts the retry', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
