@@ -9,6 +9,7 @@ import java.util.Set;
 /** In-memory Android preference substitute; no Android runtime or disk access. */
 final class MemoryPreferences implements SharedPreferences {
     private final Map<String, Object> values = new HashMap<>();
+    boolean failCommits;
     @Override public synchronized Map<String, ?> getAll() { return new HashMap<>(values); }
     @Override public synchronized String getString(String key, String fallback) { return (String) values.getOrDefault(key, fallback); }
     @Override public synchronized Set<String> getStringSet(String key, Set<String> fallback) { return (Set<String>) values.getOrDefault(key, fallback); }
@@ -39,7 +40,7 @@ final class MemoryPreferences implements SharedPreferences {
                     for (String key : removed) values.remove(key);
                     values.putAll(added);
                 }
-                return true;
+                return !failCommits;
             }
             @Override public void apply() { commit(); }
         };
