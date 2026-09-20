@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { createRenderer, defineComponent, nextTick, ref } from 'vue';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CONNECTION_STATES,
   Emotion,
@@ -10,6 +10,8 @@ import {
 } from '../stores/runtime';
 import { gatewayErrorState, useRuntimeController } from './useRuntimeController';
 import { RuntimeTransport } from '../services/runtimeTransport';
+
+afterEach(() => vi.unstubAllGlobals());
 
 function testRenderer() {
   return createRenderer({
@@ -113,6 +115,267 @@ async function mountController({ transport, conversation }) {
   expect(runtime.lastSequence).toBe(conversation.lastSequence);
   return { app, controller, playback, runtime, timers, vad, vadCallbacks };
 }
+
+function localEvent(type, sequence, data) {
+  return {
+    protocolVersion: '2.0', type, sequence, data,
+    eventId: `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`,
+    timestamp: '2026-09-21T00:00:00.000Z',
+  };
+}
+
+async function manualListeningHarness(conversation = {}) {
+  const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3, ...conversation };
+  const transport = fakeTransport({ status: { gatewayState: 'READY', turnBusy: false }, conversation: initial });
+  const harness = await mountController({ transport, conversation: initial });
+  harness.vad.start.mockImplementation(async () => { harness.vad.isRunning.value = true; });
+  harness.vad.pause.mockImplementation(async () => { harness.vad.isRunning.value = false; });
+  harness.vad.destroy.mockImplementation(async () => { harness.vad.isRunning.value = false; });
+  return { ...harness, transport, initial };
+}
+
+describe('manual listening intent', () => {
+  it.each([TURN_STATES.IDLE, TURN_STATES.LISTENING])('starts awake with the microphone off for a %s snapshot', async (turnState) => {
+    const { app, controller, transport, runtime, vad, vadCallbacks } = await manualListeningHarness({ turnState });
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    await transport.emit('event', localEvent('local.gateway.state', 4, { state: 'READY' }));
+    await vadCallbacks.onSpeechStart();
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['not authorized']) });
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    await transport.emit('event', localEvent('local.interaction', 5, { kind: 'HEAD_PRESS' }));
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(vad.isRunning.value).toBe(true);
+    await controller.toggleListening();
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.isRunning.value).toBe(false);
+    app.unmount();
+  });
+
+  it.each(['OFFLINE', 'CONNECTING', 'AUTH_ERROR'])('does not save a click made while %s for a later READY', async (state) => {
+    const { app, controller, transport, runtime, vad } = await manualListeningHarness();
+    await transport.emit('connection', { state });
+    await controller.toggleListening();
+    await controller.wakeUp();
+    await transport.emit('connection', { state: 'READY' });
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.start).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('continues listening after the last ordered answer artifact, then returns to awake idle on silence', async () => {
+    const { app, controller, transport, runtime, vad, vadCallbacks, playback, timers } = await manualListeningHarness();
+    await controller.toggleListening();
+    await vadCallbacks.onSpeechStart();
+    const turnId = runtime.activeTurnId;
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });
+    expect(vad.isRunning.value).toBe(false);
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 4, turnId,
+      data: { artifacts: [{ artifactId: 'one' }, { artifactId: 'two' }] },
+    });
+    const first = playback.play.mock.calls[0][1];
+    first.onStarted();
+    expect(runtime.effectiveEmotion).toBe(Emotion.CURIOUS);
+    await first.onEnded();
+    expect(timers.scheduleResume).not.toHaveBeenCalled();
+    const second = playback.play.mock.calls[1][1];
+    second.onStarted();
+    await second.onEnded();
+    expect(runtime.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    expect(timers.scheduleResume).toHaveBeenCalledOnce();
+    timers.scheduleResume.mock.calls[0][0]();
+    await vi.waitFor(() => expect(runtime.turnState).toBe(TURN_STATES.LISTENING));
+    expect(vad.start).toHaveBeenCalledTimes(2);
+    timers.scheduleInactivity.mock.calls.at(-1)[0]();
+    await vi.waitFor(() => expect(vad.isRunning.value).toBe(false));
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    app.unmount();
+  });
+
+  it('ignores an old inactivity callback after a new manual listening session starts', async () => {
+    const { app, controller, runtime, vad, timers } = await manualListeningHarness();
+    await controller.toggleListening();
+    const oldTimeout = timers.scheduleInactivity.mock.calls[0][0];
+    await controller.toggleListening();
+    await controller.toggleListening();
+    oldTimeout();
+    await nextTick();
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(vad.isRunning.value).toBe(true);
+    app.unmount();
+  });
+
+  it('invalidates a scheduled follow-up across disconnect and a later manual activation', async () => {
+    const { app, controller, transport, runtime, vad, vadCallbacks, timers } = await manualListeningHarness();
+    await controller.toggleListening();
+    await vadCallbacks.onSpeechStart();
+    const turnId = runtime.activeTurnId;
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TURN_COMPLETED, sequence: 4, turnId, data: {},
+    });
+    const oldResume = timers.scheduleResume.mock.calls[0][0];
+    await transport.emit('connection', { state: 'OFFLINE' });
+    await transport.emit('connection', { state: 'READY' });
+    oldResume();
+    await nextTick();
+    expect(vad.start).toHaveBeenCalledOnce();
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    await controller.toggleListening();
+    oldResume();
+    await nextTick();
+    expect(vad.start).toHaveBeenCalledTimes(2);
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    app.unmount();
+  });
+
+  it('clears a manual conversation after a recoverable turn error even without an OFFLINE control', async () => {
+    const { app, controller, transport, runtime, vad, vadCallbacks } = await manualListeningHarness();
+    await controller.toggleListening();
+    await vadCallbacks.onSpeechStart();
+    const turnId = runtime.activeTurnId;
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TURN_ERROR, sequence: 4, turnId,
+      data: { error: { code: 'GATEWAY_OFFLINE', retryable: true } },
+    });
+    await transport.emit('connection', { state: 'READY' });
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.isRunning.value).toBe(false);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('keeps a paused turn revoked after recovery and late tool/audio events', async () => {
+    const { app, controller, transport, runtime, vad, vadCallbacks, initial } = await manualListeningHarness();
+    await controller.toggleListening();
+    await vadCallbacks.onSpeechStart();
+    const turnId = runtime.activeTurnId;
+    await controller.toggleListening();
+    transport.getConversation.mockResolvedValue({ ...initial, activeTurnId: turnId, turnState: TURN_STATES.THINKING, lastSequence: 5 });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.SESSION_SNAPSHOT, sequence: 5, data: { lastSequence: 5 },
+    });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TOOL_CALL, sequence: 6, turnId,
+      data: { callId: 'late-call', toolName: 'show_emotion' },
+    });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 7, turnId,
+      data: { artifacts: [{ artifactId: 'late-audio' }] },
+    });
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.sleeping).toBe(false);
+    expect(vad.isRunning.value).toBe(false);
+    expect(runtime.lastSequence).toBe(7);
+    expect(transport.resolveAudio).not.toHaveBeenCalled();
+    expect(transport.sendToolResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected' }));
+    app.unmount();
+  });
+
+  it.each([RuntimeEventType.SESSION_CLOSED, RuntimeEventType.SESSION_EXPIRED])('revokes listening after %s even if READY arrives directly', async (type) => {
+    const { app, controller, transport, runtime, vad, timers } = await manualListeningHarness();
+    await controller.toggleListening();
+    const oldTimeout = timers.scheduleInactivity.mock.calls[0][0];
+    await transport.emit('event', { protocolVersion: '2.0', type, sequence: 4, data: {} });
+    await transport.emit('connection', { state: 'READY' });
+    oldTimeout();
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.isRunning.value).toBe(false);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it.each(['snapshot', 'sequence-gap'])('does not reuse manual intent after authoritative %s recovery', async (kind) => {
+    const { app, controller, transport, runtime, vad, initial } = await manualListeningHarness();
+    await controller.toggleListening();
+    transport.getConversation.mockResolvedValue({ ...initial, turnState: TURN_STATES.LISTENING, lastSequence: 8 });
+    await transport.emit('event', kind === 'snapshot'
+      ? { protocolVersion: '2.0', type: RuntimeEventType.SESSION_SNAPSHOT, sequence: 8, data: { lastSequence: 8 } }
+      : localEvent('local.gateway.state', 8, { state: 'READY' }));
+    await transport.emit('connection', { state: 'READY' });
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.isRunning.value).toBe(false);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it.each([false, true])('keeps the mic off after settings save (fails=%s)', async (fails) => {
+    const { app, controller, transport, runtime, vad } = await manualListeningHarness();
+    transport.unlockRuntimeSettings = vi.fn().mockResolvedValue({});
+    transport.putRuntimeSettings = fails ? vi.fn().mockRejectedValue(new Error('save failed')) : vi.fn().mockResolvedValue({});
+    await controller.toggleListening();
+    await controller.saveSettings({ ...runtime.settings, unlockPin: '123456' });
+    await transport.emit('connection', { state: 'READY' });
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.sleeping).toBe(false);
+    expect(vad.isRunning.value).toBe(false);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('returns screen-off sleep to awake idle but never grants a hidden click', async () => {
+    let visibilityChanged;
+    const document = {
+      hidden: false,
+      addEventListener: vi.fn((_event, callback) => { visibilityChanged = callback; }),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal('document', document);
+    const { app, controller, transport, runtime, vad } = await manualListeningHarness();
+    await controller.toggleListening();
+    document.hidden = true;
+    await visibilityChanged();
+    await controller.toggleListening();
+    await controller.wakeUp();
+    expect(runtime.sleeping).toBe(true);
+    document.hidden = false;
+    await visibilityChanged();
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    await transport.emit('event', localEvent('local.screen.state', 4, { state: 'OFF' }));
+    await controller.toggleListening();
+    await transport.emit('event', localEvent('local.screen.state', 5, { state: 'ON' }));
+    await transport.emit('connection', { state: 'READY' });
+    expect(runtime.sleeping).toBe(false);
+    expect(vad.isRunning.value).toBe(false);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('keeps explicit tool sleep through screen OFF/ON until a manual wake', async () => {
+    const { app, controller, transport, runtime, vad } = await manualListeningHarness({ activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING });
+    await transport.emit('event', sleepToolEvent());
+    await transport.emit('event', localEvent('local.screen.state', 5, { state: 'OFF' }));
+    await transport.emit('event', localEvent('local.screen.state', 6, { state: 'ON' }));
+    expect(runtime.sleeping).toBe(true);
+    expect(vad.start).not.toHaveBeenCalled();
+    await controller.toggleListening();
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('does not restore a cancelled listening request after unmount', async () => {
+    const { app, controller, transport, vad } = await manualListeningHarness({ activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING });
+    let finishCancel;
+    transport.cancelTurn.mockImplementation(() => new Promise((resolve) => { finishCancel = resolve; }));
+    const interaction = controller.toggleListening();
+    app.unmount();
+    finishCancel();
+    await interaction;
+    await controller.toggleListening();
+    await controller.wakeUp();
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(vad.isRunning.value).toBe(false);
+  });
+});
 
 function sleepToolEvent(argumentsValue = {}) {
   return {
@@ -322,7 +585,9 @@ describe('listening startup cancellation', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { finishOldStart = resolve; }))
       .mockImplementationOnce(async () => { vad.isRunning.value = true; });
     vad.pause.mockImplementation(async () => { vad.isRunning.value = false; });
-    const oldListening = transport.emit('connection', { state: CONNECTION_STATES.READY });
+    await transport.emit('connection', { state: CONNECTION_STATES.READY });
+    expect(vad.start).not.toHaveBeenCalled();
+    const oldListening = controller.toggleListening();
     await vi.waitFor(() => expect(finishOldStart).toBeTypeOf('function'));
     await transport.emit('event', {
       protocolVersion: '2.0', sequence: 4, type: 'local.screen.state',
@@ -337,6 +602,11 @@ describe('listening startup cancellation', () => {
     expect(runtime.sleeping).toBe(true);
     expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(timers.scheduleInactivity).not.toHaveBeenCalled();
+    await transport.emit('event', {
+      protocolVersion: '2.0', sequence: 5, type: 'local.screen.state',
+      eventId: '00000000-0000-4000-8000-000000000005', timestamp: '2026-09-17T00:00:00.000Z',
+      data: { state: 'ON' },
+    });
     await controller.wakeUp();
     expect(timers.scheduleInactivity).toHaveBeenCalledOnce();
     expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
@@ -376,6 +646,7 @@ describe('new conversation', () => {
     await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
     vad.start.mockClear();
     await controller.wakeUp();
+    await controller.toggleListening();
     await vadCallbacks.onSpeechStart();
     await vadCallbacks.onSpeechEnd({ blob: new Blob(['during reset'], { type: 'audio/wav' }) });
     await transport.emit('event', gateway(4, 'READY')); // Old binding is not completion.
@@ -391,9 +662,9 @@ describe('new conversation', () => {
     finishOldPause();
     await oldSpeech;
     expect(controller.newSessionPending.value).toBe(false);
-    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(runtime.lastSequence).toBe(7);
-    expect(vad.start).toHaveBeenCalledOnce();
+    expect(vad.start).not.toHaveBeenCalled();
     expect(transport.startNewSession).toHaveBeenCalledOnce();
     expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
     app.unmount();
@@ -427,7 +698,7 @@ describe('new conversation', () => {
     expect(runtime.sleeping).toBe(true);
     expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(runtime.settings).toEqual(settingsBefore);
-    expect(vad.start).toHaveBeenCalledOnce(); // Initial boot only.
+    expect(vad.start).not.toHaveBeenCalled();
     app.unmount();
   });
 
@@ -447,7 +718,8 @@ describe('new conversation', () => {
     expect(runtime.assistantText).toBe('原本的回答');
     expect(runtime.error).toBe('');
     expect(runtime.settingsOpen).toBe(false);
-    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.start).not.toHaveBeenCalled();
     for (const state of [TURN_STATES.UPLOADING, TURN_STATES.THINKING, TURN_STATES.SPEAKING]) {
       runtime.turnState = state;
       runtime.activeTurnId = 'active-turn';
@@ -492,7 +764,7 @@ describe('automatic gateway reconnect', () => {
     };
   }
 
-  it('discards capture across a disconnect and listens for fresh speech after READY without a settings error', async () => {
+  it('discards capture across disconnect and waits for a fresh manual activation after READY', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
     const { app, controller, runtime, vad, vadCallbacks, timers } = await mountController({ transport, conversation: initial });
@@ -515,8 +787,10 @@ describe('automatic gateway reconnect', () => {
     await transport.emit('event', gatewayState(6, 'READY'));
     finishPause();
     await oldSpeech;
-    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    expect(vad.start).toHaveBeenCalledOnce();
+    await controller.toggleListening();
     await vadCallbacks.onSpeechStart();
     const fresh = new Blob(['fresh voice'], { type: 'audio/wav' });
     await vadCallbacks.onSpeechEnd({ blob: fresh });
@@ -545,10 +819,10 @@ describe('automatic gateway reconnect', () => {
       expect(vad.start).not.toHaveBeenCalled();
       await transport.emit('event', gatewayState(7, 'READY'));
     }
-    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(runtime.activeTurnId).toBe('');
     expect(runtime.error).toBe('');
-    expect(vad.start).toHaveBeenCalledOnce();
+    expect(vad.start).not.toHaveBeenCalled();
     expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
     app.unmount();
   });
@@ -561,8 +835,9 @@ describe('automatic gateway reconnect', () => {
       fetchImpl: () => new Promise((resolve) => { rejectUpload = resolve; }),
     });
     transport.uploadVoiceTurn.mockImplementation(wireTransport.uploadVoiceTurn.bind(wireTransport));
-    const { app, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
     vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await controller.toggleListening();
     await vadCallbacks.onSpeechStart();
     const upload = vadCallbacks.onSpeechEnd({ blob: new Blob([new Uint8Array(44)], { type: 'audio/wav' }) });
     await vi.waitFor(() => expect(rejectUpload).toBeTypeOf('function'));
@@ -578,10 +853,10 @@ describe('automatic gateway reconnect', () => {
       expect(runtime.turnState).toBe(TURN_STATES.IDLE);
       await transport.emit('event', gatewayState(5, 'READY'));
     }
-    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(runtime.activeTurnId).toBe('');
     expect(runtime.error).toBe('');
-    expect(vad.start).toHaveBeenCalledTimes(2); // Initial boot and recovered listening.
+    expect(vad.start).toHaveBeenCalledOnce(); // Explicit activation before disconnect only.
     expect(transport.uploadVoiceTurn).toHaveBeenCalledOnce();
     app.unmount();
   });
@@ -685,7 +960,7 @@ describe('runtime authoritative recovery', () => {
     finishCancel();
     await cancellation;
     expect(transport.cancelTurn).toHaveBeenCalledExactlyOnceWith(moving ? '' : 'turn-1', 'user_interaction');
-    expect(vad.start).toHaveBeenCalledOnce();
+    expect(vad.start).not.toHaveBeenCalled(); // The intervening recovery revoked the manual request.
     app.unmount();
   });
 
@@ -741,15 +1016,19 @@ describe('runtime authoritative recovery', () => {
     app.unmount();
   });
 
-  it('sleeps and pauses local capture while the moving robot cancellation ACK is pending', async () => {
+  it('returns to awake idle while the moving robot cancellation ACK is pending', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.LISTENING, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
     const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+    await controller.toggleListening();
+    vad.start.mockClear();
     runtime.robotMoving = true;
     let finishCancel;
     transport.cancelTurn.mockImplementation(() => new Promise((resolve) => { finishCancel = resolve; }));
     const cancellation = controller.toggleListening();
-    expect(runtime.sleeping).toBe(true);
+    expect(runtime.sleeping).toBe(false);
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(playback.stop).toHaveBeenCalledWith('client-cancelled');
     expect(vad.pause).toHaveBeenCalledOnce();
     finishCancel();
@@ -824,7 +1103,7 @@ describe('runtime authoritative recovery', () => {
     await second.onEnded();
     expect(runtime.effectiveEmotion).toBe(Emotion.NEUTRAL);
     expect(runtime.turnState).toBe(TURN_STATES.IDLE);
-    expect(timers.scheduleResume).toHaveBeenCalledOnce();
+    expect(timers.scheduleResume).not.toHaveBeenCalled(); // Recovered playback has no manual listening intent.
     expect(transport.sendPlayback.mock.calls.map(([status, , metadata]) => [status, metadata.artifactId])).toEqual([
       ['started', 'part-1'], ['completed', 'part-1'], ['started', 'part-2'], ['completed', 'part-2'],
     ]);
@@ -923,7 +1202,8 @@ describe('runtime authoritative recovery', () => {
   it('waits for TURN_BUSY with the same recorded audio and turn UUID, then accepts the retry', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime, timers, vadCallbacks } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, timers, vadCallbacks } = await mountController({ transport, conversation: initial });
+    await controller.toggleListening();
     transport.uploadVoiceTurn.mockRejectedValueOnce(Object.assign(new Error('Previous run is still cancelling.'), { code: 'TURN_BUSY' })).mockResolvedValueOnce({ accepted: true });
     await vadCallbacks.onSpeechStart();
     const blob = new Blob(['voice'], { type: 'audio/wav' });
@@ -944,6 +1224,7 @@ describe('runtime authoritative recovery', () => {
     const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
     const { app, controller, runtime, timers, vadCallbacks } = await mountController({ transport, conversation: initial });
+    await controller.toggleListening();
     transport.uploadVoiceTurn.mockRejectedValue(Object.assign(new Error('Busy'), { code: 'TURN_BUSY' }));
     await vadCallbacks.onSpeechStart();
     await vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });

@@ -452,6 +452,15 @@ public final class HermesClient implements HermesTransport {
         return json("input", text, "session_id", sessionId,
                 "instructions", "You are " + robotName + ", a Zenbo robot. Reply in " + language
                         + ". Use the six Zenbo tools when a device action or expression is needed. "
+                        + "For every spoken answer, proactively call show_emotion once to match the meaning, "
+                        + "without waiting for the user to request an expression. Use HAPPY for warm greetings, "
+                        + "EXCITED for positive celebrations, CURIOUS for questions or explanations, "
+                        + "CONCERNED for empathy or problems, and NEUTRAL when appropriate. "
+                        + "Default to durationMs: 0 so the expression lasts throughout the spoken answer, "
+                        + "unless the user requests a particular duration. Honor a requested emotion or NEUTRAL; "
+                        + "when sleep is requested, do not add an automatic expression. "
+                        + "Do not use go_to_sleep for ordinary standby or merely to end a reply; respect an explicit sleep request. "
+                        + "Avoid repeated show_emotion calls within a turn. Never invoke physical tools just to animate an expression. "
                         + "Never claim a physical action succeeded without its tool result. Keep spoken replies concise.");
     }
 

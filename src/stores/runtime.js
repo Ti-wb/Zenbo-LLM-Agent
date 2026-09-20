@@ -105,6 +105,7 @@ export const useRuntimeStore = defineStore('runtime', {
     pendingEmotionDurationMs: 0,
     explicitEmotion: Emotion.NEUTRAL,
     emotionExpiresAt: 0,
+    replyEmotionFallback: false,
     mouthLevel: 0,
     sleeping: false,
     micEnabled: false,
@@ -133,6 +134,9 @@ export const useRuntimeStore = defineStore('runtime', {
         return Emotion.CURIOUS;
       }
       if (state.turnState === TURN_STATES.ERROR) return Emotion.CONCERNED;
+      if (state.turnState === TURN_STATES.SPEAKING && state.replyEmotionFallback) {
+        return Emotion.CURIOUS;
+      }
       return SUPPORTED_EMOTIONS.includes(state.explicitEmotion)
         ? state.explicitEmotion
         : Emotion.NEUTRAL;
@@ -268,6 +272,7 @@ export const useRuntimeStore = defineStore('runtime', {
     setEmotion(emotion, durationMs = 0) {
       this.explicitEmotion = SUPPORTED_EMOTIONS.includes(emotion) ? emotion : Emotion.NEUTRAL;
       this.emotionExpiresAt = durationMs > 0 ? Date.now() + durationMs : 0;
+      this.replyEmotionFallback = false;
     },
 
     queueEmotion(emotion, durationMs = 0) {
@@ -276,12 +281,16 @@ export const useRuntimeStore = defineStore('runtime', {
     },
 
     activatePendingEmotion(now = Date.now()) {
-      const emotion = SUPPORTED_EMOTIONS.includes(this.pendingEmotion)
+      const hasPendingEmotion = SUPPORTED_EMOTIONS.includes(this.pendingEmotion);
+      const emotion = hasPendingEmotion
         ? this.pendingEmotion
         : Emotion.NEUTRAL;
       const durationMs = this.pendingEmotionDurationMs;
       this.explicitEmotion = emotion;
       this.emotionExpiresAt = durationMs > 0 ? now + durationMs : 0;
+      // Playback can look attentive without inferring sentiment or overriding
+      // an explicit NEUTRAL. Keep this separate from tool-owned idle emotion.
+      this.replyEmotionFallback = !hasPendingEmotion;
       this.pendingEmotion = '';
       this.pendingEmotionDurationMs = 0;
     },
@@ -291,12 +300,14 @@ export const useRuntimeStore = defineStore('runtime', {
       this.pendingEmotionDurationMs = 0;
       this.explicitEmotion = Emotion.NEUTRAL;
       this.emotionExpiresAt = 0;
+      this.replyEmotionFallback = false;
     },
 
     clearExpiredEmotion(now = Date.now()) {
       if (this.emotionExpiresAt && now >= this.emotionExpiresAt) {
         this.explicitEmotion = Emotion.NEUTRAL;
         this.emotionExpiresAt = 0;
+        this.replyEmotionFallback = this.turnState === TURN_STATES.SPEAKING;
       }
     },
 

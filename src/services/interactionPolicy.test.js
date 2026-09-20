@@ -9,9 +9,9 @@ describe('headPressAction', () => {
     );
   });
 
-  it('sleeps only on a second press while listening', () => {
+  it('stops listening on a second press while keeping the renderer awake', () => {
     expect(headPressAction({ sleeping: false, turnState: TURN_STATES.LISTENING })).toBe(
-      InteractionAction.SLEEP,
+      InteractionAction.STOP_LISTENING,
     );
   });
 

@@ -66,6 +66,31 @@ public class HermesClientTest {
         assertFalse(request.has("messages"));
     }
 
+    @Test public void spokenAnswerInstructionsChooseOneSustainedExpressionWithoutGrantingMotion() throws Exception {
+        JSONObject request = HermesClient.runRequest("zenbo_session", "今天有什麼新鮮事？", "zh-TW", "Zenbo K");
+        String instructions = request.getString("instructions");
+        assertTrue(instructions.startsWith("You are Zenbo K, a Zenbo robot. Reply in zh-TW."));
+        assertTrue(instructions.contains("proactively call show_emotion once"));
+        assertTrue(instructions.contains("without waiting for the user to request an expression"));
+        assertTrue(instructions.contains("HAPPY for warm greetings"));
+        assertTrue(instructions.contains("EXCITED for positive celebrations"));
+        assertTrue(instructions.contains("CURIOUS for questions or explanations"));
+        assertTrue(instructions.contains("CONCERNED for empathy or problems"));
+        assertTrue(instructions.contains("NEUTRAL when appropriate"));
+        assertTrue(instructions.contains("Default to durationMs: 0"));
+        assertTrue(instructions.contains("unless the user requests a particular duration"));
+        assertTrue(instructions.contains("Honor a requested emotion or NEUTRAL"));
+        assertTrue(instructions.contains("when sleep is requested, do not add an automatic expression"));
+        assertTrue(instructions.contains("Do not use go_to_sleep for ordinary standby or merely to end a reply"));
+        assertTrue(instructions.contains("respect an explicit sleep request"));
+        assertTrue(instructions.contains("Avoid repeated show_emotion calls within a turn"));
+        assertTrue(instructions.contains("Never invoke physical tools just to animate an expression"));
+        assertTrue(instructions.contains("Never claim a physical action succeeded without its tool result"));
+        assertTrue(instructions.contains("Keep spoken replies concise"));
+        assertEquals(3, request.length());
+        assertFalse(request.has("model"));
+    }
+
     @Test public void parsesHermesEventFieldAndMultilineSseWithoutTreatingCommentsAsEvents() throws Exception {
         Buffer buffer = new Buffer().writeUtf8(": keepalive\n\ndata: {\"event\":\"message.delta\",\n"
                 + "data: \"run_id\":\"run_test\",\"delta\":\"你好\"}\n\n"

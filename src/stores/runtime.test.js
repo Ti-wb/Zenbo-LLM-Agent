@@ -199,7 +199,104 @@ describe('runtime store', () => {
     store.clearExpiredEmotion(2499);
     expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
     store.clearExpiredEmotion(2500);
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+    expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
+    expect(store.emotionExpiresAt).toBe(0);
+  });
+
+  it('adds an attentive reply expression only after local playback starts', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.applyConversationSnapshot({ turnState: TURN_STATES.SPEAKING });
     expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+
+    store.transition('reset');
+    store.activatePendingEmotion(1000);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    store.transition('playback_started');
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+    expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
+    store.clearExpiredEmotion(100000);
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+
+    store.transition('reset');
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    expect(store.pendingEmotion).toBe('');
+    expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
+  });
+
+  it.each(Object.values(Emotion))('preserves explicit %s through every audio segment', (emotion) => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.queueEmotion(emotion, 0);
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+    expect(store.effectiveEmotion).toBe(emotion);
+
+    store.clearExpiredEmotion(100000);
+    store.transition('playback_started');
+    expect(store.effectiveEmotion).toBe(emotion);
+    expect(store.emotionExpiresAt).toBe(0);
+    expect(store.replyEmotionFallback).toBe(false);
+  });
+
+  it('respects the duration of explicit neutral before returning to the reply fallback', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.queueEmotion(Emotion.NEUTRAL, 1500);
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+    store.clearExpiredEmotion(2499);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    store.clearExpiredEmotion(2500);
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+  });
+
+  it('keeps queued emotion staged while allowing an explicit override of the reply fallback', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+    store.queueEmotion(Emotion.EXCITED);
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+
+    store.setEmotion(Emotion.NEUTRAL);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    store.setEmotion(Emotion.HAPPY);
+    expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+    expect(store.pendingEmotion).toBe(Emotion.EXCITED);
+  });
+
+  it('returns an expired non-playback expression to ordinary standby', () => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.setEmotion(Emotion.HAPPY, 1500);
+    store.clearExpiredEmotion(store.emotionExpiresAt);
+    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    expect(store.replyEmotionFallback).toBe(false);
+  });
+
+  it.each([
+    ['terminal', (store) => store.transition('reset')],
+    ['new speech', (store) => store.transition('speech_started')],
+    ['failure', (store) => store.transition('failed')],
+    ['wake', (store) => store.wakeUp()],
+    ['sleep', (store) => store.goToSleep()],
+    ['snapshot', (store) => store.applyConversationSnapshot({ turnState: TURN_STATES.SPEAKING })],
+    ['connection loss', (store) => store.setConnection(CONNECTION_STATES.DEGRADED)],
+    ['interruption', (store) => store.resetEmotion()],
+  ])('clears reply-only expression state after %s', (_reason, reset) => {
+    const store = useRuntimeStore();
+    store.setConnection(CONNECTION_STATES.READY);
+    store.activatePendingEmotion(1000);
+    store.transition('playback_started');
+    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
+
+    reset(store);
+    expect(store.replyEmotionFallback).toBe(false);
+    expect(store.pendingEmotion).toBe('');
+    expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
+    expect(store.emotionExpiresAt).toBe(0);
   });
 
   it('keeps duration zero through playback but clears emotions on terminal and safety resets', () => {

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import PixelFace from './components/PixelFace.vue';
 import SettingsOverlay from './components/SettingsOverlay.vue';
+import { useIdleExpression } from './composables/useIdleExpression';
 import { useRuntimeController } from './composables/useRuntimeController';
 import { createListeningCue } from './services/listeningCue';
 import { useRuntimeStore } from './stores/runtime';
@@ -24,8 +25,10 @@ const {
   startNewSession,
   testSettings,
   toggleListening,
-  wakeUp,
 } = useRuntimeController();
+const displayedEmotion = useIdleExpression(runtime, {
+  enabled: computed(() => !isListening.value && !newSessionPending.value),
+});
 const listeningCue = createListeningCue();
 const now = ref(new Date());
 const settingsHolding = ref(false);
@@ -52,6 +55,8 @@ const statusLabel = computed(() => {
   if (!canIndicateListening.value) return runtime.statusLabel;
   if (listeningReady.value) return '我在聽';
   if (isListening.value || runtime.turnState === 'LISTENING') return '麥克風準備中';
+  if (runtime.turnState === 'IDLE' && !runtime.micEnabled && !runtime.turnBusy
+      && !runtime.activeTurnId && !runtime.recoveryNotice) return '點一下開始聊天';
   return runtime.statusLabel;
 });
 const batteryDescription = computed(() => {
@@ -196,10 +201,10 @@ onBeforeUnmount(() => {
         type="button"
         :aria-label="runtime.sleeping ? '點一下喚醒 Zenbo' : isListening ? '點一下暫停聆聽' : '點一下開始聆聽'"
         :aria-pressed="isListening"
-        @click="runtime.sleeping ? wakeUp() : toggleListening()"
+        @click="toggleListening"
       >
         <PixelFace
-          :emotion="runtime.effectiveEmotion"
+          :emotion="displayedEmotion"
           :mouth-level="runtime.mouthLevel"
           :sleeping="runtime.sleeping"
           :turn-state="runtime.turnState"
@@ -215,7 +220,7 @@ onBeforeUnmount(() => {
       <p v-if="runtime.transcript || runtime.assistantText" class="caption">
         {{ runtime.assistantText || runtime.transcript }}
       </p>
-      <button v-if="runtime.sleeping" class="wake-button" type="button" @click="wakeUp">
+      <button v-if="runtime.sleeping" class="wake-button" type="button" @click="toggleListening">
         喚醒 Zenbo
       </button>
     </section>

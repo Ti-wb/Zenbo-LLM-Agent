@@ -94,6 +94,10 @@ export function useRuntimeController(options = {}) {
   let latestReadySequence = 0;
   let interactionPromise = null;
   let revokedTurnId = '';
+  let listeningIntent = false;
+  let disposed = false;
+  let sleepReason = '';
+  let nativeScreenOff = false;
 
   const canStartNewSession = computed(() => !newSessionPending.value && !cancellationPending.value &&
     runtime.connectionState === CONNECTION_STATES.READY &&
@@ -101,9 +105,16 @@ export function useRuntimeController(options = {}) {
       (!runtime.activeTurnId && [TURN_STATES.IDLE, TURN_STATES.ERROR].includes(runtime.turnState))));
 
   function captureIsCurrent(generation = listeningGeneration) {
-    return generation === listeningGeneration &&
+    return !disposed && listeningIntent && generation === listeningGeneration &&
       !newSessionPending.value && !cancellationPending.value &&
-      !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
+      !runtime.sleeping && !nativeScreenOff && !globalThis.document?.hidden &&
+      runtime.connectionState === CONNECTION_STATES.READY;
+  }
+
+  function canRequestListening() {
+    return !disposed && !newSessionPending.value && !cancellationPending.value &&
+      !nativeScreenOff && !globalThis.document?.hidden &&
+      runtime.connectionState === CONNECTION_STATES.READY;
   }
 
   async function finishNewSessionIfReady() {
@@ -113,7 +124,6 @@ export function useRuntimeController(options = {}) {
     newSessionBarrier = null;
     runtime.turnBusy = false;
     newSessionMessage.value = '已開始新對話';
-    await enterListening();
   }
 
   async function applyGatewayState(state, detail = '', sequence = 0) {
@@ -124,7 +134,8 @@ export function useRuntimeController(options = {}) {
     runtime.setConnection(state, runtime.turnState === TURN_STATES.ERROR
       ? runtime.error
       : reconnecting || state === CONNECTION_STATES.READY ? '' : detail);
-    if (reconnecting) {
+    if (state !== CONNECTION_STATES.READY) {
+      clearListeningIntent();
       timers.clearAll();
       // LISTENING and TURN_BUSY audio have not been accepted by Native. An
       // uploaded/remote turn keeps its identity until Native sends a terminal.
@@ -153,6 +164,7 @@ export function useRuntimeController(options = {}) {
     newSessionPending.value = true;
     newSessionBarrier = null;
     newSessionMessage.value = '';
+    clearListeningIntent();
     timers.clearAll();
     speechTurnId = '';
     pendingVoiceTurn = null;
@@ -326,6 +338,7 @@ export function useRuntimeController(options = {}) {
   });
 
   async function convergeTurnError(message = 'Agent turn failed.', reconnectable = false) {
+    clearListeningIntent();
     timers.clearAll();
     speechTurnId = '';
     await Promise.allSettled([pauseListening(), stopResponse('turn-error')]);
@@ -337,10 +350,18 @@ export function useRuntimeController(options = {}) {
   }
 
   async function applyAuthoritativeConversation(conversation = {}, errorMessage = '') {
-    if (activePlaylist || pendingVoiceTurn) {
+    const wasListening = listeningIntent || vad.isRunning.value;
+    clearListeningIntent();
+    timers.clearAll();
+    if (activePlaylist || pendingVoiceTurn || wasListening) {
       await Promise.allSettled([stopResponse('runtime-recovery'), pauseListening()]);
     }
     runtime.applyConversationSnapshot(conversation);
+    // Native snapshots describe the conversation, never microphone permission.
+    if (!listeningIntent && (runtime.turnState === TURN_STATES.LISTENING ||
+      (!cancellationPending.value && runtime.activeTurnId && runtime.activeTurnId === revokedTurnId))) {
+      runtime.transition('reset', { turnId: '' });
+    }
     transport.resetCursor(runtime.lastSequence);
     if (runtime.turnState === TURN_STATES.ERROR) {
       await convergeTurnError(errorMessage || 'Agent turn failed.');
@@ -544,7 +565,9 @@ export function useRuntimeController(options = {}) {
           runtime.setBattery(localControl.battery);
           break;
         case 'screen':
-          if (localControl.state === 'OFF') await enterSleep('screen-off');
+          nativeScreenOff = localControl.state === 'OFF';
+          if (nativeScreenOff) await enterSleep('screen-off');
+          else restoreVisibleIdle();
           break;
         case 'interaction':
           await toggleListening();
@@ -708,8 +731,11 @@ export function useRuntimeController(options = {}) {
         break;
       case RuntimeEventType.SESSION_CLOSED:
       case RuntimeEventType.SESSION_EXPIRED:
+        clearListeningIntent();
+        timers.clearAll();
         await stopResponse('session-closed');
         await pauseListening();
+        if (runtime.turnState === TURN_STATES.LISTENING) runtime.transition('reset', { turnId: '' });
         runtime.setConnection(
           payload.reason === 'credential_revoked'
             ? CONNECTION_STATES.AUTH_ERROR
@@ -731,6 +757,7 @@ export function useRuntimeController(options = {}) {
     try {
       if (!transport.bootstrapped) throw new Error('本機 Renderer session 尚未完成 bootstrap。');
       await refreshAuthoritativeRuntime();
+      if (disposed) return;
       transport.connectEvents({ after: runtime.lastSequence });
     } catch (error) {
       runtime.setConnection(gatewayErrorState(error), error.message);
@@ -787,6 +814,11 @@ export function useRuntimeController(options = {}) {
 
   async function saveSettings(settings) {
     savingSettings.value = true;
+    clearListeningIntent();
+    timers.clearAll();
+    speechTurnId = '';
+    if (runtime.turnState === TURN_STATES.LISTENING) runtime.transition('reset', { turnId: '' });
+    await pauseListening();
     runtime.error = '';
     const safeSettings = publicSettings(settings);
     const apiKey = String(settings.apiKey || '').trim();
@@ -836,10 +868,19 @@ export function useRuntimeController(options = {}) {
   }
 
   async function wakeUp() {
+    if (disposed || newSessionPending.value || cancellationPending.value ||
+      nativeScreenOff || globalThis.document?.hidden) return;
+    sleepReason = '';
     runtime.wakeUp();
-    if (runtime.connectionState === CONNECTION_STATES.READY) {
+    listeningIntent = canRequestListening();
+    if (listeningIntent) {
       await enterListening();
     }
+  }
+
+  function clearListeningIntent() {
+    listeningIntent = false;
+    listeningGeneration += 1;
   }
 
   function pauseListening() {
@@ -850,6 +891,7 @@ export function useRuntimeController(options = {}) {
   async function enterListening() {
     timers.clearResume();
     if (
+      disposed || !listeningIntent || nativeScreenOff || globalThis.document?.hidden ||
       runtime.connectionState !== CONNECTION_STATES.READY ||
       newSessionPending.value ||
       cancellationPending.value ||
@@ -862,27 +904,55 @@ export function useRuntimeController(options = {}) {
     const request = ++listeningGeneration;
     speechTurnId = '';
     await vad.start();
-    if (request !== listeningGeneration || !vad.isRunning.value) return;
-    if (runtime.sleeping || newSessionPending.value || runtime.connectionState !== CONNECTION_STATES.READY) {
+    if (request !== listeningGeneration || !vad.isRunning.value) {
+      if (!listeningIntent && vad.isRunning.value) await pauseListening();
+      return;
+    }
+    if (!captureIsCurrent(request) || nativeScreenOff || globalThis.document?.hidden) {
       await pauseListening();
       return;
     }
     if (runtime.turnState !== TURN_STATES.IDLE || runtime.activeTurnId) return;
     runtime.transition('speech_started', { turnId: '', error: '' });
     timers.scheduleInactivity(() => {
-      void enterSleep('inactivity');
+      // A cancelled timeout must not stop a later manually activated session.
+      if (request === listeningGeneration && listeningIntent && runtime.turnState === TURN_STATES.LISTENING) {
+        void enterIdle('inactivity');
+      }
     });
   }
 
   function scheduleListeningResume() {
+    if (!listeningIntent || disposed) return;
+    const request = listeningGeneration;
     timers.scheduleResume(() => {
-      void enterListening();
+      if (request === listeningGeneration) void enterListening();
     });
   }
 
-  async function enterSleep(reason = 'client-cancelled', options = {}) {
+  async function enterIdle(reason = 'client-cancelled', options = {}) {
+    clearListeningIntent();
     timers.clearAll();
     const turnId = runtime.activeTurnId;
+    if (turnId) revokedTurnId = turnId;
+    speechTurnId = '';
+    sleepReason = '';
+    const localShutdown = Promise.allSettled([pauseListening(), stopResponse(reason)]);
+    runtime.sleeping = false;
+    runtime.transition('reset', { turnId: '' });
+    if (!options.skipCancel && (turnId || runtime.robotMoving)) {
+      await transport.cancelTurn(turnId, 'user_interaction');
+    }
+    await localShutdown;
+  }
+
+  async function enterSleep(reason = 'client-cancelled', options = {}) {
+    clearListeningIntent();
+    timers.clearAll();
+    const turnId = runtime.activeTurnId;
+    if (turnId) revokedTurnId = turnId;
+    // Hiding an explicitly sleeping face must not make it auto-wake later.
+    if (reason !== 'screen-off' || !runtime.sleeping) sleepReason = reason;
     speechTurnId = '';
     const cancelReasons = {
       'screen-off': 'screen_off',
@@ -899,6 +969,7 @@ export function useRuntimeController(options = {}) {
   }
 
   function toggleListening() {
+    if (disposed) return Promise.resolve();
     if (interactionPromise) return interactionPromise;
     const pending = performListeningInteraction();
     interactionPromise = pending;
@@ -924,17 +995,22 @@ export function useRuntimeController(options = {}) {
     }
     const action = headPressAction(runtime);
     if (action === InteractionAction.WAKE) {
+      const request = listeningGeneration;
       await safetyCancellation;
+      if (disposed || request !== listeningGeneration) return;
       return wakeUp();
     }
-    if (action === InteractionAction.SLEEP) {
+    if (action === InteractionAction.STOP_LISTENING) {
       await Promise.all([
-        enterSleep('client-cancelled', { skipCancel: Boolean(safetyCancellation) }),
+        enterIdle('client-cancelled', { skipCancel: Boolean(safetyCancellation) }),
         safetyCancellation,
       ]);
       return;
     }
 
+    // The explicit press grants follow-up listening for this conversation.
+    // Grant before awaits so a disconnect/hidden event can revoke it meanwhile.
+    listeningIntent = canRequestListening();
     if (action === InteractionAction.CANCEL_AND_LISTEN) {
       cancellationPending.value = true;
       const turnId = runtime.activeTurnId;
@@ -955,6 +1031,13 @@ export function useRuntimeController(options = {}) {
 
   async function handleVisibilityChange() {
     if (globalThis.document?.hidden) await enterSleep('screen-off');
+    else restoreVisibleIdle();
+  }
+
+  function restoreVisibleIdle() {
+    if (disposed || nativeScreenOff || globalThis.document?.hidden || sleepReason !== 'screen-off') return;
+    sleepReason = '';
+    runtime.wakeUp();
   }
 
   onMounted(async () => {
@@ -996,7 +1079,9 @@ export function useRuntimeController(options = {}) {
     } catch (error) {
       runtime.setConnection(gatewayErrorState(error), error.message);
     }
+    if (disposed) return;
     await loadSettings();
+    if (disposed) return;
     started.value = true;
     if (runtime.settings.onboardingComplete) await connect();
   });
@@ -1010,7 +1095,8 @@ export function useRuntimeController(options = {}) {
   });
 
   onBeforeUnmount(async () => {
-    listeningGeneration += 1;
+    disposed = true;
+    clearListeningIntent();
     timers.clearAll();
     disposers.forEach((dispose) => dispose());
     transport.close();
