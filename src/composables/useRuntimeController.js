@@ -81,6 +81,7 @@ export function useRuntimeController(options = {}) {
   const motionError = ref('');
   const newSessionPending = ref(false);
   const newSessionMessage = ref('');
+  const cancellationPending = ref(false);
   const started = ref(false);
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
@@ -91,15 +92,18 @@ export function useRuntimeController(options = {}) {
   let pendingVoiceTurn = null;
   let newSessionBarrier = null;
   let latestReadySequence = 0;
+  let interactionPromise = null;
+  let revokedTurnId = '';
 
-  const canStartNewSession = computed(() => !newSessionPending.value &&
+  const canStartNewSession = computed(() => !newSessionPending.value && !cancellationPending.value &&
     runtime.connectionState === CONNECTION_STATES.READY &&
     (runtime.turnState === TURN_STATES.LISTENING ||
       (!runtime.activeTurnId && [TURN_STATES.IDLE, TURN_STATES.ERROR].includes(runtime.turnState))));
 
   function captureIsCurrent(generation = listeningGeneration) {
     return generation === listeningGeneration &&
-      !newSessionPending.value && !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
+      !newSessionPending.value && !cancellationPending.value &&
+      !runtime.sleeping && runtime.connectionState === CONNECTION_STATES.READY;
   }
 
   async function finishNewSessionIfReady() {
@@ -575,6 +579,8 @@ export function useRuntimeController(options = {}) {
       runtime.turnState === TURN_STATES.AWAITING_TOOL;
     const isCurrentToolCall =
       type === RuntimeEventType.TOOL_CALL &&
+      !cancellationPending.value &&
+      turnId !== revokedTurnId &&
       Boolean(turnId) &&
       Boolean(runtime.activeTurnId) &&
       turnId === runtime.activeTurnId &&
@@ -610,9 +616,15 @@ export function useRuntimeController(options = {}) {
     const currentTurnIsTerminal = [TURN_STATES.IDLE, TURN_STATES.ERROR].includes(
       runtime.turnState,
     );
+    const revokedTurn = Boolean(turnId) && turnId === revokedTurnId;
+    const terminalEvent = [RuntimeEventType.TURN_COMPLETED, RuntimeEventType.TURN_ERROR,
+      RuntimeEventType.TURN_CANCELLED].includes(type);
+    const revokedTerminalCanConverge = revokedTurn && terminalEvent &&
+      (runtime.activeTurnId === turnId || (cancellationPending.value && !runtime.activeTurnId));
     if (
       turnId &&
-      (currentTurnIsTerminal || turnId !== runtime.activeTurnId)
+      ((revokedTurn && !terminalEvent) ||
+        ((currentTurnIsTerminal || turnId !== runtime.activeTurnId) && !revokedTerminalCanConverge))
     ) {
       runtime.commitEnvelope(envelope);
       transport.acknowledge(envelope.sequence);
@@ -840,6 +852,7 @@ export function useRuntimeController(options = {}) {
     if (
       runtime.connectionState !== CONNECTION_STATES.READY ||
       newSessionPending.value ||
+      cancellationPending.value ||
       runtime.sleeping ||
       runtime.turnState !== TURN_STATES.IDLE ||
       runtime.activeTurnId
@@ -885,27 +898,57 @@ export function useRuntimeController(options = {}) {
     await localShutdown;
   }
 
-  async function toggleListening() {
-    let safetyCancelled = false;
-    if (runtime.robotMoving) {
-      await transport.cancelTurn('', 'user_interaction');
-      safetyCancelled = true;
-    }
+  function toggleListening() {
+    if (interactionPromise) return interactionPromise;
+    const pending = performListeningInteraction();
+    interactionPromise = pending;
+    const clearPending = () => {
+      if (interactionPromise === pending) interactionPromise = null;
+    };
+    void pending.then(clearPending, clearPending);
+    return pending;
+  }
+
+  async function performListeningInteraction() {
+    // The local reset remains usable if the cancellation ACK is lost. Native
+    // keeps its terminal/TURN_BUSY gate for subsequent uploads in either case.
+    const cancel = (turnId) => transport.cancelTurn(turnId, 'user_interaction').catch(() => null);
+    // Start Native's safety stop immediately, but never let a slow HTTP ACK
+    // postpone pausing local capture/audio or revoking this playlist.
+    const safetyCancellation = runtime.robotMoving
+      ? cancel('') : null;
     if (!runtime.settings.onboardingComplete) {
       runtime.settingsOpen = true;
+      await safetyCancellation;
       return;
     }
     const action = headPressAction(runtime);
-    if (action === InteractionAction.WAKE) return wakeUp();
+    if (action === InteractionAction.WAKE) {
+      await safetyCancellation;
+      return wakeUp();
+    }
     if (action === InteractionAction.SLEEP) {
-      return enterSleep('client-cancelled', { skipCancel: safetyCancelled });
+      await Promise.all([
+        enterSleep('client-cancelled', { skipCancel: Boolean(safetyCancellation) }),
+        safetyCancellation,
+      ]);
+      return;
     }
 
     if (action === InteractionAction.CANCEL_AND_LISTEN) {
+      cancellationPending.value = true;
       const turnId = runtime.activeTurnId;
-      if (!safetyCancelled) await transport.cancelTurn(turnId, 'user_interaction');
-      await Promise.allSettled([stopResponse('client-cancelled'), pauseListening()]);
+      if (turnId) revokedTurnId = turnId;
+      const localShutdown = Promise.allSettled([stopResponse('client-cancelled'), pauseListening()]);
+      // Late tool/audio events no longer have local authority while Native
+      // finishes cancellation. The next turn still waits for the HTTP ACK.
+      runtime.activeTurnId = '';
+      await (safetyCancellation || cancel(turnId));
+      await localShutdown;
+      cancellationPending.value = false;
       runtime.transition('reset', { turnId: '' });
+    } else {
+      await safetyCancellation;
     }
     await enterListening();
   }

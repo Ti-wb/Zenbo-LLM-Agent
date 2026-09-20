@@ -898,11 +898,22 @@ public final class HermesClient implements HermesTransport {
     }
 
     static byte[] readBounded(ResponseBody body, int limit) throws IOException {
-        if (body.contentLength() > limit) throw new IOException("Response exceeds size limit");
+        long length = body.contentLength();
+        if (length > limit) throw new IOException("Response exceeds size limit");
+        if (length >= 0) {
+            // Audio responses have a validated Content-Length. Read directly into the
+            // returned array instead of growing a second full-size buffer and copying it.
+            byte[] bytes = new byte[(int) length];
+            BufferedSource source = body.source();
+            source.readFully(bytes);
+            if (!source.exhausted()) throw new IOException("Response length does not match Content-Length");
+            return bytes;
+        }
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
+        java.io.InputStream input = body.byteStream();
         int count;
-        while ((count = body.byteStream().read(buffer)) != -1) {
+        while ((count = input.read(buffer)) != -1) {
             if (output.size() + count > limit) throw new IOException("Response exceeds size limit");
             output.write(buffer, 0, count);
         }

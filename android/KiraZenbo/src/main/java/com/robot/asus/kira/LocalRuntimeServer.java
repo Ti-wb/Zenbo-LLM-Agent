@@ -136,15 +136,8 @@ public final class LocalRuntimeServer {
     private void registerRoutes() {
         server.get("/$", (request, response) -> {
             if (!requireLoopback(request, response)) return;
-            try (InputStream input = context.getAssets().open("app/index.html")) {
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                int count;
-                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-                secureHeaders(response);
-                response.code(200);
-                response.getHeaders().set("Content-Type", "text/html; charset=utf-8");
-                response.send(output.toString("UTF-8"));
+            try {
+                sendAppAsset("app/index.html", "text/html; charset=utf-8", response);
             } catch (Exception error) {
                 sendError(response, 503, "INTERNAL_ERROR", "Web assets are not installed");
             }
@@ -535,17 +528,21 @@ public final class LocalRuntimeServer {
             return;
         }
         String assetPath = "app" + path;
-        try (InputStream input = context.getAssets().open(assetPath)) {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-            secureHeaders(response);
-            response.code(200);
-            response.send(contentType(path), output.toByteArray());
+        try {
+            sendAppAsset(assetPath, contentType(path), response);
         } catch (Exception error) {
             sendError(response, 404, "ASSET_NOT_FOUND", "Asset was not found");
         }
+    }
+
+    private void sendAppAsset(String assetPath, String mimeType, AsyncHttpServerResponse response)
+            throws java.io.IOException {
+        secureHeaders(response);
+        response.code(200);
+        response.setContentType(mimeType);
+        // Ownership passes to the asynchronous transfer; do not close at route return.
+        // Chunked framing avoids treating InputStream.available() as the file length.
+        AppAssetStream.send(context.getAssets().open(assetPath), response);
     }
 
     private void registerStatusRoute(String path) {

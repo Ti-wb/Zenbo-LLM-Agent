@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import uuid
@@ -174,4 +175,78 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len((await response.json())["artifacts"]), 2)
         await socket.send_json({"type": "run.activate", "sessionId": "session", "runId": "run", "turnId": self.turn})
         self.assertEqual((await socket.receive_json())["code"], "run_busy")
+        await socket.close()
+
+    async def test_revocation_during_speech_discards_prepared_audio(self):
+        socket = await self.bind()
+        await self.activate(socket)
+        self.compat.statuses["run"]["status"] = "completed"
+        entered, release = threading.Event(), threading.Event()
+        def speak(text, path):
+            entered.set()
+            release.wait(2)
+            path.write_bytes(wav_bytes())
+            return {"success": True, "file_path": str(path)}
+        self.compat.speak = speak
+        response_task = asyncio.create_task(self.client.post(self.root + "/audio/speech", headers=self.headers,
+                                            json={"text": "hello", "language": "en", "sessionId": "session", "runId": "run", "turnId": self.turn}))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+            await socket.send_json({"type": "run.deactivate", "sessionId": "session", "runId": "run",
+                                    "turnId": self.turn, "reason": "cancelled"})
+            self.assertEqual((await socket.receive_json())["type"], "run.inactive")
+        finally:
+            release.set()
+        response = await response_task
+        self.assertEqual(response.status, 400)
+        self.assertEqual((await response.json())["error"]["code"], "speech_run_not_completed")
+        self.assertEqual(self.runtime.artifacts.items, {})
+        self.assertEqual(list(Path(self.audio_directory.name).iterdir()), [])
+        await socket.close()
+
+    async def test_invalid_later_chunk_does_not_publish_earlier_prepared_audio(self):
+        socket = await self.bind()
+        await self.activate(socket)
+        self.compat.statuses["run"]["status"] = "completed"
+        def speak(text, path):
+            path.write_bytes(wav_bytes())
+            invalid = path.with_name("unsupported.bin")
+            invalid.write_bytes(b"unsupported")
+            return {"success": True, "file_paths": [str(path), str(invalid)]}
+        self.compat.speak = speak
+        response = await self.client.post(self.root + "/audio/speech", headers=self.headers,
+                                         json={"text": "hello", "language": "en", "sessionId": "session", "runId": "run", "turnId": self.turn})
+        self.assertEqual(response.status, 400)
+        self.assertEqual((await response.json())["error"]["code"], "unsupported_speech_audio")
+        self.assertEqual(self.runtime.artifacts.items, {})
+        self.assertEqual(list(Path(self.audio_directory.name).iterdir()), [])
+        await socket.close()
+
+    async def test_speech_timeout_discards_late_prepared_audio_after_cleanup(self):
+        socket = await self.bind()
+        await self.activate(socket)
+        self.compat.statuses["run"]["status"] = "completed"
+        entered, release = threading.Event(), threading.Event()
+        def speak(text, path):
+            entered.set()
+            release.wait(2)
+            path.write_bytes(wav_bytes())
+            return {"success": True, "file_path": str(path)}
+        self.compat.speak = speak
+        work = self.runtime.speech._work
+        async def short_work(operation, _timeout):
+            return await work(operation, 0.02)
+        self.runtime.speech._work = short_work
+        try:
+            response = await self.client.post(self.root + "/audio/speech", headers=self.headers,
+                                             json={"text": "hello", "language": "en", "sessionId": "session", "runId": "run", "turnId": self.turn})
+            self.assertEqual(response.status, 503)
+            self.assertEqual((await response.json())["error"]["code"], "speech_timeout")
+            self.assertTrue(entered.is_set())
+            self.assertEqual(len(self.runtime.speech.jobs), 1)
+        finally:
+            release.set()
+            await self.runtime.speech.close()
+        self.assertEqual(self.runtime.artifacts.items, {})
+        self.assertEqual(list(Path(self.audio_directory.name).iterdir()), [])
         await socket.close()

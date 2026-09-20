@@ -230,14 +230,11 @@ function sleepZ(x, y) {
   ];
 }
 
-function expressiveDetails(emotion, elapsed, reducedMotion, speaking) {
+function expressiveDetails(emotion, speaking, sparkleVisible, sparkleStep, sleepFloat) {
   const cheekWidth = ['happy', 'excited'].includes(emotion) ? 14 : 10;
   const cheeks = [rect(31 - cheekWidth / 2, 61, cheekWidth, 4), rect(129 - cheekWidth / 2, 61, cheekWidth, 4)];
   const joyfulMouth = !speaking && ['happy', 'excited'].includes(emotion);
   const tongueY = emotion === 'excited' ? 76 : 74;
-  const sparkleVisible = emotion === 'excited' && !speaking && (reducedMotion || elapsed < 1200);
-  const sparkleStep = reducedMotion ? 0 : Math.floor(elapsed / 300) % 2;
-  const sleepFloat = reducedMotion ? 0 : Math.floor((elapsed % 5800) / 1450) * 2;
   return {
     cheeks,
     cheekOpacity: emotion === 'sleeping' ? 0.22 : ['happy', 'excited'].includes(emotion) ? 0.8 : 0.45,
@@ -329,7 +326,7 @@ export function equalizerMouth(band) {
   );
 }
 
-export function resolveFaceFrame({
+function resolveFaceState({
   emotion = 'NEUTRAL',
   mouthLevel = 0,
   sleeping = false,
@@ -346,7 +343,6 @@ export function resolveFaceFrame({
   const elapsed = Math.max(0, numeric(elapsedMs));
   const expressionElapsed = Math.max(0, numeric(expressionElapsedMs));
   const speaking = normalizedTurnState === 'SPEAKING' && !sleeping;
-  const eyes = emotionEyes(resolvedEmotion);
   const driftX = thinkingOffset(elapsed, normalizedTurnState, reducedMotion, sleeping);
   const breathY = bodyOffset(elapsed, resolvedEmotion, reducedMotion, speaking);
   const bounceY = !reducedMotion && !speaking && resolvedEmotion === 'excited' && expressionElapsed < 600
@@ -356,25 +352,40 @@ export function resolveFaceFrame({
   const winkPhase = expressionElapsed % 11000;
   const winking = !reducedMotion && !speaking && resolvedEmotion === 'happy'
     && blink.frame === null && winkPhase >= 7000 && winkPhase < 7260;
+  const equalizerBand = speaking ? resolveEqualizerBand(mouthLevel, previousEqualizerBand) : 0;
+  const sparkleVisible = resolvedEmotion === 'excited' && !speaking && (reducedMotion || expressionElapsed < 1200);
+  return {
+    resolvedEmotion, normalizedTurnState, speaking, driftX, offsetY,
+    blinkScale: blink.scale, blinkFrame: blink.frame, winking, equalizerBand,
+    sparkleVisible,
+    sparkleStep: sparkleVisible && !reducedMotion ? Math.floor(expressionElapsed / 300) % 2 : 0,
+    sleepFloat: sleeping && !reducedMotion ? Math.floor((expressionElapsed % 5800) / 1450) * 2 : 0,
+  };
+}
+
+function buildFaceFrame({
+  resolvedEmotion, normalizedTurnState, speaking, driftX, offsetY,
+  blinkScale, blinkFrame, winking, equalizerBand, sparkleVisible, sparkleStep, sleepFloat,
+}) {
+  const eyes = emotionEyes(resolvedEmotion);
   const leftEye = sanitizeRectangles(shiftRectangles(
-    squashRectangles(eyes.left, eyes.centers.left.y, winking ? 0.12 : blink.scale), driftX, offsetY,
+    squashRectangles(eyes.left, eyes.centers.left.y, winking ? 0.12 : blinkScale), driftX, offsetY,
   ));
   const rightEye = sanitizeRectangles(shiftRectangles(
-    squashRectangles(eyes.right, eyes.centers.right.y, blink.scale), driftX, offsetY,
+    squashRectangles(eyes.right, eyes.centers.right.y, blinkScale), driftX, offsetY,
   ));
-  const equalizerBand = speaking ? resolveEqualizerBand(mouthLevel, previousEqualizerBand) : 0;
   const mouth = sanitizeRectangles(shiftRectangles(
     speaking ? equalizerMouth(equalizerBand) : emotionMouth(resolvedEmotion), 0, offsetY,
   ));
   const eyeDetail = eyeDetails(resolvedEmotion, eyes.centers);
-  const details = expressiveDetails(resolvedEmotion, expressionElapsed, reducedMotion, speaking);
+  const details = expressiveDetails(resolvedEmotion, speaking, sparkleVisible, sparkleStep, sleepFloat);
   const eyesMask = [...leftEye, ...rightEye];
   return {
     width: FACE_WIDTH, height: FACE_HEIGHT, backgroundColor: FACE_BACKGROUND,
     color: FACE_PALETTE[resolvedEmotion], emotion: resolvedEmotion, turnState: normalizedTurnState,
     leftEye, rightEye, mouth,
     speechClosedMouth: shortMouth(),
-    brows: blink.scale < 0.3 ? [] : shiftRectangles(eyebrowGeometry(resolvedEmotion), driftX, offsetY),
+    brows: blinkScale < 0.3 ? [] : shiftRectangles(eyebrowGeometry(resolvedEmotion), driftX, offsetY),
     highlights: clipRectangles(shiftRectangles(eyeDetail.highlights, driftX, offsetY), eyesMask),
     eyeShadows: clipRectangles(shiftRectangles(eyeDetail.eyeShadows, driftX, offsetY), eyesMask),
     cheeks: shiftRectangles(details.cheeks, 0, offsetY),
@@ -384,9 +395,38 @@ export function resolveFaceFrame({
     sparkles: details.sparkles,
     sleepMarks: details.sleepMarks,
     detailOpacity: 1,
-    equalizerBand, speaking, blinkFrame: blink.frame, winking,
+    equalizerBand, speaking, blinkFrame, winking,
     eyeOffsetX: driftX, bodyOffsetY: offsetY,
     metrics: { eyeCenters: eyes.centers, concernedCorners: eyes.corners || null },
+  };
+}
+
+export function resolveFaceFrame(options = {}) {
+  return buildFaceFrame(resolveFaceState(options));
+}
+
+// Pixel geometry changes only at animation steps or audio-band boundaries.
+// Keep just the previous frame, so a long-running display has bounded memory.
+// Consumers must treat returned frames as read-only (transitions copy them).
+export function createFaceFrameResolver() {
+  let previousState = null;
+  let previousFrame = null;
+  return (options = {}) => {
+    const state = resolveFaceState(options);
+    let changed = !previousState;
+    if (!changed) {
+      for (const key in state) {
+        if (state[key] !== previousState[key]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) {
+      previousState = state;
+      previousFrame = buildFaceFrame(state);
+    }
+    return previousFrame;
   };
 }
 

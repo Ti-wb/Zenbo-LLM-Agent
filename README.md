@@ -6,7 +6,8 @@ Android App 連接你設定的 Hermes Profile，由 Hermes 管理對話、語音
 
 [外掛安裝](integrations/hermes-zenbo/README.md) ·
 [Hermes 介面契約](contracts/hermes-zenbo/README.md) ·
-[本機介面契約](contracts/local-runtime/README.md)
+[本機介面契約](contracts/local-runtime/README.md) ·
+[體驗與效能 Review](docs/experience-performance-review.md)
 
 ## 開始使用
 

@@ -57,6 +57,21 @@ class Artifact:
     data: bytes
     mime: str
     expires: float
+    sha256: bytes
+
+
+@dataclass(frozen=True)
+class PreparedAudio:
+    data: bytes
+    mime: str
+    sha256: bytes
+
+
+def prepare_audio(data):
+    """Validate and hash in the existing speech worker, before publication."""
+    if not data or len(data) > MAX_ARTIFACT:
+        raise Rejected("speech_audio_limit")
+    return PreparedAudio(data, sniff_audio(data), hashlib.sha256(data).digest())
 
 
 class ArtifactStore:
@@ -70,33 +85,41 @@ class ArtifactStore:
 
     def add_many(self, profile, device, principal, audio):
         self.purge()
-        if (not audio or len(audio) > 32 or any(not data or len(data) > MAX_ARTIFACT for data in audio)
-                or sum(map(len, audio)) > MAX_AUDIO_TOTAL):
+        if (not audio or len(audio) > 32
+                or any(not isinstance(item, PreparedAudio) or not item.data
+                       or len(item.data) > MAX_ARTIFACT for item in audio)):
             raise Rejected("speech_audio_limit")
-        if sum(len(item.data) for item in self.items.values()) + sum(map(len, audio)) > self.max_bytes:
+        byte_count = sum(len(item.data) for item in audio)
+        if byte_count > MAX_AUDIO_TOTAL:
+            raise Rejected("speech_audio_limit")
+        if sum(len(item.data) for item in self.items.values()) + byte_count > self.max_bytes:
             raise Rejected("audio_capacity_exceeded")
-        # Validate the entire result before publishing any artifact.
-        mimes = [sniff_audio(data) for data in audio]
+        # Prepared bytes are immutable and the entire batch was validated in the
+        # worker. Store mutation stays on the HTTP loop, after authority recheck.
         expires = time.time() + self.ttl
         output = []
-        for data, mime in zip(audio, mimes):
+        for item in audio:
             artifact_id = str(uuid.uuid4())
-            self.items[artifact_id] = Artifact(profile, device, principal, data, mime, expires)
-            output.append({"artifactId": artifact_id, "mimeType": mime,
-                           "byteLength": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            self.items[artifact_id] = Artifact(profile, device, principal, item.data, item.mime, expires, item.sha256)
+            output.append({"artifactId": artifact_id, "mimeType": item.mime,
+                           "byteLength": len(item.data), "sha256": item.sha256.hex(),
                            "expiresAt": iso_time(expires)})
         return output
 
     def get(self, artifact_id, profile, device, principal):
-        self.purge()
         item = self.items.get(artifact_id)
+        # Reads inspect only the requested artifact. Batch publication and the
+        # periodic sweeper reclaim other expired items without a full GET scan.
+        if item and item.expires <= time.time():
+            self.items.pop(artifact_id)
+            item = None
         if not item or (item.profile, item.device, item.principal) != (profile, device, principal):
             raise Rejected("artifact_not_found")
         return item
 
     @staticmethod
     def digest(item):
-        return "sha-256=" + base64.b64encode(hashlib.sha256(item.data).digest()).decode("ascii")
+        return "sha-256=" + base64.b64encode(item.sha256).decode("ascii")
 
 
 class Speech:
@@ -162,6 +185,7 @@ class Speech:
                 if not isinstance(paths, list) or not 1 <= len(paths) <= 32:
                     raise Rejected("invalid_speech_audio")
                 audio = []
+                byte_count = 0
                 seen = set()
                 for value in paths:
                     if not isinstance(value, str):
@@ -178,10 +202,10 @@ class Speech:
                         data = source.read(MAX_ARTIFACT + 1)
                     if len(data) > MAX_ARTIFACT:
                         raise Rejected("speech_audio_limit")
-                    sniff_audio(data)
-                    audio.append(data)
-                    if sum(map(len, audio)) > MAX_AUDIO_TOTAL:
+                    byte_count += len(data)
+                    if byte_count > MAX_AUDIO_TOTAL:
                         raise Rejected("speech_audio_limit")
+                    audio.append(prepare_audio(data))
                 return audio
         return await self._work(work, 120)
 

@@ -36,6 +36,7 @@ class Binding:
     reason: str = ""
     pending: dict = field(default_factory=dict)
     seen_runs: set = field(default_factory=set)
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass
@@ -97,17 +98,20 @@ class Broker:
         # device-tool authority. Previously bound/revoked runs cannot reopen.
         completed = status.get("status") == "completed"
         binding.enabled, binding.reason = not completed, "completed" if completed else ""
+        binding.changed.set()
 
     def deactivate(self, binding, run, turn, reason):
         if (binding.run, binding.turn) != (run, turn):
             raise Rejected("correlation_mismatch")
         binding.enabled, binding.reason = False, reason
         self._fail_pending(binding, "run_inactive")
+        binding.changed.set()
 
     def disconnect(self, binding):
         binding.connected, binding.enabled = False, False
         binding.reason = "disconnected"
         self._fail_pending(binding, "device_disconnected")
+        binding.changed.set()
 
     @staticmethod
     def _fail_pending(binding, code):
@@ -148,7 +152,14 @@ class Broker:
                 return {"error": {"code": "run_inactive", "message": "Device run is not active"}}
             if binding.run and not self._terminal(binding):
                 return {"error": {"code": "run_busy", "message": "Another run owns the device"}}
-            await asyncio.sleep(0.025)
+            # No await separates the checks above from clearing the event, so
+            # loop-owned activation/revocation cannot be lost in this window.
+            # Keep a bounded tick for Hermes' worker-thread interrupt flag.
+            binding.changed.clear()
+            try:
+                await asyncio.wait_for(binding.changed.wait(), min(0.025, max(0, end - time.monotonic())))
+            except asyncio.TimeoutError:
+                pass
         if interrupted():
             return {"error": {"code": "cancelled", "message": "Device tool cancelled"}}
         status = binding.status(run)

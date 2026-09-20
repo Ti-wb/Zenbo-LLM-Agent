@@ -611,6 +611,154 @@ describe('automatic gateway reconnect', () => {
 });
 
 describe('runtime authoritative recovery', () => {
+  it.each([RuntimeEventType.TURN_CANCELLED, RuntimeEventType.TURN_ERROR, RuntimeEventType.TURN_COMPLETED])(
+    'keeps resumed listening intact when a cancelled turn later emits %s', async (type) => {
+      const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
+      const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+      const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+      vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
+      await controller.toggleListening();
+      expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+      expect(runtime.activeTurnId).toBe('');
+      expect(playback.stop).toHaveBeenCalledOnce();
+      await transport.emit('event', {
+        protocolVersion: '2.0', type, sequence: 4, turnId: 'turn-1',
+        data: { message: 'Late old-turn failure' },
+      });
+      expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+      expect(runtime.error).toBe('');
+      expect(vad.isRunning.value).toBe(true);
+      expect(playback.stop).toHaveBeenCalledOnce();
+      expect(vad.pause).toHaveBeenCalledOnce();
+      expect(runtime.lastSequence).toBe(4);
+      app.unmount();
+    },
+  );
+
+  it.each([false, true])('stops local audio and revokes late tools before a slow cancel ACK (moving=%s)', async (moving) => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    runtime.robotMoving = moving;
+    let finishCancel;
+    transport.cancelTurn.mockImplementation(() => new Promise((resolve) => { finishCancel = resolve; }));
+    const cancellation = controller.toggleListening();
+    expect(controller.toggleListening()).toBe(cancellation);
+    expect(playback.stop).toHaveBeenCalledWith('client-cancelled');
+    expect(vad.pause).toHaveBeenCalledOnce();
+    expect(runtime.activeTurnId).toBe('');
+    expect(vad.start).not.toHaveBeenCalled();
+    await transport.emit('connection', { state: CONNECTION_STATES.READY });
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(controller.canStartNewSession.value).toBe(false);
+    // A recovery snapshot may still describe the remotely cancelling turn.
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.SESSION_SNAPSHOT, sequence: 3,
+      data: { ...initial },
+    });
+    expect(runtime.activeTurnId).toBe('turn-1');
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TOOL_CALL, sequence: 4, turnId: 'turn-1',
+      data: {
+        callId: '00000000-0000-4000-8000-000000000004', toolName: 'show_emotion',
+        toolVersion: '1.0.0', arguments: { emotion: 'EXCITED' }, timeoutMs: 5000,
+        deadlineAt: '2999-01-01T00:00:00.000Z',
+      },
+    });
+    expect(transport.sendToolResult).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'rejected', error: expect.objectContaining({ code: 'STALE_TURN' }),
+    }));
+    expect(runtime.pendingEmotion).toBe('');
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 5, turnId: 'turn-1',
+      data: { artifacts: [{ artifactId: 'late-audio' }] },
+    });
+    expect(transport.resolveAudio).not.toHaveBeenCalled();
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TURN_CANCELLED, sequence: 6, turnId: 'turn-1', data: {},
+    });
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(runtime.lastSequence).toBe(6);
+    await transport.emit('connection', { state: CONNECTION_STATES.READY });
+    expect(vad.start).not.toHaveBeenCalled();
+    finishCancel();
+    await cancellation;
+    expect(transport.cancelTurn).toHaveBeenCalledExactlyOnceWith(moving ? '' : 'turn-1', 'user_interaction');
+    expect(vad.start).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('preserves screen-off sleep when an older interaction cancellation ACK arrives', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, runtime, vad } = await mountController({ transport, conversation: initial });
+    let finishCancel;
+    transport.cancelTurn.mockImplementationOnce(() => new Promise((resolve) => { finishCancel = resolve; }));
+    const cancellation = controller.toggleListening();
+    await transport.emit('event', {
+      protocolVersion: '2.0', eventId: '00000000-0000-4000-8000-000000000004',
+      type: 'local.screen.state', sequence: 4, timestamp: '2026-09-19T00:00:00.000Z',
+      data: { state: 'OFF' },
+    });
+    expect(runtime.sleeping).toBe(true);
+    finishCancel();
+    await cancellation;
+    expect(runtime.sleeping).toBe(true);
+    expect(runtime.activeTurnId).toBe('');
+    expect(vad.start).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it.each([false, true])('converges a rejected cancellation ACK without duplicate cancellation (moving=%s)', async (moving) => {
+    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    runtime.robotMoving = moving;
+    let rejectCancel;
+    transport.cancelTurn.mockImplementation(() => new Promise((_resolve, reject) => { rejectCancel = reject; }));
+    const cancellation = controller.toggleListening();
+    expect(controller.toggleListening()).toBe(cancellation);
+    expect(playback.stop).toHaveBeenCalledWith('client-cancelled');
+    expect(vad.start).not.toHaveBeenCalled();
+    rejectCancel(new Error('Cancellation ACK lost'));
+    await expect(cancellation).resolves.toBeUndefined();
+    expect(transport.cancelTurn).toHaveBeenCalledOnce();
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(vad.start).toHaveBeenCalledOnce();
+    expect(controller.canStartNewSession.value).toBe(true);
+    transport.getConversation.mockResolvedValue({ ...initial, turnState: TURN_STATES.THINKING });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.SESSION_SNAPSHOT, sequence: 3, data: { ...initial },
+    });
+    await transport.emit('event', {
+      protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 4, turnId: 'turn-1',
+      data: { artifacts: [{ artifactId: 'late-after-ack' }] },
+    });
+    expect(transport.resolveAudio).not.toHaveBeenCalled();
+    expect(runtime.lastSequence).toBe(4);
+    app.unmount();
+  });
+
+  it('sleeps and pauses local capture while the moving robot cancellation ACK is pending', async () => {
+    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.LISTENING, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
+    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    runtime.robotMoving = true;
+    let finishCancel;
+    transport.cancelTurn.mockImplementation(() => new Promise((resolve) => { finishCancel = resolve; }));
+    const cancellation = controller.toggleListening();
+    expect(runtime.sleeping).toBe(true);
+    expect(playback.stop).toHaveBeenCalledWith('client-cancelled');
+    expect(vad.pause).toHaveBeenCalledOnce();
+    finishCancel();
+    await cancellation;
+    expect(transport.cancelTurn).toHaveBeenCalledOnce();
+    expect(vad.start).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
   it('handles cancellation without waiting for the first audio artifact download', async () => {
     const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
     const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });

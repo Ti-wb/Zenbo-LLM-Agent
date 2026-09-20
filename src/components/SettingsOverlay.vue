@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { settingsReadiness } from '../services/runtimeSettings';
 
 const props = defineProps({
@@ -16,6 +16,75 @@ const emit = defineEmits(['close', 'save', 'test']);
 const draft = reactive({});
 const validationError = ref('');
 const readiness = computed(() => settingsReadiness(props.testResult));
+const dialog = ref(null);
+const gatewayInput = ref(null);
+let previousFocus = null;
+
+function focusableElements() {
+  return [...dialog.value.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+    .filter((element) => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+}
+
+function focusInitialField() {
+  (gatewayInput.value || dialog.value)?.focus();
+}
+
+function keepFocusInDialog(event) {
+  if (dialog.value && !dialog.value.contains(event.target)) focusInitialField();
+}
+
+function close() {
+  if (!props.settings.onboardingComplete) return;
+  clearSensitiveDraft();
+  emit('close');
+}
+
+function handleDialogKeydown(event) {
+  if (!dialog.value || event.isComposing) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+
+  const elements = focusableElements();
+  const index = elements.indexOf(document.activeElement);
+  if (index < 0 || (event.shiftKey ? index === 0 : index === elements.length - 1)) {
+    event.preventDefault();
+    (elements[event.shiftKey ? elements.length - 1 : 0] || dialog.value).focus();
+  }
+}
+
+function releaseFocus() {
+  document.removeEventListener('keydown', handleDialogKeydown, true);
+  document.removeEventListener('focusin', keepFocusInDialog, true);
+  const target = previousFocus;
+  previousFocus = null;
+  if (target?.isConnected) target.focus();
+}
+
+watch(
+  () => props.open,
+  async (open, _, onCleanup) => {
+    if (!open) {
+      releaseFocus();
+      return;
+    }
+    previousFocus = document.activeElement;
+    let cancelled = false;
+    onCleanup(() => { cancelled = true; });
+    await nextTick();
+    if (cancelled || !dialog.value) return;
+    document.addEventListener('keydown', handleDialogKeydown, true);
+    document.addEventListener('focusin', keepFocusInDialog, true);
+    focusInitialField();
+  },
+  { immediate: true, flush: 'post' },
+);
+
+onBeforeUnmount(releaseFocus);
 
 watch(
   () => [props.open, props.settings],
@@ -107,7 +176,7 @@ function testHermes() {
 </script>
 
 <template>
-  <div v-if="open" class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div ref="dialog" v-if="open" class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
     <form class="settings-card" @submit.prevent="save">
       <div class="heading-row">
         <div>
@@ -119,7 +188,7 @@ function testHermes() {
           class="close-button"
           type="button"
           aria-label="關閉設定"
-          @click="emit('close')"
+          @click="close"
         >
           ×
         </button>
@@ -132,6 +201,7 @@ function testHermes() {
       <label>
         <span>Hermes Profile URL</span>
         <input
+          ref="gatewayInput"
           v-model="draft.gatewayUrl"
           type="url"
           inputmode="url"

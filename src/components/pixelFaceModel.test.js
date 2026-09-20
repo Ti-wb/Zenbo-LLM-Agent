@@ -4,6 +4,7 @@ import {
   FACE_HEIGHT,
   FACE_PALETTE,
   FACE_WIDTH,
+  createFaceFrameResolver,
   equalizerMouth,
   interpolateFaceFrames,
   interpolateSleepFrames,
@@ -13,6 +14,46 @@ import {
   resolveFaceFrame,
   resolveSpeechTransitionMouth,
 } from './pixelFaceModel.js';
+
+describe('cached face frames', () => {
+  it('reuses stable geometry and preserves blink, breath, detail and audio boundaries', () => {
+    for (const emotion of ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED']) {
+      for (const turnState of ['IDLE', 'LISTENING', 'THINKING', 'SPEAKING']) {
+        for (const sleeping of [false, true]) {
+          for (const reducedMotion of [false, true]) {
+            const resolve = createFaceFrameResolver();
+            let previousEqualizerBand;
+            // Includes complete blink/wink/breath cycles and expressive entrances.
+            for (let elapsedMs = 0; elapsedMs < 22000; elapsedMs += 137) {
+              const options = {
+                emotion, turnState, sleeping, reducedMotion, elapsedMs,
+                expressionElapsedMs: elapsedMs + 71,
+                mouthLevel: (elapsedMs % 1100) / 1100, previousEqualizerBand,
+              };
+              const frame = resolve(options);
+              expect(frame).toEqual(resolveFaceFrame(options));
+              expect(resolve(options)).toBe(frame);
+              previousEqualizerBand = frame.speaking ? frame.equalizerBand : undefined;
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('builds fewer than 120 neutral idle frames across 1800 display ticks', () => {
+    const resolve = createFaceFrameResolver();
+    let previousFrame;
+    let changedFrames = 0;
+    for (let tick = 0; tick < 1800; tick += 1) {
+      const frame = resolve({ elapsedMs: tick * 1000 / 30 });
+      if (frame !== previousFrame) changedFrames += 1;
+      previousFrame = frame;
+    }
+    expect(changedFrames).toBeGreaterThan(1);
+    expect(changedFrames).toBeLessThan(120);
+  });
+});
 
 function bounds(rectangles) {
   const left = Math.min(...rectangles.map((item) => item.x));

@@ -68,6 +68,8 @@ revokes authority and fails pending calls. The next run waits for authoritative
 terminal status and pending-call cleanup. Tools never replay. `accepted` is a
 receipt; the handler waits for a valid terminal result within five seconds,
 including activation and transport time.
+Native activation wakes waiting tool calls immediately; a bounded interrupt
+check remains while waiting, within the same original deadline.
 
 If a run has already completed before its first activation, `run.active` only
 acknowledges speech correlation; device tools remain disabled. Failed, cancelled,
@@ -89,6 +91,11 @@ are accepted; they are deleted before responding. Responses expose no paths,
 provider exceptions or keys. UUID artifacts remain in memory, scoped to
 profile/key/device, with SHA-256 and a 30-minute maximum TTL. Limits: 10 MiB per
 artifact, 32 MiB per response, 64 MiB total. Restart discards artifacts/bindings.
+Audio validation and SHA-256 run once in the existing TTS worker; publication
+and downloads reuse that immutable digest. The HTTP loop owns artifact storage
+and rechecks run authority before publication. Downloads inspect only their
+requested artifact; publication and the periodic sweep reclaim other expired
+artifacts.
 
 At most two speech workers run concurrently. HTTP waits are bounded to 90 seconds
 for STT and 120 seconds for TTS. Python cannot kill an in-flight provider thread:
@@ -110,3 +117,15 @@ tool/schema/manifest consistency, profile/device isolation, cancellation,
 deadline/no-replay behavior, multipart/audio validation, chunk ordering, artifact
 scope/TTL/hash, and cleanup/error privacy. Deployment revision, actual speech
 providers, TLS proxy, Android 6 and Zenbo hardware require separate checks.
+
+For a local, synthetic hot-path comparison against a chosen Git revision:
+
+```sh
+python integrations/hermes-zenbo/tests/perf_probe.py --baseline-ref HEAD
+```
+
+Run before committing to compare the working tree with `HEAD`, or supply a
+previous revision. It measures 32 MiB artifact publication, repeated 8 MiB
+artifact reads and activation-to-tool dispatch; it never invokes speech
+providers or connects to Hermes. Timing varies by host and does not establish
+end-to-end voice or device latency.

@@ -2,11 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   THINKING_TURN_STATES,
+  createFaceFrameResolver,
   interpolateFaceFrames,
   interpolateSleepFrames,
   normalizeEmotion,
   renderFace,
-  resolveFaceFrame,
   resolveSpeechTransitionMouth,
 } from './pixelFaceModel.js';
 
@@ -68,6 +68,7 @@ let wasSpeaking = false;
 let previousEqualizerBand;
 let expressionStartedAt = 0;
 let expressionKey = '';
+const resolveFrame = createFaceFrameResolver();
 
 function withMouth(frame, mouth) {
   return { ...frame, mouth, mouthShadows: [], mouthAccents: [] };
@@ -167,7 +168,7 @@ function draw(time) {
     expressionStartedAt = time;
   }
 
-  let frame = resolveFaceFrame({
+  let frame = resolveFrame({
     emotion: props.emotion,
     mouthLevel: props.mouthLevel,
     sleeping: props.sleeping,
@@ -181,6 +182,7 @@ function draw(time) {
   previousEqualizerBand = frame.speaking ? frame.equalizerBand : undefined;
   frame = transitionEmotion(frame, time);
   frame = transitionSpeech(frame, time);
+  if (frame === displayedFrame) return;
   displayedFrame = frame;
   renderFace(context, frame);
 }

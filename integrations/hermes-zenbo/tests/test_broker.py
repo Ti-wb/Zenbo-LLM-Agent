@@ -254,6 +254,57 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["error"]["code"], "invalid_arguments")
         self.assertEqual(self.events, [])
 
+    async def test_activation_then_immediate_revocation_never_dispatches_waiter(self):
+        task = asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
+                                                       "stop_robot_following", {}))
+        self.tasks.append(task)
+        await asyncio.sleep(0)
+        self.activate()
+        self.broker.deactivate(self.binding, "run-1", "turn-1", "cancelled")
+        self.assertEqual((await task)["error"]["code"], "run_inactive")
+        self.assertEqual(self.events, [])
+
+    async def test_activation_waiter_disconnect_and_interrupt_never_dispatch(self):
+        for disconnect in (False, True):
+            with self.subTest(disconnect=disconnect):
+                interrupted = False
+                task = asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
+                                                               "stop_robot_following", {}, lambda: interrupted))
+                self.tasks.append(task)
+                await asyncio.sleep(0)
+                if disconnect:
+                    self.broker.disconnect(self.binding)
+                else:
+                    interrupted = True
+                self.assertEqual((await task)["error"]["code"], "run_inactive")
+                self.assertEqual(self.events, [])
+
+    async def test_activation_for_another_run_does_not_dispatch_old_waiter(self):
+        task = asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
+                                                       "stop_robot_following", {}))
+        self.tasks.append(task)
+        await asyncio.sleep(0)
+        self.statuses["run-2"] = {"session_id": "session-1", "status": "running"}
+        self.broker.activate(self.binding, "run-2", "turn-2")
+        self.assertEqual((await task)["error"]["code"], "run_busy")
+        self.assertEqual(self.events, [])
+
+    async def test_multiple_waiters_are_woken_by_one_activation_without_lost_wakeup(self):
+        tasks = [asyncio.create_task(self.broker.execute(("robot", "session-1", "run-1"),
+                                                        "stop_robot_following", {})) for _ in range(3)]
+        self.tasks.extend(tasks)
+        await asyncio.sleep(0)
+        self.activate()
+        for _ in range(100):
+            if len(self.events) == 3 or all(task.done() for task in tasks):
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(len(self.events), 3)
+        for call in self.events:
+            self.broker.result(self.binding, self.result(call, output={"accepted": True}))
+        self.assertEqual(await asyncio.gather(*tasks), [{"accepted": True}] * 3)
+        self.assertFalse(self.binding.pending)
+
     async def test_failure_text_is_not_echoed_to_model(self):
         self.activate()
         task, call = await self.start_call()

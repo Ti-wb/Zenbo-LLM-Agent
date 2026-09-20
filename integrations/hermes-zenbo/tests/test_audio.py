@@ -1,14 +1,18 @@
 import asyncio
+import base64
 import contextvars
+import hashlib
 import importlib
 import io
 import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 import wave
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,20 +50,49 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
 
     def test_artifact_scope_digest_ttl_and_atomic_batch(self):
         store = audio.ArtifactStore(ttl=100)
-        manifest = store.add_many("robot", "device-1", "principal", [wav_bytes(), b"ID3audio"])
+        manifest = store.add_many("robot", "device-1", "principal", [audio.prepare_audio(data) for data in [wav_bytes(), b"ID3audio"]])
         self.assertEqual([item["mimeType"] for item in manifest], ["audio/wav", "audio/mpeg"])
         self.assertNotIn("path", json.dumps(manifest))
         artifact = store.get(manifest[0]["artifactId"], "robot", "device-1", "principal")
-        self.assertTrue(store.digest(artifact).startswith("sha-256="))
+        expected_hash = hashlib.sha256(wav_bytes()).digest()
+        self.assertEqual(manifest[0]["sha256"], expected_hash.hex())
+        self.assertEqual(store.digest(artifact), "sha-256=" + base64.b64encode(expected_hash).decode("ascii"))
         for identity in (("default", "device-1", "principal"), ("robot", "other", "principal"), ("robot", "device-1", "other")):
             with self.assertRaises(audio.Rejected):
                 store.get(manifest[0]["artifactId"], *identity)
         with self.assertRaises(audio.Rejected):
-            store.add_many("robot", "device-1", "principal", [wav_bytes(), b"unsupported"])
+            store.add_many("robot", "device-1", "principal", [audio.prepare_audio(wav_bytes()), b"unsupported"])
         self.assertEqual(len(store.items), 2)
         artifact.expires = time.time() - 1
         with self.assertRaises(audio.Rejected):
             store.get(manifest[0]["artifactId"], "robot", "device-1", "principal")
+
+    def test_artifact_reads_reuse_digest_without_scanning_other_items(self):
+        store = audio.ArtifactStore()
+        manifest = store.add_many("robot", "device", "principal", [audio.prepare_audio(wav_bytes())])
+        class NoScanDict(dict):
+            def items(self):
+                raise AssertionError("An artifact GET must not scan the store")
+            def values(self):
+                raise AssertionError("An artifact GET must not scan the store")
+        store.items = NoScanDict(store.items)
+        with patch.object(audio.hashlib, "sha256", side_effect=AssertionError("Audio must not be rehashed on GET")):
+            for _ in range(3):
+                item = store.get(manifest[0]["artifactId"], "robot", "device", "principal")
+                self.assertEqual(store.digest(item), "sha-256=" + base64.b64encode(item.sha256).decode("ascii"))
+
+    def test_capacity_rejection_is_atomic_and_expired_items_are_reclaimed(self):
+        prepared = audio.prepare_audio(wav_bytes())
+        store = audio.ArtifactStore(max_bytes=len(prepared.data) * 2)
+        first = store.add_many("robot", "device", "principal", [prepared])[0]
+        with self.assertRaises(audio.Rejected) as caught:
+            store.add_many("robot", "device", "principal", [prepared, prepared])
+        self.assertEqual(caught.exception.code, "audio_capacity_exceeded")
+        self.assertEqual(list(store.items), [first["artifactId"]])
+        store.items[first["artifactId"]].expires = time.time() - 1
+        store.add_many("robot", "device", "principal", [prepared, prepared])
+        self.assertEqual(len(store.items), 2)
+        self.assertNotIn(first["artifactId"], store.items)
 
     async def test_stt_copies_context_and_deletes_original_on_success_and_failure(self):
         profile = contextvars.ContextVar("test_profile")
@@ -92,8 +125,17 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
             paths.extend([first, second])
             return json.dumps({"success": True, "file_paths": [str(first), str(second)], "private": "not exported"})
         speech = audio.Speech(self.tts_compat(speak))
-        result = await speech.synthesize("你好")
-        self.assertEqual(result, [wav_bytes(), b"ID3second"])
+        worker_threads = []
+        real_hash = hashlib.sha256
+        def checked_hash(data):
+            worker_threads.append(threading.get_ident())
+            self.assertNotEqual(threading.get_ident(), threading.main_thread().ident)
+            return real_hash(data)
+        with patch.object(audio.hashlib, "sha256", checked_hash):
+            result = await speech.synthesize("你好")
+        self.assertEqual([item.data for item in result], [wav_bytes(), b"ID3second"])
+        self.assertEqual(len(worker_threads), 2)
+        self.assertEqual([item.sha256 for item in result], [real_hash(item.data).digest() for item in result])
         self.assertTrue(all(not path.exists() for path in paths))
 
     async def test_tts_rejects_path_escape_and_does_not_delete_external_file(self):
@@ -124,7 +166,7 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
         checked = []
         speech = audio.Speech(types.SimpleNamespace(tts_output_dir=output_dir, speak=speak,
                                                     check_tts_output_path=lambda path: checked.append(path)))
-        self.assertEqual(await speech.synthesize("你好"), [wav_bytes()])
+        self.assertEqual([item.data for item in await speech.synthesize("你好")], [wav_bytes()])
         self.assertTrue(parent.is_dir())
         self.assertFalse(paths[0].parent.exists())
         self.assertEqual(checked, paths)
