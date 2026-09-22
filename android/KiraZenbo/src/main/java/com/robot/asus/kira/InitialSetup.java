@@ -14,13 +14,21 @@ final class InitialSetup {
     static synchronized void configure(GatewaySettings settings, DeviceCredentialStore credentials,
                                        AdminPinStore pinStore, JSONObject body) throws Exception {
         if (pinStore.isConfigured()) throw new IllegalStateException("Initial setup is already complete");
+        validate(body);
+        configure(settings, credentials, pinStore, body, pinStore.prepareSetup(body.optString("pin", "")));
+    }
+
+    static synchronized void configure(GatewaySettings settings, DeviceCredentialStore credentials,
+                                       AdminPinStore pinStore, JSONObject body,
+                                       AdminPinStore.PreparedVerifier verifier) throws Exception {
+        if (pinStore.isConfigured()) throw new IllegalStateException("Initial setup is already complete");
         JSONObject config = validate(body);
         JSONObject snapshot = settings.snapshotForRollback();
         String previousCredential = credentials.load();
         try {
             settings.update(config);
             credentials.save(body.getString("apiKey").trim());
-            pinStore.setup(body.getString("pin"));
+            pinStore.setup(verifier);
         } catch (Exception error) {
             pinStore.clear();
             settings.restore(snapshot);

@@ -206,7 +206,7 @@
       "post": {
         "operationId": "setupRuntimeSettings",
         "summary": "Atomically configure the initial PIN, Gateway, token, trust, profile, and context",
-        "description": "Available only while setupRequired is true. Validation and persistence are atomic: a failure stores neither the PIN nor any Gateway setting.",
+        "description": "Available only while setupRequired is true. Validation and persistence are atomic: a failure stores neither the PIN nor any Gateway setting. PIN hashing uses a single process-wide worker with no waiting queue, shared with unlock. Concurrent PIN operations receive 429 RATE_LIMITED with Retry-After. Before committing configuration, Native rechecks the original renderer session, its expiry, the live request socket and runtime lifecycle; stale requests cannot configure or unlock a replacement session.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -255,6 +255,7 @@
       "post": {
         "operationId": "unlockSettings",
         "summary": "Verify the admin PIN and create a time-bounded unlock lease",
+        "description": "PIN verification runs outside the HTTP event loop on the same bounded worker used by setup. Concurrent PIN operations receive 429 RATE_LIMITED with Retry-After and are not queued. Incorrect attempts retain exponential backoff from verification completion, including attempts whose renderer disconnected or expired. A successful result grants the lease only to the original still-current renderer session and live request; runtime stop or renderer replacement invalidates late success.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"

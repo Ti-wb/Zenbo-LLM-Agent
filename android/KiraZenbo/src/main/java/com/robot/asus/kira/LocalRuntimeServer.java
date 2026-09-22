@@ -51,6 +51,7 @@ public final class LocalRuntimeServer {
     private final GatewaySettings settings;
     private final DeviceCredentialStore credentialStore;
     private final AdminPinStore adminPinStore;
+    private final AdminPinWorker pinWorker = new AdminPinWorker();
     private final RemoteSessionCoordinator coordinator;
     private final RobotGateway robotGateway;
     private final DeviceHardware deviceHardware;
@@ -69,6 +70,7 @@ public final class LocalRuntimeServer {
     private volatile long unlockExpiresAt;
     private int failedPinAttempts;
     private long nextPinAttemptAt;
+    private long pinLifecycle;
     private int failedBootstrapAttempts;
     private long nextBootstrapAttemptAt;
 
@@ -100,11 +102,15 @@ public final class LocalRuntimeServer {
         registerRoutes();
         server.listenLoopback(port);
         started = true;
+        pinLifecycle++;
+        pinWorker.start();
         Log.i(TAG, "Local runtime started on http://127.0.0.1:" + port);
     }
 
     public synchronized void stop() {
         if (lanRemote != null) lanRemote.close();
+        pinLifecycle++;
+        pinWorker.stop();
         if (!started) return;
         server.stop();
         WebSocket[] closing;
@@ -219,55 +225,8 @@ public final class LocalRuntimeServer {
             sendJson(response, 200, settingsJson());
         });
         server.addAction("PUT", "/api/v2/settings$", this::updateSettings, headers -> new JSONObjectBody());
-        server.post("/api/v2/settings/setup$", (request, response) -> {
-            if (!requireSession(request, response)) return;
-            JSONObject body = readJson(request);
-            if (adminPinStore.isConfigured()) {
-                sendError(response, 409, "CONFLICT", "Admin PIN is already configured");
-                return;
-            }
-            try {
-                InitialSetup.configure(settings, credentialStore, adminPinStore, body);
-                failedPinAttempts = 0;
-                nextPinAttemptAt = 0L;
-                unlockExpiresAt = System.currentTimeMillis() + 15L * 60L * 1000L;
-                coordinator.reloadGateway();
-                sendJson(response, 200, settingsJson());
-            } catch (Exception error) {
-                sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
-            }
-        });
-
-        server.post("/api/v2/settings/unlock$", (request, response) -> {
-            if (!requireSession(request, response)) return;
-            long now = System.currentTimeMillis();
-            if (!adminPinStore.isConfigured()) {
-                sendError(response, 409, "SETUP_REQUIRED", "Set up the admin PIN first");
-                return;
-            }
-            if (now < nextPinAttemptAt) {
-                response.getHeaders().set("Retry-After", String.valueOf(Math.max(1L, (nextPinAttemptAt - now + 999L) / 1000L)));
-                sendError(response, 429, "RATE_LIMITED", "Try again later");
-                return;
-            }
-            JSONObject body = readJson(request);
-            try {
-                requireOnlyKeys(body, "pin");
-                AdminPinStore.validatePin(body.optString("pin", ""));
-                if (!adminPinStore.verify(body.optString("pin", ""))) {
-                    failedPinAttempts++;
-                    nextPinAttemptAt = now + Math.min(30_000L, 1000L << Math.min(failedPinAttempts - 1, 5));
-                    sendError(response, 401, "UNAUTHORIZED", "Admin PIN is incorrect");
-                    return;
-                }
-                failedPinAttempts = 0;
-                nextPinAttemptAt = 0L;
-                unlockExpiresAt = now + 15L * 60L * 1000L;
-                sendJson(response, 200, json("unlocked", true, "unlockExpiresAt", isoTime(unlockExpiresAt)));
-            } catch (Exception error) {
-                sendError(response, 400, "INVALID_PIN", error.getMessage());
-            }
-        });
+        server.post("/api/v2/settings/setup$", this::setupSettings);
+        server.post("/api/v2/settings/unlock$", this::unlockSettings);
 
         server.post("/api/v2/settings/test$", (request, response) -> {
             if (!requireSession(request, response)) return;
@@ -586,6 +545,104 @@ public final class LocalRuntimeServer {
         }
         JSONObject output = result.optJSONObject("result");
         sendJson(response,200,status ? deviceStatus() : capture ? RemoteSessionCoordinator.cameraMetadata(output) : json("accepted",true));
+    }
+
+    private synchronized void setupSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireSession(request, response)) return;
+        if (adminPinStore.isConfigured()) {
+            sendError(response, 409, "CONFLICT", "Admin PIN is already configured");
+            return;
+        }
+        JSONObject body = readJson(request);
+        try { InitialSetup.validate(body); }
+        catch (Exception error) {
+            sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
+            return;
+        }
+        String session = cookieValue(request, SESSION_COOKIE);
+        long lifecycle = pinLifecycle;
+        boolean accepted = pinWorker.submit(() -> adminPinStore.prepareSetup(body.getString("pin")),
+                callback -> request.getSocket().getServer().post(callback), result -> {
+                    synchronized (LocalRuntimeServer.this) {
+                        if (!started || lifecycle != pinLifecycle) return;
+                        if (!pinRequestStillAuthorized(session, request, response)) return;
+                        try {
+                            if (result.error != null) throw result.error;
+                            InitialSetup.configure(settings, credentialStore, adminPinStore, body, result.value);
+                            failedPinAttempts = 0;
+                            nextPinAttemptAt = 0L;
+                            unlockExpiresAt = System.currentTimeMillis() + 15L * 60L * 1000L;
+                            coordinator.reloadGateway();
+                            sendJson(response, 200, settingsJson());
+                        } catch (Exception error) {
+                            sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
+                        }
+                    }
+                });
+        if (!accepted) sendPinBusy(response);
+    }
+
+    private synchronized void unlockSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
+        if (!requireSession(request, response)) return;
+        long now = System.currentTimeMillis();
+        if (!adminPinStore.isConfigured()) {
+            sendError(response, 409, "SETUP_REQUIRED", "Set up the admin PIN first");
+            return;
+        }
+        if (now < nextPinAttemptAt) {
+            response.getHeaders().set("Retry-After", String.valueOf(Math.max(1L, (nextPinAttemptAt - now + 999L) / 1000L)));
+            sendError(response, 429, "RATE_LIMITED", "Try again later");
+            return;
+        }
+        JSONObject body = readJson(request);
+        final String pin;
+        try {
+            requireOnlyKeys(body, "pin");
+            pin = body.optString("pin", "");
+            AdminPinStore.validatePin(pin);
+        } catch (Exception error) {
+            sendError(response, 400, "INVALID_PIN", error.getMessage());
+            return;
+        }
+        String session = cookieValue(request, SESSION_COOKIE);
+        long lifecycle = pinLifecycle;
+        boolean accepted = pinWorker.submit(() -> adminPinStore.verify(pin),
+                callback -> request.getSocket().getServer().post(callback), result -> {
+                    synchronized (LocalRuntimeServer.this) {
+                        if (!started || lifecycle != pinLifecycle) return;
+                        long completedAt = System.currentTimeMillis();
+                        boolean verified = result.error == null && Boolean.TRUE.equals(result.value);
+                        // An expired/disconnected renderer still spent a real PIN attempt.
+                        // Backoff begins after hashing, so slow devices retain the full delay.
+                        if (!verified) {
+                            failedPinAttempts = Math.min(failedPinAttempts + 1, 6);
+                            nextPinAttemptAt = completedAt + Math.min(30_000L, 1000L << (failedPinAttempts - 1));
+                        }
+                        if (!pinRequestStillAuthorized(session, request, response)) return;
+                        if (!verified) {
+                            sendError(response, 401, "UNAUTHORIZED", "Admin PIN is incorrect");
+                            return;
+                        }
+                        failedPinAttempts = 0;
+                        nextPinAttemptAt = 0L;
+                        unlockExpiresAt = completedAt + 15L * 60L * 1000L;
+                        sendJson(response, 200, json("unlocked", true, "unlockExpiresAt", isoTime(unlockExpiresAt)));
+                    }
+                });
+        if (!accepted) sendPinBusy(response);
+    }
+
+    private boolean pinRequestStillAuthorized(String session, AsyncHttpServerRequest request,
+                                              AsyncHttpServerResponse response) {
+        if (!request.getSocket().isOpen()) return false;
+        if (validSession(session)) return true;
+        sendError(response, 401, "SESSION_EXPIRED", "Create a renderer session first");
+        return false;
+    }
+
+    private void sendPinBusy(AsyncHttpServerResponse response) {
+        response.getHeaders().set("Retry-After", "1");
+        sendError(response, 429, "RATE_LIMITED", "A PIN request is still being processed");
     }
 
     private void registerSessionRoute(String path) {

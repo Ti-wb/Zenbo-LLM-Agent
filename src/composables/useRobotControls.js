@@ -6,7 +6,9 @@ export function useRobotControls(open, options = {}) {
   const transport = options.transport || new RuntimeTransport();
   const imageUrls = options.imageUrls || globalThis.URL;
   const status = ref(null);
-  const error = ref('');
+  const actionError = ref('');
+  const statusError = ref('');
+  const error = computed(() => actionError.value || statusError.value);
   const pending = ref('');
   const online = ref(false);
   const previewEnabled = ref(false);
@@ -46,14 +48,15 @@ export function useRobotControls(open, options = {}) {
       if (disposed || !open.value || current !== generation || revision !== statusRevision) return;
       status.value = result;
       online.value = true;
+      statusError.value = '';
       if (!result.cameraEnabled) {
         previewEnabled.value = false;
         stopPreview();
       }
     } catch (cause) {
-      if (current !== generation || disposed) return;
+      if (disposed || !open.value || current !== generation || revision !== statusRevision) return;
       online.value = false;
-      error.value = deviceMessage(cause);
+      statusError.value = deviceMessage(cause);
       clearImage();
     }
   }
@@ -101,7 +104,7 @@ export function useRobotControls(open, options = {}) {
     const current = generation;
     statusRevision += 1;
     pending.value = name;
-    error.value = '';
+    actionError.value = '';
     try {
       await operation();
       if (disposed || current !== generation) return false;
@@ -109,7 +112,7 @@ export function useRobotControls(open, options = {}) {
       await refresh();
       return true;
     } catch (cause) {
-      if (!disposed && current === generation) error.value = deviceMessage(cause);
+      if (!disposed && current === generation) actionError.value = deviceMessage(cause);
       return false;
     } finally {
       if (pending.value === name) pending.value = '';
@@ -157,7 +160,8 @@ export function useRobotControls(open, options = {}) {
     generation += 1;
     clearTimeout(statusTimer);
     if (visible) {
-      error.value = '';
+      actionError.value = '';
+      statusError.value = '';
       void pollStatus();
     } else {
       previewEnabled.value = false;

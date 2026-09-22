@@ -31,6 +31,86 @@ async function mount(options = {}) {
 }
 
 describe('robot controls lifecycle', () => {
+  it('clears a polling timeout when the next status poll succeeds', async () => {
+    vi.useFakeTimers();
+    const { controls, transport, currentStatus } = await mount();
+    transport.getDeviceStatus.mockRejectedValueOnce(new DOMException('Poll timed out', 'AbortError'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(controls.online.value).toBe(false);
+    expect(controls.error.value).toContain('連線逾時');
+    currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(controls.online.value).toBe(true);
+    expect(controls.status.value.remote.enabled).toBe(true);
+    expect(controls.error.value).toBe('');
+  });
+
+  it('ignores an old poll failure after a newer LAN operation has refreshed its status', async () => {
+    const { controls, transport, currentStatus } = await mount();
+    let rejectOldPoll;
+    transport.getDeviceStatus.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOldPoll = reject; }));
+    const oldPoll = controls.refresh();
+    transport.setRemoteEnabled.mockImplementationOnce(async () => {
+      currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
+    });
+    expect(await controls.remote(true, '123456')).toBe(true);
+    expect(controls.online.value).toBe(true);
+    rejectOldPoll(new DOMException('Old poll timed out', 'AbortError'));
+    await oldPoll;
+    expect(controls.online.value).toBe(true);
+    expect(controls.status.value.remote.enabled).toBe(true);
+    expect(controls.error.value).toBe('');
+  });
+
+  it('recovers a poll timeout during PIN unlock when LAN activation succeeds', async () => {
+    const { controls, transport, currentStatus } = await mount();
+    let completeUnlock;
+    transport.unlockRuntimeSettings.mockImplementationOnce(() => new Promise((resolve) => { completeUnlock = resolve; }));
+    const enable = controls.remote(true, '123456');
+    transport.getDeviceStatus.mockRejectedValueOnce(new DOMException('Poll timed out during unlock', 'AbortError'));
+    await controls.refresh();
+    expect(controls.error.value).toContain('連線逾時');
+    transport.setRemoteEnabled.mockImplementationOnce(async () => {
+      currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
+    });
+    completeUnlock({ unlocked: true });
+    expect(await enable).toBe(true);
+    expect(controls.status.value.remote.enabled).toBe(true);
+    expect(controls.online.value).toBe(true);
+    expect(controls.error.value).toBe('');
+  });
+
+  it('keeps an uncertain action failure visible when status polling recovers', async () => {
+    vi.useFakeTimers();
+    const { controls, transport } = await mount();
+    transport.sendDeviceAction.mockRejectedValueOnce(new TypeError('Action response was lost'));
+    expect(await controls.action('forward')).toBe(false);
+    const actionError = controls.error.value;
+    expect(actionError).toContain('操作未完成');
+    transport.getDeviceStatus.mockRejectedValueOnce(new DOMException('Poll timed out', 'AbortError'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(controls.online.value).toBe(false);
+    expect(controls.error.value).toBe(actionError);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(controls.online.value).toBe(true);
+    expect(controls.error.value).toBe(actionError);
+    expect(transport.sendDeviceAction).toHaveBeenCalledExactlyOnceWith('forward');
+  });
+
+  it('ignores a pending poll rejection after the controls are closed', async () => {
+    const { controls, transport, open } = await mount();
+    let rejectPoll;
+    transport.getDeviceStatus.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPoll = reject; }));
+    const poll = controls.refresh();
+    open.value = false;
+    await nextTick();
+    rejectPoll(new DOMException('Closed poll timed out', 'AbortError'));
+    await poll;
+    expect(controls.status.value).toBeNull();
+    expect(controls.online.value).toBe(false);
+    expect(controls.error.value).toBe('');
+  });
+
   it.each([
     { cameraEnabled: true, cameraState: 'ready', cameraError: '' },
     { cameraEnabled: false, cameraState: 'releasing', cameraError: '' },

@@ -31,27 +31,43 @@ public final class AdminPinStore {
         return preferences.contains(KEY_SALT) && preferences.contains(KEY_HASH);
     }
 
-    public synchronized void setup(String pin) throws Exception {
-        if (isConfigured()) throw new IllegalStateException("Admin PIN is already configured");
+    public void setup(String pin) throws Exception {
+        setup(prepareSetup(pin));
+    }
+
+    PreparedVerifier prepareSetup(String pin) throws Exception {
         validatePin(pin);
         byte[] salt = new byte[16];
         random.nextBytes(salt);
         byte[] hash = derive(pin, salt, ITERATIONS);
+        return new PreparedVerifier(salt, hash);
+    }
+
+    synchronized void setup(PreparedVerifier verifier) throws Exception {
+        if (isConfigured()) throw new IllegalStateException("Admin PIN is already configured");
         if (!preferences.edit()
-                .putString(KEY_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
-                .putString(KEY_HASH, Base64.encodeToString(hash, Base64.NO_WRAP))
+                .putString(KEY_SALT, Base64.encodeToString(verifier.salt, Base64.NO_WRAP))
+                .putString(KEY_HASH, Base64.encodeToString(verifier.hash, Base64.NO_WRAP))
                 .putInt(KEY_ITERATIONS, ITERATIONS)
                 .commit()) {
             throw new IllegalStateException("Could not store PIN verifier");
         }
     }
 
-    public synchronized boolean verify(String pin) {
-        if (!isConfigured() || pin == null) return false;
+    public boolean verify(String pin) {
+        if (pin == null) return false;
         try {
-            byte[] salt = Base64.decode(preferences.getString(KEY_SALT, ""), Base64.NO_WRAP);
-            byte[] expected = Base64.decode(preferences.getString(KEY_HASH, ""), Base64.NO_WRAP);
-            byte[] actual = derive(pin, salt, preferences.getInt(KEY_ITERATIONS, ITERATIONS));
+            byte[] salt;
+            byte[] expected;
+            int iterations;
+            // Status/settings queries must never wait on the expensive derivation.
+            synchronized (this) {
+                if (!isConfigured()) return false;
+                salt = Base64.decode(preferences.getString(KEY_SALT, ""), Base64.NO_WRAP);
+                expected = Base64.decode(preferences.getString(KEY_HASH, ""), Base64.NO_WRAP);
+                iterations = preferences.getInt(KEY_ITERATIONS, ITERATIONS);
+            }
+            byte[] actual = derive(pin, salt, iterations);
             return MessageDigest.isEqual(expected, actual);
         } catch (Exception error) {
             return false;
@@ -65,6 +81,16 @@ public final class AdminPinStore {
     public static void validatePin(String pin) {
         if (pin == null || !pin.matches("[0-9]{6,12}")) {
             throw new IllegalArgumentException("Admin PIN must contain 6 to 12 digits");
+        }
+    }
+
+    static final class PreparedVerifier {
+        private final byte[] salt;
+        private final byte[] hash;
+
+        private PreparedVerifier(byte[] salt, byte[] hash) {
+            this.salt = salt;
+            this.hash = hash;
         }
     }
 
