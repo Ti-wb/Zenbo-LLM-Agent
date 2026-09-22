@@ -136,6 +136,13 @@ async function manualListeningHarness(conversation = {}) {
   return { ...harness, transport, initial };
 }
 
+async function activeTurnHarness(conversation = {}, status = {}) {
+  const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING,
+    lastSequence: 3, ...conversation };
+  const transport = fakeTransport({ status: { gatewayState: 'READY', ...status }, conversation: initial });
+  return { ...await mountController({ transport, conversation: initial }), transport, initial };
+}
+
 describe('manual listening intent', () => {
   it('signals attention only for actual speech and audio playback, then returns idle', async () => {
     const { app, controller, transport, vadCallbacks, runtime, playback } = await manualListeningHarness();
@@ -757,9 +764,7 @@ describe('go_to_sleep result and cancellation ordering', () => {
 
 describe('Native motion preference', () => {
   it('waits for Native confirmation, ignores repeat clicks and keeps failed updates separate from speech', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY', motionEnabled: false }, conversation: initial });
-    const { app, controller, runtime, playback, vad } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, playback, vad, transport } = await activeTurnHarness({ turnState: TURN_STATES.SPEAKING }, { motionEnabled: false });
     expect(runtime.motionEnabled).toBe(false);
     let confirm;
     transport.setMotionEnabled.mockImplementationOnce(() => new Promise((resolve) => { confirm = resolve; }));
@@ -1005,9 +1010,7 @@ describe('automatic gateway reconnect', () => {
   }
 
   it('discards capture across disconnect and waits for a fresh manual activation after READY', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, runtime, vad, vadCallbacks, timers } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks, timers, transport } = await activeTurnHarness({ activeTurnId: '', turnState: TURN_STATES.IDLE });
     vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
     vad.pause.mockImplementation(async () => { vad.isRunning.value = false; });
     await controller.wakeUp();
@@ -1039,9 +1042,7 @@ describe('automatic gateway reconnect', () => {
   });
 
   it.each([false, true])('waits for an explicit recoverable terminal, including when it arrives after READY: %s', async (terminalAfterReady) => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.TRANSCRIBING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, runtime, vad, transport } = await activeTurnHarness({ turnState: TURN_STATES.TRANSCRIBING });
     vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
     await transport.emit('event', gatewayState(4, 'OFFLINE'));
     await transport.emit('event', gatewayState(5, 'CONNECTING'));
@@ -1102,9 +1103,7 @@ describe('automatic gateway reconnect', () => {
   });
 
   it('preserves manual sleep while reconnecting and ignores the old turn terminal after READY', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.TRANSCRIBING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, runtime, vad, transport } = await activeTurnHarness({ turnState: TURN_STATES.TRANSCRIBING });
     await transport.emit('event', gatewayState(4, 'OFFLINE'));
     await transport.emit('event', {
       protocolVersion: '2.0', type: 'local.screen.state', sequence: 5,
@@ -1128,9 +1127,7 @@ describe('automatic gateway reconnect', () => {
 describe('runtime authoritative recovery', () => {
   it.each([RuntimeEventType.TURN_CANCELLED, RuntimeEventType.TURN_ERROR, RuntimeEventType.TURN_COMPLETED])(
     'keeps resumed listening intact when a cancelled turn later emits %s', async (type) => {
-      const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
-      const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-      const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+      const { app, controller, playback, runtime, vad, transport, initial } = await activeTurnHarness({ turnState: TURN_STATES.SPEAKING });
       vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
       await controller.toggleListening();
       expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
@@ -1151,9 +1148,7 @@ describe('runtime authoritative recovery', () => {
   );
 
   it.each([false, true])('stops local audio and revokes late tools before a slow cancel ACK (moving=%s)', async (moving) => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, controller, playback, runtime, vad, transport, initial } = await activeTurnHarness();
     runtime.robotMoving = moving;
     let finishCancel;
     transport.cancelTurn.mockImplementation(() => new Promise((resolve) => { finishCancel = resolve; }));
@@ -1205,9 +1200,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('preserves screen-off sleep when an older interaction cancellation ACK arrives', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, vad, transport } = await activeTurnHarness({ turnState: TURN_STATES.SPEAKING });
     let finishCancel;
     transport.cancelTurn.mockImplementationOnce(() => new Promise((resolve) => { finishCancel = resolve; }));
     const cancellation = controller.toggleListening();
@@ -1226,9 +1219,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it.each([false, true])('converges a rejected cancellation ACK without duplicate cancellation (moving=%s)', async (moving) => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.SPEAKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, controller, playback, runtime, vad, transport, initial } = await activeTurnHarness({ turnState: TURN_STATES.SPEAKING });
     runtime.robotMoving = moving;
     let rejectCancel;
     transport.cancelTurn.mockImplementation(() => new Promise((_resolve, reject) => { rejectCancel = reject; }));
@@ -1257,9 +1248,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('returns to awake idle while the moving robot cancellation ACK is pending', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.LISTENING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, playback, runtime, vad } = await mountController({ transport, conversation: initial });
+    const { app, controller, playback, runtime, vad, transport } = await activeTurnHarness({ activeTurnId: '', turnState: TURN_STATES.LISTENING });
     vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
     await controller.toggleListening();
     vad.start.mockClear();
@@ -1279,9 +1268,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('handles cancellation without waiting for the first audio artifact download', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, transport } = await activeTurnHarness();
     let finishDownload;
     transport.resolveAudio.mockImplementation(() => new Promise((resolve) => { finishDownload = resolve; }));
     await transport.emit('event', {
@@ -1301,9 +1288,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('commits normal controls without jumping over later conversation events', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime } = await mountController({ transport, conversation: initial });
+    const { app, runtime, transport } = await activeTurnHarness();
     await transport.emit('event', {
       protocolVersion: '2.0', eventId: '00000000-0000-4000-8000-000000000004',
       type: 'local.gateway.state', sequence: 4, timestamp: '2026-09-17T00:00:00.000Z', data: { state: 'READY' },
@@ -1319,9 +1304,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('plays every artifact in order and holds the emotion until the final segment ends', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime, timers } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, timers, transport } = await activeTurnHarness();
     runtime.queueEmotion(Emotion.HAPPY, 0);
     const activate = vi.spyOn(runtime, 'activatePendingEmotion');
     const artifacts = [{ artifactId: 'part-1' }, { artifactId: 'part-2' }];
@@ -1351,9 +1334,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('cancels the whole playlist while the next artifact is still downloading', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime, timers } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, timers, transport } = await activeTurnHarness();
     let finishDownload;
     transport.resolveAudio.mockResolvedValueOnce(new Blob(['one'])).mockImplementationOnce(() => new Promise((resolve) => { finishDownload = resolve; }));
     runtime.queueEmotion(Emotion.EXCITED);
@@ -1381,9 +1362,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('stops the playlist on a failed artifact instead of skipping to later speech', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: 'turn-1', turnState: TURN_STATES.THINKING, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime, timers } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, timers, transport } = await activeTurnHarness();
     transport.resolveAudio.mockResolvedValueOnce(new Blob(['one'])).mockRejectedValueOnce(new Error('Audio artifact digest does not match metadata.'));
     await transport.emit('event', {
       protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 4, turnId: 'turn-1',
@@ -1401,12 +1380,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('clears captions only on actual speech and preserves later events when the upload ACK arrives late', async () => {
-    const initial = {
-      sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3,
-      transcript: '上一句語音', assistantText: '上一輪回答',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, runtime, vad, vadCallbacks } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, vad, vadCallbacks, transport } = await activeTurnHarness({ activeTurnId: '', turnState: TURN_STATES.IDLE, transcript: '上一句語音', assistantText: '上一輪回答' });
     vad.start.mockImplementation(async () => { vad.isRunning.value = true; });
     await controller.wakeUp();
     expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
@@ -1440,9 +1414,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('waits for TURN_BUSY with the same recorded audio and turn UUID, then accepts the retry', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, runtime, timers, vadCallbacks } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, timers, vadCallbacks, transport } = await activeTurnHarness({ activeTurnId: '', turnState: TURN_STATES.IDLE });
     await controller.toggleListening();
     transport.uploadVoiceTurn.mockRejectedValueOnce(Object.assign(new Error('Previous run is still cancelling.'), { code: 'TURN_BUSY' })).mockResolvedValueOnce({ accepted: true });
     await vadCallbacks.onSpeechStart();
@@ -1461,9 +1433,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('does not retry a busy upload after the user cancels it', async () => {
-    const initial = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, controller, runtime, timers, vadCallbacks } = await mountController({ transport, conversation: initial });
+    const { app, controller, runtime, timers, vadCallbacks, transport } = await activeTurnHarness({ activeTurnId: '', turnState: TURN_STATES.IDLE });
     await controller.toggleListening();
     transport.uploadVoiceTurn.mockRejectedValue(Object.assign(new Error('Busy'), { code: 'TURN_BUSY' }));
     await vadCallbacks.onSpeechStart();
@@ -1478,16 +1448,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('synchronizes playback mouth level into runtime state and returns it to zero', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.SPEAKING,
-      lastSequence: 3,
-      transcript: '',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, transport } = await activeTurnHarness({ turnState: TURN_STATES.SPEAKING, transcript: '', assistantText: '' });
 
     playback.mouthLevel.value = 0.64;
     await nextTick();
@@ -1500,16 +1461,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('activates a pending backend emotion only when TTS playback starts and clears it when playback ends', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.THINKING,
-      lastSequence: 3,
-      transcript: '',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime } = await mountController({ transport, conversation: initial });
+    const { app, playback, runtime, transport } = await activeTurnHarness({ transcript: '', assistantText: '' });
 
     await transport.emit('event', {
       protocolVersion: '2.0',
@@ -1567,16 +1519,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('re-reads the local conversation for a Native snapshot before later turn events', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.THINKING,
-      lastSequence: 5,
-      transcript: '保留這段話',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime } = await mountController({ transport, conversation: initial });
+    const { app, runtime, transport, initial } = await activeTurnHarness({ lastSequence: 5, transcript: '保留這段話', assistantText: '' });
     transport.getConversation.mockResolvedValueOnce({
       ...initial,
       turnState: TURN_STATES.AWAITING_TOOL,
@@ -1609,16 +1552,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('refreshes connection state without skipping retained Native events after reconnect', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.THINKING,
-      lastSequence: 3,
-      transcript: '',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, runtime } = await mountController({ transport, conversation: initial });
+    const { app, runtime, transport, initial } = await activeTurnHarness({ transcript: '', assistantText: '' });
     await transport.emit('connection', { state: CONNECTION_STATES.DEGRADED });
     transport.getConversation.mockResolvedValueOnce({
       ...initial,
@@ -1646,19 +1580,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('converges an authoritative upload failure and cleans local activity', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.UPLOADING,
-      lastSequence: 3,
-      transcript: '剛送出的內容',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime, timers, vad } = await mountController({
-      transport,
-      conversation: initial,
-    });
+    const { app, playback, runtime, timers, vad, transport, initial } = await activeTurnHarness({ turnState: TURN_STATES.UPLOADING, transcript: '剛送出的內容', assistantText: '' });
     transport.getConversation.mockResolvedValueOnce({
       ...initial,
       activeTurnId: null,
@@ -1689,19 +1611,7 @@ describe('runtime authoritative recovery', () => {
   });
 
   it('cleans timers, VAD, and playback for a Native turn.error', async () => {
-    const initial = {
-      sessionId: 'session-1',
-      activeTurnId: 'turn-1',
-      turnState: TURN_STATES.THINKING,
-      lastSequence: 3,
-      transcript: '',
-      assistantText: '',
-    };
-    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation: initial });
-    const { app, playback, runtime, timers, vad } = await mountController({
-      transport,
-      conversation: initial,
-    });
+    const { app, playback, runtime, timers, vad, transport } = await activeTurnHarness({ transcript: '', assistantText: '' });
 
     await transport.emit('event', {
       protocolVersion: '2.0',

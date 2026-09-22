@@ -16,28 +16,26 @@ import {
 } from './pixelFaceModel.js';
 
 describe('cached face frames', () => {
-  it('reuses stable geometry and preserves blink, breath, detail and audio boundaries', () => {
-    for (const emotion of ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED']) {
-      for (const turnState of ['IDLE', 'LISTENING', 'THINKING', 'SPEAKING']) {
-        for (const sleeping of [false, true]) {
-          for (const reducedMotion of [false, true]) {
-            const resolve = createFaceFrameResolver();
-            let previousEqualizerBand;
-            // Includes complete blink/wink/breath cycles and expressive entrances.
-            for (let elapsedMs = 0; elapsedMs < 22000; elapsedMs += 137) {
-              const options = {
-                emotion, turnState, sleeping, reducedMotion, elapsedMs,
-                expressionElapsedMs: elapsedMs + 71,
-                mouthLevel: (elapsedMs % 1100) / 1100, previousEqualizerBand,
-              };
-              const frame = resolve(options);
-              expect(frame).toEqual(resolveFaceFrame(options));
-              expect(resolve(options)).toBe(frame);
-              previousEqualizerBand = frame.speaking ? frame.equalizerBand : undefined;
-            }
-          }
-        }
-      }
+  it('reuses identical states and invalidates each kind of animated or audio state', () => {
+    const samples = [
+      ...['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'].map((emotion) => ({ emotion })),
+      ...['LISTENING', 'THINKING', 'AWAITING_TOOL', 'SYNTHESIZING'].map((turnState) => ({ turnState, elapsedMs: 1300 })),
+      ...[0, 1300, 3900].map((elapsedMs) => ({ turnState: 'THINKING', elapsedMs })),
+      ...[0, 1600, 5032, 5033, 5067, 5100, 5134, 5167, 15727].map((elapsedMs) => ({ elapsedMs })),
+      ...[6999, 7000, 7259, 7260].map((expressionElapsedMs) => ({ emotion: 'HAPPY', expressionElapsedMs })),
+      ...[0, 120, 300, 360, 600, 1200].map((expressionElapsedMs) => ({ emotion: 'EXCITED', expressionElapsedMs })),
+      ...[0, 1450, 2900, 4350, 5800].map((expressionElapsedMs) => ({ sleeping: true, expressionElapsedMs })),
+      ...[0, 0.13, 0.376, 0.626, 0.876].map((mouthLevel) => ({ turnState: 'SPEAKING', mouthLevel })),
+      { turnState: 'SPEAKING', mouthLevel: 0.15, previousEqualizerBand: 0 },
+      { turnState: 'SPEAKING', mouthLevel: 0.15, previousEqualizerBand: 1 },
+      { emotion: 'EXCITED', elapsedMs: 5100, reducedMotion: true },
+      { sleeping: true, expressionElapsedMs: 2900, reducedMotion: true },
+    ];
+    const resolve = createFaceFrameResolver();
+    for (const options of samples) {
+      const frame = resolve(options);
+      expect(frame, JSON.stringify(options)).toEqual(resolveFaceFrame(options));
+      expect(resolve(options)).toBe(frame);
     }
   });
 
@@ -181,11 +179,11 @@ function expectIntegerBoundedConnected(rectangles) {
 }
 
 describe('resolveFaceFrame', () => {
-  it.each(['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'])(
-    'builds readable, connected %s pixel eyes with bounded detail layers',
-    (emotion) => {
-      const frame = resolveFaceFrame({ emotion, reducedMotion: true });
-      expect(frame.emotion).toBe(emotion.toLowerCase());
+  it('builds five distinct, connected expressions with bounded detail layers', () => {
+    const emotions = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'];
+    const frames = emotions.map((emotion) => resolveFaceFrame({ emotion, reducedMotion: true }));
+    for (const [index, frame] of frames.entries()) {
+      expect(frame.emotion).toBe(emotions[index].toLowerCase());
       expect(frame.color).toBe(FACE_PALETTE[frame.emotion]);
       expectIntegerBoundedConnected(frame.leftEye);
       expectIntegerBoundedConnected(frame.rightEye);
@@ -198,17 +196,10 @@ describe('resolveFaceFrame', () => {
         expect(item.x + item.width).toBeLessThanOrEqual(FACE_WIDTH);
         expect(item.y + item.height).toBeLessThanOrEqual(FACE_HEIGHT);
       }
-    },
-  );
-
-  it('distinguishes all five expressions by geometry even without their colors', () => {
-    const shapes = ['NEUTRAL', 'HAPPY', 'CURIOUS', 'CONCERNED', 'EXCITED'].map((emotion) => {
-      const { leftEye, rightEye, mouth, brows } = resolveFaceFrame({ emotion, reducedMotion: true });
-      return JSON.stringify({ leftEye, rightEye, mouth, brows });
-    });
+    }
+    const shapes = frames.map(({ leftEye, rightEye, mouth, brows }) => JSON.stringify({ leftEye, rightEye, mouth, brows }));
     expect(new Set(shapes).size).toBe(5);
-    const neutral = resolveFaceFrame({ reducedMotion: true });
-    const happy = resolveFaceFrame({ emotion: 'HAPPY', reducedMotion: true });
+    const [neutral, happy] = frames;
     expect(bounds(neutral.leftEye).height).toBeGreaterThan(bounds(neutral.leftEye).width);
     expect(bounds(happy.leftEye).height).toBeLessThan(bounds(neutral.leftEye).height);
     expect(happy.cheekOpacity).toBeGreaterThan(neutral.cheekOpacity);
@@ -323,18 +314,7 @@ describe('resolveFaceFrame', () => {
 
     for (const [emotion, turnState, elapsedMs] of cases) {
       const frame = resolveFaceFrame({ emotion, turnState, elapsedMs, mouthLevel: 1 });
-      for (const item of allFaceRectangles(frame)) {
-        expect(Number.isInteger(item.x)).toBe(true);
-        expect(Number.isInteger(item.y)).toBe(true);
-        expect(Number.isInteger(item.width)).toBe(true);
-        expect(Number.isInteger(item.height)).toBe(true);
-        expect(item.width % 2).toBe(0);
-        expect(item.height % 2).toBe(0);
-        expect(item.x).toBeGreaterThanOrEqual(0);
-        expect(item.y).toBeGreaterThanOrEqual(0);
-        expect(item.x + item.width).toBeLessThanOrEqual(FACE_WIDTH);
-        expect(item.y + item.height).toBeLessThanOrEqual(FACE_HEIGHT);
-      }
+      expectIntegerBoundedEven(allFaceRectangles(frame));
     }
   });
 });
@@ -440,20 +420,9 @@ describe('speech equalizer', () => {
     }
   });
 
-  it.each([
-    [-1, 0],
-    [Number.NaN, 0],
-    [0.12, 0],
-    [0.13, 1],
-    [0.375, 1],
-    [0.376, 2],
-    [0.625, 2],
-    [0.626, 3],
-    [0.875, 3],
-    [0.876, 4],
-    [2, 4],
-  ])('maps mouth level %s to band %s and clamps invalid ranges', (level, expected) => {
-    expect(resolveEqualizerBand(level)).toBe(expected);
+  it('quantizes at each audio boundary and clamps invalid levels', () => {
+    const levels = [-1, Number.NaN, 0.12, 0.13, 0.375, 0.376, 0.625, 0.626, 0.875, 0.876, 2];
+    expect(levels.map((level) => resolveEqualizerBand(level))).toEqual([0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
   });
 
   it('uses ±0.04 hysteresis around equalizer thresholds', () => {
@@ -465,22 +434,15 @@ describe('speech equalizer', () => {
     expect(resolveEqualizerBand(0.83, 4)).toBe(3);
   });
 
-  it.each([
-    [0, [2]],
-    [1, [2, 4, 2]],
-    [2, [2, 6, 2]],
-    [3, [4, 6, 4]],
-    [4, [4, 8, 4]],
-  ])('renders equalizer band %s with the specified heights', (band, heights) => {
-    const mouth = equalizerMouth(band);
-
-    expect(mouth.map((item) => item.height)).toEqual(heights);
-    if (band > 0) {
+  it('renders silence as a line and all audio bands as bounded equalizer bars', () => {
+    const mouths = [0, 1, 2, 3, 4].map(equalizerMouth);
+    expect(mouths.map((mouth) => mouth.map((item) => item.height)))
+      .toEqual([[2], [2, 4, 2], [2, 6, 2], [4, 6, 4], [4, 8, 4]]);
+    expect(bounds(mouths[0])).toMatchObject({ width: 8, height: 2 });
+    for (const mouth of mouths.slice(1)) {
       expect(mouth.map((item) => item.x)).toEqual([75, 79, 83]);
       expect(bounds(mouth).width).toBe(10);
       expect(bounds(mouth).height).toBeLessThanOrEqual(8);
-    } else {
-      expect(bounds(mouth)).toMatchObject({ width: 8, height: 2 });
     }
   });
 

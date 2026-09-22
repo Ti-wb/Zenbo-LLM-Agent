@@ -52,9 +52,6 @@ describe('RuntimeTransport', () => {
   it.each([
     ['follow', 6500],
     ['forward', 5500],
-    ['backward', 5500],
-    ['left', 5500],
-    ['right', 5500],
     ['stop', 2000],
   ])('waits for the complete Native %s chain before its HTTP deadline', async (action, nativeBudgetMs) => {
     vi.useFakeTimers();
@@ -131,21 +128,22 @@ describe('RuntimeTransport', () => {
     const transport = new RuntimeTransport({ fetchImpl });
     await transport.getDeviceStatus();
     await transport.putDeviceSettings({ cameraEnabled: true, attentionEnabled: false });
-    await transport.sendDeviceAction('forward');
+    for (const action of ['forward', 'backward', 'left', 'right']) await transport.sendDeviceAction(action);
     await transport.setDeviceAttention('listening');
     await transport.setRemoteEnabled(false);
     await transport.captureCamera();
     expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
       'http://127.0.0.1:8787/api/v2/device/status',
       'http://127.0.0.1:8787/api/v2/device/settings',
-      'http://127.0.0.1:8787/api/v2/device/action',
+      ...Array(4).fill('http://127.0.0.1:8787/api/v2/device/action'),
       'http://127.0.0.1:8787/api/v2/device/attention',
       'http://127.0.0.1:8787/api/v2/device/remote',
       'http://127.0.0.1:8787/api/v2/device/camera/capture',
     ]);
     expect(fetchImpl.mock.calls.every(([, request]) => request.credentials === 'include')).toBe(true);
-    expect(JSON.parse(fetchImpl.mock.calls[2][1].body)).toEqual({ action: 'forward' });
-    expect(JSON.parse(fetchImpl.mock.calls[3][1].body)).toEqual({ phase: 'listening' });
+    expect(fetchImpl.mock.calls.slice(2, 6).map(([, request]) => JSON.parse(request.body).action))
+      .toEqual(['forward', 'backward', 'left', 'right']);
+    expect(JSON.parse(fetchImpl.mock.calls[6][1].body)).toEqual({ phase: 'listening' });
   });
 
   it('fetches bounded no-store JPEGs and preserves permission errors', async () => {

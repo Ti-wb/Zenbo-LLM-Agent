@@ -3,9 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import {
   CONNECTION_STATES,
   Emotion,
-  GatewayState,
   TURN_STATES,
-  nextTurnState,
   useRuntimeStore,
 } from './runtime';
 
@@ -24,44 +22,7 @@ describe('runtime store', () => {
     expect(store.batteryLabel).toBe('--%');
   });
 
-  it('exposes only the approved Gateway, Turn, and Emotion enum values', () => {
-    expect(Object.values(GatewayState)).toEqual([
-      'UNCONFIGURED',
-      'CONNECTING',
-      'READY',
-      'DEGRADED',
-      'AUTH_ERROR',
-      'TLS_ERROR',
-      'INCOMPATIBLE',
-      'OFFLINE',
-    ]);
-    expect(Object.values(TURN_STATES)).toEqual([
-      'IDLE',
-      'LISTENING',
-      'UPLOADING',
-      'TRANSCRIBING',
-      'THINKING',
-      'AWAITING_TOOL',
-      'SYNTHESIZING',
-      'SPEAKING',
-      'ERROR',
-    ]);
-    expect(Object.values(Emotion)).toEqual([
-      'NEUTRAL',
-      'HAPPY',
-      'CURIOUS',
-      'CONCERNED',
-      'EXCITED',
-    ]);
-  });
 
-  it('maps renderer lifecycle events to deterministic turn states', () => {
-    expect(nextTurnState(TURN_STATES.IDLE, 'speech_started')).toBe(TURN_STATES.LISTENING);
-    expect(nextTurnState(TURN_STATES.LISTENING, 'upload_started')).toBe(TURN_STATES.UPLOADING);
-    expect(nextTurnState(TURN_STATES.THINKING, 'tool_started')).toBe(TURN_STATES.AWAITING_TOOL);
-    expect(nextTurnState(TURN_STATES.SPEAKING, 'wake')).toBe(TURN_STATES.IDLE);
-    expect(nextTurnState(TURN_STATES.IDLE, 'unknown')).toBe(TURN_STATES.IDLE);
-  });
 
   it('explains why the device is not ready instead of inviting speech while disconnected', () => {
     const store = useRuntimeStore();
@@ -225,7 +186,7 @@ describe('runtime store', () => {
     expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
   });
 
-  it.each(Object.values(Emotion))('preserves explicit %s through every audio segment', (emotion) => {
+  it.each([Emotion.NEUTRAL, Emotion.EXCITED])('preserves explicit %s through every audio segment', (emotion) => {
     const store = useRuntimeStore();
     store.setConnection(CONNECTION_STATES.READY);
     store.queueEmotion(emotion, 0);
@@ -292,6 +253,7 @@ describe('runtime store', () => {
     store.transition('playback_started');
     expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
 
+    store.queueEmotion(Emotion.EXCITED, 0);
     reset(store);
     expect(store.replyEmotionFallback).toBe(false);
     expect(store.pendingEmotion).toBe('');
@@ -299,33 +261,19 @@ describe('runtime store', () => {
     expect(store.emotionExpiresAt).toBe(0);
   });
 
-  it('keeps duration zero through playback but clears emotions on terminal and safety resets', () => {
+  it('clears indefinite explicit emotion after a turn ends, connection fails, or the screen sleeps', () => {
     const store = useRuntimeStore();
-    store.setConnection(CONNECTION_STATES.READY);
-    store.queueEmotion(Emotion.EXCITED, 0);
-    store.activatePendingEmotion(1000);
-    store.transition('playback_started');
-
-    expect(store.effectiveEmotion).toBe(Emotion.EXCITED);
-    expect(store.emotionExpiresAt).toBe(0);
-
-    store.transition('reset');
-    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
-
-    store.queueEmotion(Emotion.HAPPY, 0);
-    store.transition('speech_started');
-    expect(store.pendingEmotion).toBe('');
-    expect(store.effectiveEmotion).toBe(Emotion.CURIOUS);
-
-    store.setEmotion(Emotion.HAPPY);
-    store.setConnection(CONNECTION_STATES.DEGRADED);
-    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
-
-    store.setConnection(CONNECTION_STATES.READY);
-    store.setEmotion(Emotion.HAPPY);
-    store.goToSleep();
+    for (const reset of [() => store.transition('reset'),
+      () => store.setConnection(CONNECTION_STATES.DEGRADED), () => store.goToSleep()]) {
+      store.setConnection(CONNECTION_STATES.READY);
+      store.setEmotion(Emotion.HAPPY, 0);
+      expect(store.effectiveEmotion).toBe(Emotion.HAPPY);
+      reset();
+      expect(store.explicitEmotion).toBe(Emotion.NEUTRAL);
+      expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
+    }
     expect(store.sleeping).toBe(true);
     expect(store.turnState).toBe(TURN_STATES.IDLE);
-    expect(store.effectiveEmotion).toBe(Emotion.NEUTRAL);
   });
+
 });

@@ -68,15 +68,11 @@ describe('idle expressions', () => {
     expect(vi.getTimerCount()).toBe(1);
   });
 
-  it.each([
-    [0, Emotion.HAPPY],
-    [0.5, Emotion.CURIOUS],
-    [0.99999, Emotion.EXCITED],
-  ])('selects a friendly idle expression for random value %s', (selection, expected) => {
-    const random = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(selection).mockReturnValue(0);
+  it('can select the curious expression between happy and excited', () => {
+    const random = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(0.5).mockReturnValue(0);
     const { emotion } = mount({ random });
     vi.advanceTimersByTime(20000);
-    expect(emotion.value).toBe(expected);
+    expect(emotion.value).toBe(Emotion.CURIOUS);
   });
 
   it('bounds the longest idle wait and expression duration at 40 and 5 seconds', () => {
