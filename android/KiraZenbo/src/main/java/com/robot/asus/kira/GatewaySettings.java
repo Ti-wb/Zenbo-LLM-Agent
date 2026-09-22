@@ -26,11 +26,13 @@ public final class GatewaySettings {
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_PENDING_SUBMISSION = "pending_submission";
     private static final String KEY_MOTION_ENABLED = "motion_enabled";
+    private static final String KEY_ONBOARDING_COMPLETE = "onboarding_complete";
 
     public static final String SYSTEM_TRUST = "SYSTEM_TRUST";
     public static final String CONFIRMED_SPKI_PIN = "CONFIRMED_SPKI_PIN";
 
     private final SharedPreferences preferences;
+    private SharedPreferences legacySetupPreferences;
 
     static final class RemoteSessionState {
         final String sessionId;
@@ -43,6 +45,7 @@ public final class GatewaySettings {
 
     public GatewaySettings(Context context) {
         this(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE));
+        migrateLegacyOnboarding(context.getSharedPreferences("admin_pin_verifier", Context.MODE_PRIVATE));
     }
 
     GatewaySettings(SharedPreferences preferences) {
@@ -82,6 +85,39 @@ public final class GatewaySettings {
 
     public synchronized boolean isMotionEnabled() {
         return preferences.getBoolean(KEY_MOTION_ENABLED, false);
+    }
+
+    public synchronized boolean isOnboardingComplete() {
+        // If migration cannot be persisted, the previous completion evidence stays valid.
+        // Keep the existing installation usable and retry migration on the next service start.
+        return preferences.getBoolean(KEY_ONBOARDING_COMPLETE, false) || legacySetupComplete();
+    }
+
+    private boolean legacySetupComplete() {
+        return legacySetupPreferences != null && legacySetupPreferences.contains("salt")
+                && legacySetupPreferences.contains("hash");
+    }
+
+    synchronized boolean migrateLegacyOnboarding(SharedPreferences legacy) {
+        legacySetupPreferences = legacy;
+        if (!isOnboardingComplete()) return true;
+        try { completeOnboarding(); }
+        catch (IllegalStateException unavailable) { return false; }
+        // This retired file contains only the old verifier. Never touch Gateway or Keystore data.
+        return legacy.edit().clear().commit();
+    }
+
+    synchronized void completeOnboarding() {
+        if (preferences.getBoolean(KEY_ONBOARDING_COMPLETE, false)) return;
+        boolean hadFlag = preferences.contains(KEY_ONBOARDING_COMPLETE);
+        if (!preferences.edit().putBoolean(KEY_ONBOARDING_COMPLETE, true).commit()) {
+            // Android updates memory even when the disk write fails. Restore the prior marker.
+            SharedPreferences.Editor rollback = preferences.edit();
+            if (hadFlag) rollback.putBoolean(KEY_ONBOARDING_COMPLETE, false);
+            else rollback.remove(KEY_ONBOARDING_COMPLETE);
+            rollback.commit();
+            throw new IllegalStateException("Could not save onboarding completion");
+        }
     }
 
     synchronized void setMotionEnabled(boolean enabled) {
@@ -282,6 +318,7 @@ public final class GatewaySettings {
                 .put("robotName", getRobotName())
                 .put("language", getLanguage()));
         json.put("hasApiKey", hasCredential);
+        json.put("onboardingComplete", isOnboardingComplete());
         return json;
     }
 
@@ -293,6 +330,7 @@ public final class GatewaySettings {
                 .put("robotName", getRobotName())
                 .put("language", getLanguage())
                 .put("enabled", isEnabled())
+                .put("onboardingComplete", isOnboardingComplete())
                 .put("pendingSubmission", preferences.getString(KEY_PENDING_SUBMISSION, ""))
                 .put("remoteSessionId", preferences.getString(KEY_REMOTE_SESSION_ID, ""))
                 .put("sessionGatewayIdentity",
@@ -308,6 +346,7 @@ public final class GatewaySettings {
                 .putString(KEY_ROBOT_NAME, snapshot.optString("robotName", "Zenbo K"))
                 .putString(KEY_LANGUAGE, snapshot.optString("language", "zh-TW"))
                 .putBoolean(KEY_ENABLED, snapshot.optBoolean("enabled", false))
+                .putBoolean(KEY_ONBOARDING_COMPLETE, snapshot.optBoolean("onboardingComplete", false))
                 .putString(KEY_PENDING_SUBMISSION, snapshot.optString("pendingSubmission", ""))
                 .putString(KEY_REMOTE_SESSION_ID, snapshot.optString("remoteSessionId", ""))
                 .putString(KEY_SESSION_GATEWAY_IDENTITY, snapshot.optString("sessionGatewayIdentity", ""))

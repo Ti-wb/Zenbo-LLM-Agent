@@ -50,8 +50,6 @@ public final class LocalRuntimeServer {
     private final Context context;
     private final GatewaySettings settings;
     private final DeviceCredentialStore credentialStore;
-    private final AdminPinStore adminPinStore;
-    private final AdminPinWorker pinWorker = new AdminPinWorker();
     private final RemoteSessionCoordinator coordinator;
     private final RobotGateway robotGateway;
     private final DeviceHardware deviceHardware;
@@ -67,10 +65,6 @@ public final class LocalRuntimeServer {
     private volatile long rendererTokenExpiresAt;
     private volatile String bootstrapSecret;
     private volatile long bootstrapSecretExpiresAt;
-    private volatile long unlockExpiresAt;
-    private int failedPinAttempts;
-    private long nextPinAttemptAt;
-    private long pinLifecycle;
     private int failedBootstrapAttempts;
     private long nextBootstrapAttemptAt;
 
@@ -92,7 +86,6 @@ public final class LocalRuntimeServer {
         this.lanRemote = deviceHardware == null ? null : new LanRemoteServer(this.context, deviceHardware, coordinator);
         this.settings = settings;
         this.credentialStore = credentialStore;
-        this.adminPinStore = new AdminPinStore(context.getApplicationContext());
         this.coordinator = coordinator;
         this.robotGateway = robotGateway;
     }
@@ -102,15 +95,11 @@ public final class LocalRuntimeServer {
         registerRoutes();
         server.listenLoopback(port);
         started = true;
-        pinLifecycle++;
-        pinWorker.start();
         Log.i(TAG, "Local runtime started on http://127.0.0.1:" + port);
     }
 
     public synchronized void stop() {
         if (lanRemote != null) lanRemote.close();
-        pinLifecycle++;
-        pinWorker.stop();
         if (!started) return;
         server.stop();
         WebSocket[] closing;
@@ -124,7 +113,6 @@ public final class LocalRuntimeServer {
         rendererTokenExpiresAt = 0L;
         bootstrapSecret = null;
         bootstrapSecretExpiresAt = 0L;
-        unlockExpiresAt = 0L;
         started = false;
     }
 
@@ -226,14 +214,9 @@ public final class LocalRuntimeServer {
         });
         server.addAction("PUT", "/api/v2/settings$", this::updateSettings, headers -> new JSONObjectBody());
         server.post("/api/v2/settings/setup$", this::setupSettings);
-        server.post("/api/v2/settings/unlock$", this::unlockSettings);
 
         server.post("/api/v2/settings/test$", (request, response) -> {
             if (!requireSession(request, response)) return;
-            if (adminPinStore.isConfigured() && !isUnlocked()) {
-                sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
-                return;
-            }
             JSONObject body = readJson(request);
             String gatewayUrl = body.optString("gatewayUrl", "").trim();
             String trustMode = body.optString("trustMode", "");
@@ -520,9 +503,6 @@ public final class LocalRuntimeServer {
             try {
                 JSONObject body = readJson(request); requireOnlyKeys(body,"enabled");
                 if (!(body.opt("enabled") instanceof Boolean)) throw new JSONException("enabled must be boolean");
-                if (body.getBoolean("enabled") && !isUnlocked()) {
-                    sendError(response,423,"SETTINGS_LOCKED","Unlock settings with the admin PIN first"); return;
-                }
                 lanRemote.setEnabled(body.getBoolean("enabled"));
                 sendJson(response,200,deviceStatus());
             } catch (JSONException invalid) { sendError(response,400,"INVALID_REQUEST","enabled must be boolean"); }
@@ -549,100 +529,17 @@ public final class LocalRuntimeServer {
 
     private synchronized void setupSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
         if (!requireSession(request, response)) return;
-        if (adminPinStore.isConfigured()) {
-            sendError(response, 409, "CONFLICT", "Admin PIN is already configured");
+        if (settings.isOnboardingComplete()) {
+            sendError(response, 409, "ALREADY_CONFIGURED", "Initial setup is already complete");
             return;
         }
-        JSONObject body = readJson(request);
-        try { InitialSetup.validate(body); }
-        catch (Exception error) {
-            sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
-            return;
-        }
-        String session = cookieValue(request, SESSION_COOKIE);
-        long lifecycle = pinLifecycle;
-        boolean accepted = pinWorker.submit(() -> adminPinStore.prepareSetup(body.getString("pin")),
-                callback -> request.getSocket().getServer().post(callback), result -> {
-                    synchronized (LocalRuntimeServer.this) {
-                        if (!started || lifecycle != pinLifecycle) return;
-                        if (!pinRequestStillAuthorized(session, request, response)) return;
-                        try {
-                            if (result.error != null) throw result.error;
-                            InitialSetup.configure(settings, credentialStore, adminPinStore, body, result.value);
-                            failedPinAttempts = 0;
-                            nextPinAttemptAt = 0L;
-                            unlockExpiresAt = System.currentTimeMillis() + 15L * 60L * 1000L;
-                            coordinator.reloadGateway();
-                            sendJson(response, 200, settingsJson());
-                        } catch (Exception error) {
-                            sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
-                        }
-                    }
-                });
-        if (!accepted) sendPinBusy(response);
-    }
-
-    private synchronized void unlockSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
-        if (!requireSession(request, response)) return;
-        long now = System.currentTimeMillis();
-        if (!adminPinStore.isConfigured()) {
-            sendError(response, 409, "SETUP_REQUIRED", "Set up the admin PIN first");
-            return;
-        }
-        if (now < nextPinAttemptAt) {
-            response.getHeaders().set("Retry-After", String.valueOf(Math.max(1L, (nextPinAttemptAt - now + 999L) / 1000L)));
-            sendError(response, 429, "RATE_LIMITED", "Try again later");
-            return;
-        }
-        JSONObject body = readJson(request);
-        final String pin;
         try {
-            requireOnlyKeys(body, "pin");
-            pin = body.optString("pin", "");
-            AdminPinStore.validatePin(pin);
+            InitialSetup.configure(settings, credentialStore, readJson(request));
+            coordinator.reloadGateway();
+            sendJson(response, 200, settingsJson());
         } catch (Exception error) {
-            sendError(response, 400, "INVALID_PIN", error.getMessage());
-            return;
+            sendError(response, 400, "INVALID_REQUEST", "Initial setup was rejected or could not be saved");
         }
-        String session = cookieValue(request, SESSION_COOKIE);
-        long lifecycle = pinLifecycle;
-        boolean accepted = pinWorker.submit(() -> adminPinStore.verify(pin),
-                callback -> request.getSocket().getServer().post(callback), result -> {
-                    synchronized (LocalRuntimeServer.this) {
-                        if (!started || lifecycle != pinLifecycle) return;
-                        long completedAt = System.currentTimeMillis();
-                        boolean verified = result.error == null && Boolean.TRUE.equals(result.value);
-                        // An expired/disconnected renderer still spent a real PIN attempt.
-                        // Backoff begins after hashing, so slow devices retain the full delay.
-                        if (!verified) {
-                            failedPinAttempts = Math.min(failedPinAttempts + 1, 6);
-                            nextPinAttemptAt = completedAt + Math.min(30_000L, 1000L << (failedPinAttempts - 1));
-                        }
-                        if (!pinRequestStillAuthorized(session, request, response)) return;
-                        if (!verified) {
-                            sendError(response, 401, "UNAUTHORIZED", "Admin PIN is incorrect");
-                            return;
-                        }
-                        failedPinAttempts = 0;
-                        nextPinAttemptAt = 0L;
-                        unlockExpiresAt = completedAt + 15L * 60L * 1000L;
-                        sendJson(response, 200, json("unlocked", true, "unlockExpiresAt", isoTime(unlockExpiresAt)));
-                    }
-                });
-        if (!accepted) sendPinBusy(response);
-    }
-
-    private boolean pinRequestStillAuthorized(String session, AsyncHttpServerRequest request,
-                                              AsyncHttpServerResponse response) {
-        if (!request.getSocket().isOpen()) return false;
-        if (validSession(session)) return true;
-        sendError(response, 401, "SESSION_EXPIRED", "Create a renderer session first");
-        return false;
-    }
-
-    private void sendPinBusy(AsyncHttpServerResponse response) {
-        response.getHeaders().set("Retry-After", "1");
-        sendError(response, 429, "RATE_LIMITED", "A PIN request is still being processed");
     }
 
     private void registerSessionRoute(String path) {
@@ -690,7 +587,6 @@ public final class LocalRuntimeServer {
             secureRandom.nextBytes(bytes);
             rendererToken = Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
             rendererTokenExpiresAt = now + SESSION_TTL_MILLIS;
-            unlockExpiresAt = 0L;
             response.getHeaders().set(
                     "Set-Cookie",
                     SESSION_COOKIE + "=" + rendererToken + "; HttpOnly; SameSite=Strict; Path=/api/v2; Max-Age=" + SESSION_MAX_AGE_SECONDS
@@ -737,10 +633,7 @@ public final class LocalRuntimeServer {
                     "runtimeReady", started,
                     "protocolVersion", "2.0",
                     "lastSequence", coordinator.getLastSequence(),
-                    "setupRequired", !adminPinStore.isConfigured()
-                            || !credentialStore.hasCredential()
-                            || settings.getGatewayUrl().isEmpty(),
-                    "settingsUnlocked", isUnlocked(),
+                    "setupRequired", !settings.isOnboardingComplete(),
                     "gatewayState", coordinator.getGatewayState(),
                     "robotReady", robotGateway.isReady(),
                     "motionEnabled", coordinatorStatus.optBoolean("motionEnabled", false),
@@ -899,14 +792,14 @@ public final class LocalRuntimeServer {
 
     private void updateSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
         if (!requireSession(request, response)) return;
+        if (!settings.isOnboardingComplete()) {
+            sendError(response, 409, "SETUP_REQUIRED", "Complete initial setup first");
+            return;
+        }
         JSONObject snapshot = null;
         String previousCredential = null;
         try {
             JSONObject body = readJson(request);
-            if (!isUnlocked()) {
-                sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
-                return;
-            }
             snapshot = settings.snapshotForRollback();
             previousCredential = credentialStore.load();
             requireOnlyKeys(body, "gatewayUrl", "apiKey", "trustMode",
@@ -957,17 +850,6 @@ public final class LocalRuntimeServer {
         if (validSession(token)) return true;
         sendError(response, 401, "SESSION_EXPIRED", "Create a renderer session first");
         return false;
-    }
-
-    private boolean requireUnlocked(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
-        if (!requireSession(request, response)) return false;
-        if (isUnlocked()) return true;
-        sendError(response, 423, "SETTINGS_LOCKED", "Unlock settings with the admin PIN first");
-        return false;
-    }
-
-    private boolean isUnlocked() {
-        return adminPinStore.isConfigured() && System.currentTimeMillis() < unlockExpiresAt;
     }
 
     private boolean validSession(String candidate) {
@@ -1056,11 +938,7 @@ public final class LocalRuntimeServer {
 
     private JSONObject settingsJson() {
         try {
-            JSONObject result = settings.toJson(credentialStore.hasCredential());
-            result.put("pinConfigured", adminPinStore.isConfigured());
-            result.put("unlocked", isUnlocked());
-            result.put("unlockExpiresAt", isUnlocked() ? isoTime(unlockExpiresAt) : JSONObject.NULL);
-            return result;
+            return settings.toJson(credentialStore.hasCredential());
         } catch (JSONException error) {
             return json("error", "settings_unavailable");
         }
@@ -1169,8 +1047,8 @@ public final class LocalRuntimeServer {
                 "GATEWAY_AUTH", "GATEWAY_TLS", "GATEWAY_INCOMPATIBLE", "GATEWAY_OFFLINE",
                 "SESSION_EXPIRED", "TURN_CANCELLED", "ROBOT_INITIALIZING", "ROBOT_UNAVAILABLE",
                 "TOOL_REJECTED", "TIMEOUT", "ARTIFACT_EXPIRED", "INTERNAL_ERROR",
-                "INVALID_BOOTSTRAP_TOKEN", "SETUP_REQUIRED", "ALREADY_CONFIGURED", "SETTINGS_LOCKED",
-                "INVALID_PIN", "INVALID_SETTINGS", "LAN_UNAVAILABLE", "CAMERA_UNAVAILABLE",
+                "INVALID_BOOTSTRAP_TOKEN", "SETUP_REQUIRED", "ALREADY_CONFIGURED",
+                "INVALID_SETTINGS", "LAN_UNAVAILABLE", "CAMERA_UNAVAILABLE",
                 "CAMERA_DISABLED", "CAMERA_BUSY", "CAMERA_PERMISSION_REQUIRED", "MOTION_DISABLED",
                 "APP_NOT_FOREGROUND", "DEVICE_UNAVAILABLE", "ROBOT_BUSY", "PERMISSION_REQUIRED"
         ));
@@ -1246,7 +1124,6 @@ public final class LocalRuntimeServer {
             case "INVALID_TOOL_STATUS":
             case "INVALID_PLAYBACK":
             case "INVALID_SETTINGS":
-            case "INVALID_PIN":
                 return 400;
             case "UNAUTHORIZED":
             case "GATEWAY_AUTH":
@@ -1260,11 +1137,11 @@ public final class LocalRuntimeServer {
             case "TOOL_REJECTED":
             case "TURN_CANCELLED":
             case "GATEWAY_INCOMPATIBLE":
+            case "SETUP_REQUIRED":
+            case "ALREADY_CONFIGURED":
                 return 409;
             case "PAYLOAD_TOO_LARGE":
                 return 413;
-            case "SETTINGS_LOCKED":
-                return 423;
             case "RATE_LIMITED":
                 return 429;
             default:

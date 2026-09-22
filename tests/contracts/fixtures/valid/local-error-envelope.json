@@ -3,8 +3,8 @@
   "requestId": "80000000-0000-4000-8000-000000000002",
   "data": null,
   "error": {
-    "code": "SETTINGS_LOCKED",
-    "message": "Unlock settings before updating them.",
+    "code": "UNAUTHORIZED",
+    "message": "A current renderer session is required.",
     "retryable": false
   }
 }

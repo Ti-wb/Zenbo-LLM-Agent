@@ -48,7 +48,7 @@ function fakeTransport({ status, conversation }) {
       for (const handler of listeners.get(type) || []) await handler(detail);
     },
     bootstrap: vi.fn().mockResolvedValue({}),
-    getRuntimeSettings: vi.fn().mockResolvedValue({ pinConfigured: true }),
+    getRuntimeSettings: vi.fn().mockResolvedValue({ onboardingComplete: true }),
     getRuntimeStatus: vi.fn().mockResolvedValue(status),
     setMotionEnabled: vi.fn(),
     setDeviceAttention: vi.fn().mockResolvedValue({}),
@@ -68,7 +68,7 @@ function fakeTransport({ status, conversation }) {
   };
 }
 
-async function mountController({ transport, conversation }) {
+async function mountController({ transport, conversation, configured = true }) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const playback = {
@@ -111,10 +111,11 @@ async function mountController({ transport, conversation }) {
   app.use(pinia);
   app.mount({});
   await vi.waitFor(() => {
-    expect(transport.connectEvents).toHaveBeenCalledOnce();
+    expect(controller.started.value).toBe(true);
+    if (configured) expect(transport.connectEvents).toHaveBeenCalledOnce();
   });
   const runtime = useRuntimeStore();
-  expect(runtime.lastSequence).toBe(conversation.lastSequence);
+  if (configured) expect(runtime.lastSequence).toBe(conversation.lastSequence);
   return { app, controller, playback, runtime, timers, vad, vadCallbacks };
 }
 
@@ -394,12 +395,62 @@ describe('manual listening intent', () => {
     app.unmount();
   });
 
+  it('keeps first-time setup explicit and uses the Native onboarding flag before ordinary settings updates', async () => {
+    const conversation = { sessionId: 'session-1', activeTurnId: '', turnState: TURN_STATES.IDLE, lastSequence: 3 };
+    const transport = fakeTransport({ status: { gatewayState: 'READY' }, conversation });
+    transport.getRuntimeSettings.mockResolvedValue({ onboardingComplete: false, hasApiKey: true });
+    transport.setupRuntimeSettings = vi.fn().mockImplementation(async () => {
+      transport.getRuntimeSettings.mockResolvedValue({ onboardingComplete: true, hasApiKey: true });
+    });
+    transport.putRuntimeSettings = vi.fn().mockResolvedValue({});
+    transport.testRuntimeSettings = vi.fn().mockResolvedValue({ capabilities: {} });
+    const { app, controller, runtime } = await mountController({ transport, conversation, configured: false });
+    expect(runtime.settingsOpen).toBe(true);
+    expect(transport.connectEvents).not.toHaveBeenCalled();
+    const input = { ...runtime.settings, gatewayUrl: 'https://gateway.example/p/robot/v1', onboardingComplete: true };
+    await controller.testSettings({ ...input });
+    expect(transport.testRuntimeSettings).toHaveBeenCalledOnce();
+    expect(runtime.settings.onboardingComplete).toBe(false);
+    await controller.saveSettings({ ...input });
+    expect(transport.setupRuntimeSettings).toHaveBeenCalledExactlyOnceWith({
+      gatewayUrl: input.gatewayUrl, trustMode: 'SYSTEM_TRUST', context: { robotName: input.robotName, language: input.language },
+    });
+    expect(runtime.settings.onboardingComplete).toBe(true);
+    expect(runtime.settingsOpen).toBe(false);
+    await controller.saveSettings({ ...runtime.settings });
+    expect(transport.setupRuntimeSettings).toHaveBeenCalledOnce();
+    expect(transport.putRuntimeSettings).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('still requires explicit SPKI confirmation while clearing write-only API keys after tests and saves', async () => {
+    const { app, controller, runtime, transport } = await manualListeningHarness();
+    transport.putRuntimeSettings = vi.fn().mockResolvedValue({});
+    transport.testRuntimeSettings = vi.fn().mockResolvedValue({ fingerprint: 'sha256/synthetic=' });
+    const draft = { ...runtime.settings, trustMode: 'CONFIRMED_SPKI_PIN', certificatePin: 'sha256/synthetic=', apiKey: 'write-only-synthetic-key' };
+    await controller.testSettings(draft);
+    expect(draft.apiKey).toBe('');
+    expect(transport.testRuntimeSettings.mock.calls[0][0]).not.toHaveProperty('apiKey');
+    await controller.saveSettings(draft);
+    expect(transport.putRuntimeSettings).not.toHaveBeenCalled();
+    expect(runtime.error).toContain('明確確認');
+    draft.confirmedFingerprint = draft.certificatePin;
+    draft.apiKey = 'write-only-synthetic-key';
+    await controller.saveSettings(draft);
+    expect(transport.putRuntimeSettings).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      trustMode: 'CONFIRMED_SPKI_PIN', certificatePin: draft.certificatePin,
+      confirmedFingerprint: draft.certificatePin, apiKey: 'write-only-synthetic-key',
+    }));
+    expect(draft.apiKey).toBe('');
+    expect(runtime.settings).not.toHaveProperty('apiKey');
+    app.unmount();
+  });
+
   it.each([false, true])('keeps the mic off after settings save (fails=%s)', async (fails) => {
     const { app, controller, transport, runtime, vad } = await manualListeningHarness();
-    transport.unlockRuntimeSettings = vi.fn().mockResolvedValue({});
     transport.putRuntimeSettings = fails ? vi.fn().mockRejectedValue(new Error('save failed')) : vi.fn().mockResolvedValue({});
     await controller.toggleListening();
-    await controller.saveSettings({ ...runtime.settings, unlockPin: '123456' });
+    await controller.saveSettings({ ...runtime.settings });
     await transport.emit('connection', { state: 'READY' });
     expect(runtime.turnState).toBe(TURN_STATES.IDLE);
     expect(runtime.sleeping).toBe(false);

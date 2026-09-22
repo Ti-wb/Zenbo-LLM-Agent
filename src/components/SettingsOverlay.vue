@@ -92,9 +92,6 @@ watch(
     for (const key of Object.keys(draft)) delete draft[key];
     Object.assign(draft, props.settings, {
       apiKey: '',
-      pin: '',
-      confirmPin: '',
-      unlockPin: '',
       confirmedFingerprint: '',
     });
     validationError.value = '';
@@ -126,17 +123,10 @@ function publicDraft() {
 
 function clearSensitiveDraft() {
   draft.apiKey = '';
-  draft.pin = '';
-  draft.confirmPin = '';
-  draft.unlockPin = '';
 }
 
 function save() {
   validationError.value = '';
-  if (!props.settings.onboardingComplete && draft.pin !== draft.confirmPin) {
-    validationError.value = 'Setup PIN 與確認 PIN 不一致。';
-    return;
-  }
   if (
     draft.trustMode === 'CONFIRMED_SPKI_PIN' &&
     (!draft.certificatePin || draft.confirmedFingerprint !== draft.certificatePin)
@@ -147,9 +137,6 @@ function save() {
 
   const payload = {
     ...publicDraft(),
-    pin: String(draft.pin || ''),
-    confirmPin: String(draft.confirmPin || ''),
-    unlockPin: String(draft.unlockPin || ''),
     confirmedFingerprint: String(draft.confirmedFingerprint || ''),
   };
   emit('save', payload);
@@ -162,15 +149,7 @@ function testHermes() {
     validationError.value = '請先輸入 Hermes Profile URL。';
     return;
   }
-  if (props.settings.onboardingComplete && !draft.unlockPin) {
-    validationError.value = '測試前必須輸入 unlock PIN。';
-    return;
-  }
-  emit('test', {
-    ...publicDraft(),
-    unlockPin: String(draft.unlockPin),
-  });
-  draft.unlockPin = '';
+  emit('test', publicDraft());
   draft.apiKey = '';
 }
 </script>
@@ -227,51 +206,6 @@ function testHermes() {
         <small>{{ settings.hasApiKey ? '裝置已儲存 API key；' : '' }}送出後會清空欄位，之後不會讀回金鑰。</small>
       </label>
 
-      <div v-if="!settings.onboardingComplete" class="field-grid">
-        <label>
-          <span>設定管理 PIN</span>
-          <input
-            v-model="draft.pin"
-            type="password"
-            inputmode="numeric"
-            autocomplete="new-password"
-            minlength="6"
-            maxlength="12"
-            pattern="[0-9]{6,12}"
-            required
-          />
-          <small>只保存加鹽 verifier，不保存 PIN 本身。</small>
-        </label>
-        <label>
-          <span>確認管理 PIN</span>
-          <input
-            v-model="draft.confirmPin"
-            type="password"
-            inputmode="numeric"
-            autocomplete="new-password"
-            minlength="6"
-            maxlength="12"
-            pattern="[0-9]{6,12}"
-            required
-          />
-        </label>
-      </div>
-
-      <label v-else>
-        <span>Unlock PIN</span>
-        <input
-          v-model="draft.unlockPin"
-          type="password"
-          inputmode="numeric"
-          autocomplete="current-password"
-          minlength="6"
-          maxlength="12"
-          pattern="[0-9]{6,12}"
-          required
-        />
-        <small>每次更新或測試前都要解鎖；PIN 不會離開本機 Runtime。</small>
-      </label>
-
       <label>
         <span>TLS trust</span>
         <select v-model="draft.trustMode">
@@ -289,7 +223,7 @@ function testHermes() {
             :readonly="settings.onboardingComplete"
             pattern="sha256/[A-Za-z0-9+/]{43}="
             required
-            placeholder="先按「解鎖並測試 TLS」取得 sha256/…"
+            placeholder="先按「測試 Hermes」取得 sha256/…"
           />
         </label>
         <label class="toggle-row confirm-pin">
@@ -339,10 +273,10 @@ function testHermes() {
             :disabled="saving || testing"
             @click="testHermes"
           >
-            {{ testing ? '測試中…' : settings.onboardingComplete ? '解鎖並測試 Hermes' : '測試 Hermes' }}
+            {{ testing ? '測試中…' : '測試 Hermes' }}
           </button>
           <button class="primary-button" type="submit" :disabled="saving || testing">
-            {{ saving ? '儲存中…' : settings.onboardingComplete ? '解鎖、儲存並重新連線' : '設定 PIN 並啟用' }}
+            {{ saving ? '儲存中…' : settings.onboardingComplete ? '儲存並重新連線' : '儲存並啟用' }}
           </button>
         </div>
       </div>

@@ -14,7 +14,6 @@ export function deviceMessage(error) {
     ROBOT_UNAVAILABLE: '機器控制尚未就緒，請確認 Zenbo App 已開啟。',
     ROBOT_INITIALIZING: '機器正在準備，請稍後再試。',
     PAIRING_EXPIRED: '配對 QR 已過期，請在 Zenbo 重新產生配對 QR。',
-    INVALID_PIN: '管理 PIN 不正確，請重新輸入。',
     ARTIFACT_EXPIRED: '照片已失效，請重新拍照。',
   };
   return messages[error?.code] || (error?.name === 'AbortError' ? '連線逾時，請稍後再試。' : '操作未完成，請確認機器狀態後再試。');

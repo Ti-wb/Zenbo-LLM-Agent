@@ -18,7 +18,7 @@ database or provider fallback without an explicit design decision.
 - Vue renders PixelFace, captures WAV with VAD, manages interaction state and
   plays Native-validated audio. It only connects to `127.0.0.1:8787/api/v2`.
 - Android owns the loopback server, one-use fragment bootstrap, HttpOnly session,
-  PIN authorization, Keystore credentials, Hermes lifecycle and ASUS SDK safety.
+  exact-Origin authorization, Keystore credentials, Hermes lifecycle and ASUS SDK safety.
 - Native connects to an HTTPS base ending in `/p/{profile}/v1`, retaining the
   profile and any reverse-proxy prefix for all session/run operations. For example,
   `https://hermes.example.com/hermes-api/p/robot/v1` uses sample profile `robot`

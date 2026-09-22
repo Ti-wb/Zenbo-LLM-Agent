@@ -13,7 +13,6 @@ async function mount(options = {}) {
     getCameraImage: vi.fn().mockResolvedValue(new Blob(['jpeg'], { type: 'image/jpeg' })),
     sendDeviceAction: vi.fn().mockResolvedValue({ accepted: true }),
     putDeviceSettings: vi.fn().mockResolvedValue({}),
-    unlockRuntimeSettings: vi.fn().mockResolvedValue({}),
     setRemoteEnabled: vi.fn().mockResolvedValue({}),
     captureCamera: vi.fn().mockResolvedValue({ artifactId: 'photo', capturedAt: '2026-09-22T10:00:00Z' }),
     ...options.transport,
@@ -53,7 +52,7 @@ describe('robot controls lifecycle', () => {
     transport.setRemoteEnabled.mockImplementationOnce(async () => {
       currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
     });
-    expect(await controls.remote(true, '123456')).toBe(true);
+    expect(await controls.remote(true)).toBe(true);
     expect(controls.online.value).toBe(true);
     rejectOldPoll(new DOMException('Old poll timed out', 'AbortError'));
     await oldPoll;
@@ -62,18 +61,16 @@ describe('robot controls lifecycle', () => {
     expect(controls.error.value).toBe('');
   });
 
-  it('recovers a poll timeout during PIN unlock when LAN activation succeeds', async () => {
+  it('recovers a poll timeout during LAN activation when its response succeeds', async () => {
     const { controls, transport, currentStatus } = await mount();
-    let completeUnlock;
-    transport.unlockRuntimeSettings.mockImplementationOnce(() => new Promise((resolve) => { completeUnlock = resolve; }));
-    const enable = controls.remote(true, '123456');
-    transport.getDeviceStatus.mockRejectedValueOnce(new DOMException('Poll timed out during unlock', 'AbortError'));
+    let completeEnable;
+    transport.setRemoteEnabled.mockImplementationOnce(() => new Promise((resolve) => { completeEnable = resolve; }));
+    const enable = controls.remote(true);
+    transport.getDeviceStatus.mockRejectedValueOnce(new DOMException('Poll timed out during activation', 'AbortError'));
     await controls.refresh();
     expect(controls.error.value).toContain('連線逾時');
-    transport.setRemoteEnabled.mockImplementationOnce(async () => {
-      currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
-    });
-    completeUnlock({ unlocked: true });
+    currentStatus.remote = { enabled: true, connected: false, urls: ['http://192.168.1.2:8788/'] };
+    completeEnable({});
     expect(await enable).toBe(true);
     expect(controls.status.value.remote.enabled).toBe(true);
     expect(controls.online.value).toBe(true);
@@ -170,38 +167,37 @@ describe('robot controls lifecycle', () => {
     finish({ accepted: true }); await move;
   });
 
-  it('requires an unlock for LAN enabling and explicit QR regeneration, never for disabling', async () => {
+  it('enables, renews, and disables LAN directly with the local session', async () => {
     const { controls, transport } = await mount();
-    await controls.remote(true, '123456');
-    expect(transport.unlockRuntimeSettings).toHaveBeenCalledExactlyOnceWith({ pin: '123456' });
-    await controls.remote(true, '234567'); // Explicit renewal uses the existing authenticated enable route.
-    await controls.remote(false, '');
-    expect(transport.unlockRuntimeSettings).toHaveBeenCalledTimes(2);
+    await controls.remote(true);
+    await controls.remote(true);
+    await controls.remote(false);
     expect(transport.setRemoteEnabled.mock.calls).toEqual([[true], [true], [false]]);
   });
 
-  it('revokes pending PIN enables on disable or close without a late request clearing newer pending work', async () => {
+  it('ignores late LAN replies after disable or close without clearing newer pending work or replaying requests', async () => {
     const { controls, transport, open, currentStatus } = await mount();
     currentStatus.remote = { enabled: true, connected: true };
-    let unlockOld, unlockNew;
-    transport.unlockRuntimeSettings
-      .mockImplementationOnce(() => new Promise((resolve) => { unlockOld = resolve; }))
-      .mockImplementationOnce(() => new Promise((resolve) => { unlockNew = resolve; }));
-    transport.setRemoteEnabled.mockImplementation(async (enabled) => { currentStatus.remote = { enabled, connected: false }; });
-    const oldRenewal = controls.remote(true, '123456');
-    expect(await controls.remote(false, '')).toBe(true);
+    let replyOld, replyNew;
+    transport.setRemoteEnabled
+      .mockImplementationOnce(() => new Promise((resolve) => { replyOld = resolve; }))
+      .mockImplementationOnce(async () => { currentStatus.remote = { enabled: false, connected: false }; })
+      .mockImplementationOnce(() => new Promise((resolve) => { replyNew = resolve; }));
+    const oldRenewal = controls.remote(true);
+    expect(await controls.remote(false)).toBe(true);
     expect(controls.status.value.remote.enabled).toBe(false);
-    const newEnable = controls.remote(true, '234567');
-    unlockOld({ unlocked: true });
+    const newEnable = controls.remote(true);
+    replyOld({ enabled: true });
     expect(await oldRenewal).toBe(false);
     expect(controls.pending.value).toBe('remote');
-    expect(transport.setRemoteEnabled.mock.calls).toEqual([[false]]);
+    expect(controls.status.value.remote.enabled).toBe(false);
     open.value = false; await nextTick();
-    unlockNew({ unlocked: true });
+    replyNew({ enabled: true });
     expect(await newEnable).toBe(false);
-    expect(transport.setRemoteEnabled.mock.calls).toEqual([[false]]);
     expect(controls.pending.value).toBe('');
     expect(controls.status.value).toBeNull();
+    expect(await controls.remote(true)).toBe(false);
+    expect(transport.setRemoteEnabled.mock.calls).toEqual([[true], [false], [true]]);
   });
 
   it('can revoke LAN access while a capture is pending', async () => {
@@ -211,8 +207,7 @@ describe('robot controls lifecycle', () => {
     transport.captureCamera.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const capture = controls.capture();
     transport.setRemoteEnabled.mockImplementationOnce(async () => { currentStatus.remote = { enabled: false, connected: false }; });
-    expect(await controls.remote(false, '')).toBe(true);
-    expect(transport.unlockRuntimeSettings).not.toHaveBeenCalled();
+    expect(await controls.remote(false)).toBe(true);
     expect(controls.status.value.remote.pairingCode).toBeUndefined();
     finish({ artifactId: 'photo', capturedAt: '2026-09-22T10:00:00Z' }); await capture;
   });

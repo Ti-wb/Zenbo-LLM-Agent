@@ -96,7 +96,7 @@
       "put": {
         "operationId": "setMotionPermission",
         "summary": "Set the persisted device motion permission",
-        "description": "Requires the renderer session cookie and exact Origin, but no settings PIN or unlock lease. The request accepts only enabled. Motion permission defaults to false. When disabled, start_robot_following, look_at_user and move_robot are rejected with tool error MOTION_DISABLED; stop_robot_following remains available. A rejected motion tool does not fail the conversation turn. Disabling immediately blocks new and queued motion and stops only app-owned active or pending motion; disabling while idle does not call the robot SDK. Enabling grants permission only after persistence succeeds. Storage failures return HTTP 500 INTERNAL_ERROR. If disabling cannot be persisted, runtime permission remains off; the renderer refreshes status after the error instead of restoring permission.",
+        "description": "Requires the renderer session cookie and exact Origin. The request accepts only enabled. Motion permission defaults to false. When disabled, start_robot_following, look_at_user and move_robot are rejected with tool error MOTION_DISABLED; stop_robot_following remains available. A rejected motion tool does not fail the conversation turn. Disabling immediately blocks new and queued motion and stops only app-owned active or pending motion; disabling while idle does not call the robot SDK. Enabling grants permission only after persistence succeeds. Storage failures return HTTP 500 INTERNAL_ERROR. If disabling cannot be persisted, runtime permission remains off; the renderer refreshes status after the error instead of restoring permission.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -141,7 +141,7 @@
     "/settings": {
       "get": {
         "operationId": "getSettings",
-        "summary": "Read redacted runtime settings and lock state",
+        "summary": "Read redacted runtime settings and onboarding state",
         "responses": {
           "200": {
             "description": "Redacted settings",
@@ -160,7 +160,7 @@
       },
       "put": {
         "operationId": "updateSettings",
-        "summary": "Update unlocked runtime settings and optional write-only Hermes API key",
+        "summary": "Update runtime settings and optional write-only Hermes API key",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -196,17 +196,18 @@
           "403": {
             "$ref": "#/components/responses/ErrorResponse"
           },
-          "423": {
+          "409": {
             "$ref": "#/components/responses/ErrorResponse"
           }
-        }
+        },
+        "description": "Requires the current renderer session cookie and exact Origin. The physical-local user can update settings directly after onboarding. Before onboarding completes, returns 409 SETUP_REQUIRED; use the one-time setup route. No separate management PIN or unlock lease is used."
       }
     },
     "/settings/setup": {
       "post": {
         "operationId": "setupRuntimeSettings",
-        "summary": "Atomically configure the initial PIN, Gateway, token, trust, profile, and context",
-        "description": "Available only while setupRequired is true. Validation and persistence are atomic: a failure stores neither the PIN nor any Gateway setting. PIN hashing uses a single process-wide worker with no waiting queue, shared with unlock. Concurrent PIN operations receive 429 RATE_LIMITED with Retry-After. Before committing configuration, Native rechecks the original renderer session, its expiry, the live request socket and runtime lifecycle; stale requests cannot configure or unlock a replacement session.",
+        "summary": "Atomically configure the initial Gateway, credential, trust, profile, and context",
+        "description": "Requires the current renderer session cookie and exact Origin. Available only while setupRequired is true, meaning onboardingComplete is false. Validation and persistence are atomic: a failure stores no partial configuration. A successful setup marks onboardingComplete true; later setup requests return 409 ALREADY_CONFIGURED. After onboarding, missing credentials are repaired through the existing settings update route.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -244,55 +245,6 @@
           },
           "409": {
             "$ref": "#/components/responses/ErrorResponse"
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          }
-        }
-      }
-    },
-    "/settings/unlock": {
-      "post": {
-        "operationId": "unlockSettings",
-        "summary": "Verify the admin PIN and create a time-bounded unlock lease",
-        "description": "PIN verification runs outside the HTTP event loop on the same bounded worker used by setup. Concurrent PIN operations receive 429 RATE_LIMITED with Retry-After and are not queued. Incorrect attempts retain exponential backoff from verification completion, including attempts whose renderer disconnected or expired. A successful result grants the lease only to the original still-current renderer session and live request; runtime stop or renderer replacement invalidates late success.",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/RendererOrigin"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SettingsUnlockRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Settings unlocked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnlockResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ErrorResponse"
-          },
-          "401": {
-            "$ref": "#/components/responses/ErrorResponse"
-          },
-          "403": {
-            "$ref": "#/components/responses/ErrorResponse"
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -301,7 +253,7 @@
       "post": {
         "operationId": "testSettings",
         "summary": "Probe gateway URL, TLS, credential, and protocol without persisting changes",
-        "description": "Allowed while initial setup is required, or after setup only while the renderer has a current settings unlock lease.",
+        "description": "Requires the current renderer session cookie and exact Origin, both during initial setup and after onboarding. The probe does not persist settings.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -337,9 +289,6 @@
           "403": {
             "$ref": "#/components/responses/ErrorResponse"
           },
-          "423": {
-            "$ref": "#/components/responses/ErrorResponse"
-          },
           "502": {
             "$ref": "#/components/responses/ErrorResponse"
           }
@@ -371,7 +320,7 @@
       "post": {
         "operationId": "startNewConversationSession",
         "summary": "Start a fresh Hermes session without changing device settings or deleting history",
-        "description": "Requires the renderer session cookie, exact Origin and a UUID Idempotency-Key, without a settings PIN. Reject active, unsettled or rotating work with 409 TURN_BUSY and a non-ready gateway with 503 GATEWAY_OFFLINE. On acceptance Native synchronously enters CONNECTING and emits session.snapshot with cleared transcript/assistant text. The 202 ConversationResponse retains the local session UUID and its lastSequence equals that snapshot event sequence; the cursor never resets. Rotation keeps status.turnBusy true until the new remote device binding is acknowledged, then Native emits READY. Replaying the same key returns the original accepted response without another rotation. Old remote history and device settings are preserved. Persistence failure returns 500 INTERNAL_ERROR and leaves the original conversation and connection intact.",
+        "description": "Requires the renderer session cookie, exact Origin and a UUID Idempotency-Key. Reject active, unsettled or rotating work with 409 TURN_BUSY and a non-ready gateway with 503 GATEWAY_OFFLINE. On acceptance Native synchronously enters CONNECTING and emits session.snapshot with cleared transcript/assistant text. The 202 ConversationResponse retains the local session UUID and its lastSequence equals that snapshot event sequence; the cursor never resets. Rotation keeps status.turnBusy true until the new remote device binding is acknowledged, then Native emits READY. Replaying the same key returns the original accepted response without another rotation. Old remote history and device settings are preserved. Persistence failure returns 500 INTERNAL_ERROR and leaves the original conversation and connection intact.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -1043,7 +992,7 @@
             }
           }
         },
-        "description": "Requires the current admin PIN unlock lease. Enabling starts only the Android LAN listener on port 8788 and rotates temporary pairing credentials. It does not expose the loopback settings or Hermes key."
+        "description": "Requires the current renderer session cookie and exact Origin. Enabling starts only the Android LAN listener on port 8788 and rotates temporary pairing credentials. LAN pairing grants no access to loopback settings or the Hermes key."
       }
     },
     "/device/camera/frame": {
@@ -1297,8 +1246,6 @@
           "INVALID_BOOTSTRAP_TOKEN",
           "SETUP_REQUIRED",
           "ALREADY_CONFIGURED",
-          "SETTINGS_LOCKED",
-          "INVALID_PIN",
           "INVALID_SETTINGS",
           "TURN_BUSY",
           "MOTION_DISABLED",
@@ -1419,7 +1366,6 @@
         "required": [
           "runtimeReady",
           "setupRequired",
-          "settingsUnlocked",
           "gatewayState",
           "robotReady",
           "activeSessionId",
@@ -1435,10 +1381,8 @@
             "type": "boolean"
           },
           "setupRequired": {
-            "type": "boolean"
-          },
-          "settingsUnlocked": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True exactly when onboardingComplete is false. Missing credentials after onboarding are repaired through settings updates."
           },
           "gatewayState": {
             "$ref": "#/components/schemas/GatewayState"
@@ -1510,9 +1454,7 @@
           "context",
           "hasApiKey",
           "certificatePinConfigured",
-          "pinConfigured",
-          "unlocked",
-          "unlockExpiresAt"
+          "onboardingComplete"
         ],
         "properties": {
           "gatewayUrl": {
@@ -1534,28 +1476,17 @@
           "certificatePinConfigured": {
             "type": "boolean"
           },
-          "pinConfigured": {
-            "type": "boolean"
-          },
-          "unlocked": {
-            "type": "boolean"
-          },
-          "unlockExpiresAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
+          "onboardingComplete": {
+            "type": "boolean",
+            "description": "Whether the one-time initial configuration has completed. Local settings remain editable through the authenticated renderer session."
           }
         }
       },
       "SettingsSetupRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Initial setup is one transaction. pin must equal confirmPin. For CONFIRMED_SPKI_PIN, certificatePin and confirmedFingerprint are required and must be identical.",
+        "description": "Initial setup is one transaction and accepts no management PIN fields. For CONFIRMED_SPKI_PIN, certificatePin and confirmedFingerprint are required and must be identical.",
         "required": [
-          "pin",
-          "confirmPin",
           "gatewayUrl",
           "apiKey",
           "trustMode",
@@ -1570,16 +1501,6 @@
           ]
         },
         "properties": {
-          "pin": {
-            "type": "string",
-            "pattern": "^[0-9]{6,12}$",
-            "writeOnly": true
-          },
-          "confirmPin": {
-            "type": "string",
-            "pattern": "^[0-9]{6,12}$",
-            "writeOnly": true
-          },
           "gatewayUrl": {
             "type": "string",
             "format": "uri",
@@ -1626,20 +1547,6 @@
             }
           }
         ]
-      },
-      "SettingsUnlockRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "pin"
-        ],
-        "properties": {
-          "pin": {
-            "type": "string",
-            "pattern": "^[0-9]{6,12}$",
-            "writeOnly": true
-          }
-        }
       },
       "SettingsUpdateRequest": {
         "type": "object",
@@ -1728,23 +1635,6 @@
             "minLength": 16,
             "maxLength": 4096,
             "writeOnly": true
-          }
-        }
-      },
-      "UnlockData": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "unlocked",
-          "unlockExpiresAt"
-        ],
-        "properties": {
-          "unlocked": {
-            "const": true
-          },
-          "unlockExpiresAt": {
-            "type": "string",
-            "format": "date-time"
           }
         }
       },
@@ -2047,20 +1937,6 @@
             "properties": {
               "data": {
                 "$ref": "#/components/schemas/SettingsData"
-              }
-            }
-          }
-        ]
-      },
-      "UnlockResponse": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/SuccessEnvelope"
-          },
-          {
-            "properties": {
-              "data": {
-                "$ref": "#/components/schemas/UnlockData"
               }
             }
           }

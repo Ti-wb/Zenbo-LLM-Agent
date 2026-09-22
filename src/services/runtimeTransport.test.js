@@ -162,12 +162,12 @@ describe('RuntimeTransport', () => {
       if (!request.body && request.headers['Content-Type'] === 'application/json') {
         throw new TypeError('NetworkError when attempting to fetch resource.');
       }
-      return jsonResponse({ pinConfigured: true, hasApiKey: true, lastSequence: 0 });
+      return jsonResponse({ onboardingComplete: true, hasApiKey: true, lastSequence: 0 });
     });
     const transport = new RuntimeTransport({ fetchImpl });
     await transport.getHealth();
     await expect(transport.getRuntimeSettings()).resolves.toMatchObject({
-      pinConfigured: true, hasApiKey: true,
+      onboardingComplete: true, hasApiKey: true,
     });
     await transport.getRuntimeStatus();
     await transport.getConversation();
@@ -175,7 +175,7 @@ describe('RuntimeTransport', () => {
     expect(fetchImpl.mock.calls.every(([, request]) => !('Content-Type' in request.headers))).toBe(true);
     expect(fetchImpl.mock.calls.every(([, request]) => request.headers.Accept === 'application/json')).toBe(true);
 
-    await transport.unlockRuntimeSettings({ pin: '123456' });
+    await transport.setRemoteEnabled(true);
     expect(fetchImpl.mock.calls.at(-1)[1].headers['Content-Type']).toBe('application/json');
   });
 
@@ -558,32 +558,24 @@ describe('RuntimeTransport', () => {
     failedHandler.close();
   });
 
-  it('uses dedicated setup/unlock endpoints and never sends PINs with settings PUT', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ unlocked: true }));
+  it('uses authenticated settings setup, update, and test endpoints with only their settings payload', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ onboardingComplete: true }));
     const transport = new RuntimeTransport({ origin: 'http://127.0.0.1:8787', fetchImpl });
-
-    await transport.setupRuntimeSettings({
-      pin: '123456',
-      confirmPin: '123456',
-      gatewayUrl: 'https://gateway.example',
-      apiKey: 'fixture-device-token',
-      trustMode: 'SYSTEM_TRUST',
-      context: { robotName: 'Zenbo K', language: 'zh-TW' },
-    });
-    await transport.unlockRuntimeSettings({ pin: '123456' });
-    await transport.putRuntimeSettings({ gatewayUrl: 'https://gateway.example' });
-
+    const settings = {
+      gatewayUrl: 'https://gateway.example/p/robot/v1', apiKey: 'fixture-device-token',
+      trustMode: 'SYSTEM_TRUST', context: { robotName: 'Zenbo K', language: 'zh-TW' },
+    };
+    await transport.setupRuntimeSettings(settings);
+    await transport.putRuntimeSettings(settings);
+    await transport.testRuntimeSettings({ gatewayUrl: settings.gatewayUrl, trustMode: settings.trustMode });
     expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
       'http://127.0.0.1:8787/api/v2/settings/setup',
-      'http://127.0.0.1:8787/api/v2/settings/unlock',
       'http://127.0.0.1:8787/api/v2/settings',
+      'http://127.0.0.1:8787/api/v2/settings/test',
     ]);
-    expect(JSON.parse(fetchImpl.mock.calls[2][1].body)).not.toHaveProperty('pin');
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      pin: '123456',
-      trustMode: 'SYSTEM_TRUST',
-      context: { robotName: 'Zenbo K', language: 'zh-TW' },
-    });
+    expect(fetchImpl.mock.calls.every(([, request]) => request.credentials === 'include')).toBe(true);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual(settings);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).toEqual(settings);
   });
 
   it('sends emergency cancel without inventing a turn id', async () => {

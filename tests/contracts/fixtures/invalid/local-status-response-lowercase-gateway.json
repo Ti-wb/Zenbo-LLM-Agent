@@ -4,7 +4,6 @@
   "data": {
     "runtimeReady": true,
     "setupRequired": false,
-    "settingsUnlocked": false,
     "gatewayState": "connected",
     "robotReady": true,
     "activeSessionId": null,

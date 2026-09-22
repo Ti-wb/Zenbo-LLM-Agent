@@ -10,9 +10,7 @@
     },
     "hasApiKey": true,
     "certificatePinConfigured": true,
-    "pinConfigured": true,
-    "unlocked": true,
-    "unlockExpiresAt": "2026-07-17T08:15:00.000Z"
+    "onboardingComplete": true
   },
   "error": null
 }

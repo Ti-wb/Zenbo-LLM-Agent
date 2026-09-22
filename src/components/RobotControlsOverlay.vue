@@ -16,8 +16,6 @@ const { status, error, pending, online, canMove, canFollow, previewEnabled, imag
   imageError, action, settings, remote, capture } = useRobotControls(toRef(props, 'open'));
 const dialog = ref(null);
 const closeButton = ref(null);
-const pin = ref('');
-const renewingPairing = ref(false);
 let previousFocus;
 const attentionLabel = computed(() => {
   if (!status.value?.attentionEnabled) return '已關閉';
@@ -54,19 +52,6 @@ const pairingExpiry = computed(() => {
   return Number.isNaN(time.getTime()) ? '' : time.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
 });
 
-async function setRemote() {
-  const entered = pin.value;
-  pin.value = '';
-  const enabled = !status.value?.remote?.enabled || renewingPairing.value;
-  if (await remote(enabled, entered)) renewingPairing.value = false;
-}
-
-function disableRemote() {
-  pin.value = '';
-  renewingPairing.value = false;
-  void remote(false, '');
-}
-
 function releaseFocus() {
   document.removeEventListener('keydown', onKeydown, true);
   document.removeEventListener('focusin', onFocusIn, true);
@@ -99,8 +84,6 @@ function onKeydown(event) {
 }
 
 watch(() => props.open, async (visible, _, onCleanup) => {
-  pin.value = '';
-  renewingPairing.value = false;
   if (!visible) return releaseFocus();
   previousFocus = document.activeElement;
   let cancelled = false;
@@ -170,17 +153,11 @@ onBeforeUnmount(releaseFocus);
           <div v-if="status.remote.pairingCode" class="pairing-code"><span>手動配對備用碼</span><strong>{{ status.remote.pairingCode }}</strong><small v-if="pairingExpiry">有效至 {{ pairingExpiry }}</small></div>
         </div>
         <LanControlQr :active="open" :enabled="status?.remote?.enabled === true" :connected="status?.remote?.connected === true" :pairing-code="status?.remote?.pairingCode || ''" :pairing-expires-at="status?.remote?.pairingExpiresAt || ''" :urls="status?.remote?.urls || []" @stop="action('stop')" />
-        <p v-if="renewingPairing" class="hint">重新產生會停止動作並中斷目前的遙控連線，請輸入管理 PIN。</p>
-        <form v-if="!status?.remote?.enabled || renewingPairing" class="remote-form" @submit.prevent="setRemote">
-          <label><span>管理 PIN</span><input v-model="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" minlength="6" maxlength="12" required placeholder="輸入後立即清除" :disabled="!online || Boolean(pending)" /></label>
-          <button type="submit" :disabled="!online || Boolean(pending) || pin.length < 6">{{ pending === 'remote' ? '準備配對 QR…' : renewingPairing ? '重新產生並顯示 QR' : '啟用並顯示配對 QR' }}</button>
-          <button v-if="renewingPairing" type="button" @click="renewingPairing = false; pin = ''">取消</button>
-        </form>
-        <div v-if="status?.remote?.enabled" class="remote-form remote-actions">
-          <button v-if="!renewingPairing" type="button" :disabled="!online || Boolean(pending)" @click="renewingPairing = true">重新產生配對 QR</button>
-          <button type="button" :disabled="pending === 'remote-disable'" @click="disableRemote">{{ pending === 'remote-disable' ? '關閉中…' : '關閉區網遙控' }}</button>
+        <p v-if="status?.remote?.enabled" class="hint">重新產生配對 QR 會停止動作，並中斷目前的遙控連線。</p>
+        <div class="remote-actions">
+          <button type="button" :disabled="!online || Boolean(pending)" @click="remote(true)">{{ pending === 'remote' ? '準備配對 QR…' : status?.remote?.enabled ? '重新產生配對 QR' : '啟用並顯示配對 QR' }}</button>
+          <button v-if="status?.remote?.enabled" type="button" :disabled="pending === 'remote-disable'" @click="remote(false)">{{ pending === 'remote-disable' ? '關閉中…' : '關閉區網遙控' }}</button>
         </div>
-        <p class="hint">開啟後可配對觀看影像、跟隨與短距離遙控；關閉會撤銷配對並停止移動。</p>
       </section>
     </section>
   </div>
@@ -226,8 +203,8 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: #94d8bf; flex-
 .pairing-details { display: flex; align-items: flex-start; gap: 24px; padding: 15px; border-radius: 10px; background: #08161e; margin-bottom: 14px; }
 .remote-address { flex: 1; min-width: 0; }.remote-address > span, .pairing-code > span { color: #94b4bd; font-size: 11px; }.remote-address a { display: block; margin-top: 8px; font-size: 14px; color: #b0e8d7; overflow-wrap: anywhere; }.remote-address p { font-size: 12px; margin: 8px 0 0; }
 .pairing-code strong { display: block; color: #e5faed; font-size: 25px; letter-spacing: .14em; margin-top: 3px; font-variant-numeric: tabular-nums; }.pairing-code small { color: #95acb7; font-size: 10px; }
-.remote-actions { margin-top: 10px; }
-.remote-form { display: flex; align-items: flex-end; gap: 10px; }.remote-form label { flex: 1; }.remote-form label span { display: block; font-size: 11px; color: #a8c1c7; margin-bottom: 6px; }.remote-form input { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid #34505a; border-radius: 9px; background: #05141d; color: #e4f4f6; }.remote-form button { padding: 0 18px; font-size: 13px; }
+.remote-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }.remote-actions button { padding: 0 18px; font-size: 13px; }
+
 .notice { padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }.error { color: #ffd2c4; background: #3c2426; }
-@media (max-width: 620px) { .robot-overlay { padding: 12px; }.robot-card { padding: 18px; }.controls-layout { grid-template-columns: 1fr; gap: 26px; }.connection { font-size: 10px; }.panel-heading { gap: 9px; }.pairing-details { flex-direction: column; gap: 15px; }.camera-view { max-height: 280px; }.remote-form { flex-wrap: wrap; }.remote-form label { min-width: 140px; } }
+@media (max-width: 620px) { .robot-overlay { padding: 12px; }.robot-card { padding: 18px; }.controls-layout { grid-template-columns: 1fr; gap: 26px; }.connection { font-size: 10px; }.panel-heading { gap: 9px; }.pairing-details { flex-direction: column; gap: 15px; }.camera-view { max-height: 280px; }}
 </style>

@@ -29,6 +29,7 @@ public class GatewaySettingsTest {
         assertFalse(exposed.has("model"));
         assertFalse(exposed.has("agentProfile"));
         assertFalse(exposed.getBoolean("hasApiKey"));
+        assertFalse(exposed.getBoolean("onboardingComplete"));
     }
 
     @Test public void motionPreferencePersistsIndependentlyOfGatewaySettings() throws Exception {
@@ -65,5 +66,73 @@ public class GatewaySettingsTest {
         settings.update(new JSONObject().put("gatewayUrl", "https://example.com/p/other/v1"));
         assertNull(settings.loadRemoteSessionState());
         assertNull(settings.loadPendingSubmission());
+    }
+
+    @Test public void legacyCompletionMigratesWithoutChangingSettingsAndSurvivesCredentialLoss() throws Exception {
+        MemoryPreferences store = new MemoryPreferences();
+        GatewaySettings settings = new GatewaySettings(store);
+        String tlsPin = "sha256/" + "A".repeat(43) + "=";
+        settings.update(new JSONObject().put("gatewayUrl", "https://example.com/proxy/p/robot/v1")
+                .put("trustMode", GatewaySettings.CONFIRMED_SPKI_PIN)
+                .put("certificatePin", tlsPin).put("confirmedFingerprint", tlsPin)
+                .put("context", new JSONObject().put("robotName", "Existing Zenbo").put("language", "zh-TW"))
+                .put("enabled", true));
+        settings.setMotionEnabled(true);
+        settings.persistRemoteSessionState("api_session");
+        settings.persistPendingSubmission("11111111-1111-4111-8111-111111111111", new JSONObject().put("input", "test"));
+        java.util.Map<String, Object> expected = new java.util.HashMap<>(store.getAll());
+        expected.put("onboarding_complete", true);
+        MemoryPreferences legacy = legacyVerifier();
+
+        assertTrue(settings.migrateLegacyOnboarding(legacy));
+        assertEquals(expected, store.getAll());
+        assertTrue(legacy.getAll().isEmpty());
+        GatewaySettings restarted = new GatewaySettings(store);
+        assertTrue(restarted.isOnboardingComplete());
+        JSONObject publicSettings = restarted.toJson(false);
+        assertFalse(publicSettings.getBoolean("hasApiKey"));
+        assertTrue(publicSettings.getBoolean("onboardingComplete"));
+        JSONObject snapshot = restarted.snapshotForRollback();
+        restarted.update(new JSONObject().put("gatewayUrl", "https://example.com/p/changed/v1"));
+        restarted.restore(snapshot);
+        assertEquals(snapshot.toString(), restarted.snapshotForRollback().toString());
+        assertEquals(expected.get("device_id"), restarted.getDeviceId());
+        assertTrue(restarted.isMotionEnabled());
+        assertTrue(restarted.isOnboardingComplete());
+    }
+
+    @Test public void migrationFailureKeepsLegacyEvidenceUntilPersistedRetry() throws Exception {
+        MemoryPreferences store = new MemoryPreferences();
+        GatewaySettings settings = new GatewaySettings(store);
+        MemoryPreferences legacy = legacyVerifier();
+        java.util.Map<String, ?> originalVerifier = legacy.getAll();
+        store.failCommits = true;
+        assertFalse(settings.migrateLegacyOnboarding(legacy));
+        assertFalse(store.contains("onboarding_complete"));
+        assertEquals(originalVerifier, legacy.getAll());
+        // A previously configured install must remain editable even if migration disk I/O fails.
+        assertTrue(settings.isOnboardingComplete());
+        store.failCommits = false;
+        assertTrue(settings.migrateLegacyOnboarding(legacy));
+        assertTrue(store.getBoolean("onboarding_complete", false));
+        assertTrue(legacy.getAll().isEmpty());
+    }
+
+    @Test public void incompleteLegacyAndOrdinarySettingsDoNotCompleteOnboarding() throws Exception {
+        GatewaySettings settings = new GatewaySettings(new MemoryPreferences());
+        MemoryPreferences legacy = new MemoryPreferences();
+        legacy.edit().putString("salt", "synthetic-incomplete").commit();
+        assertTrue(settings.migrateLegacyOnboarding(legacy));
+        settings.update(new JSONObject().put("gatewayUrl", "https://example.com/p/robot/v1"));
+        assertFalse(settings.isOnboardingComplete());
+        assertFalse(settings.toJson(true).getBoolean("onboardingComplete"));
+        assertTrue(legacy.contains("salt"));
+    }
+
+    private static MemoryPreferences legacyVerifier() {
+        MemoryPreferences legacy = new MemoryPreferences();
+        legacy.edit().putString("salt", "synthetic-old-salt").putString("hash", "synthetic-old-hash")
+                .putInt("iterations", 150000).commit();
+        return legacy;
     }
 }

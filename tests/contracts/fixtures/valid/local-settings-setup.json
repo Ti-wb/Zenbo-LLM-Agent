@@ -1,6 +1,4 @@
 {
-  "pin": "123456",
-  "confirmPin": "123456",
   "gatewayUrl": "https://gateway.example.test/agent/v1",
   "apiKey": "fixture-device-token-never-persist",
   "trustMode": "SYSTEM_TRUST",

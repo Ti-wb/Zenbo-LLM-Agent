@@ -26,14 +26,12 @@ describe('runtime settings boundary', () => {
       model: 'must-remain-profile-managed',
       apiKey: 'must-not-survive',
       hasApiKey: true,
-      pin: '123456',
       sessionToken: 'must-not-survive',
     });
 
     expect(settings).toMatchObject({ robotName: 'Kira', language: 'zh-TW' });
     expect(settings).not.toHaveProperty('apiKey');
     expect(settings.hasApiKey).toBe(true);
-    expect(settings).not.toHaveProperty('pin');
     expect(settings).not.toHaveProperty('sessionToken');
     expect(settings).not.toHaveProperty('autoListen');
     expect(settings).not.toHaveProperty('model');

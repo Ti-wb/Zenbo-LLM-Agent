@@ -1,7 +1,7 @@
 # Optional on-device LAN control
 
-The Android App may explicitly enable a separate HTTP listener on port 8788 after
-an admin PIN unlock. The renderer's `127.0.0.1:8787/api/v2` remains private and is
+The Android App may explicitly enable a separate HTTP listener on port 8788 using
+its current renderer session and exact Origin. The renderer's `127.0.0.1:8787/api/v2` remains private and is
 never forwarded. No remote Hermes server, cloud relay or provider is added. LAN
 HTTP is unencrypted; enable it only on the intended trusted local network.
 
@@ -9,7 +9,7 @@ The listener accepts RFC1918 peers and an exact Host using an initial device LAN
 address and port 8788. It has no CORS policy granting other sites access. Mutation
 Origin must equal `http://<that literal private IPv4>:8788`; GET Origin may be
 absent or that exact origin. Requests cannot change the motion permission,
-settings, provider configuration, admin PIN or API key.
+settings, provider configuration or API key.
 
 | Method/path | Request | Successful response |
 | --- | --- | --- |
@@ -38,13 +38,13 @@ never be automatically retried. Enabling LAN control opens a pairing QR containi
 only a validated Native RFC1918 home-page URL and `#pair=<8 digits>`. The remote
 page synchronously removes this fragment with `history.replaceState` before
 sending exactly one POST `/remote/pair`; it never puts the code in a query,
-request URL, storage, logs or external QR service. The admin PIN and Hermes
-credentials are never QR data. Failed/expired/consumed codes require a fresh QR;
+request URL, storage, logs or external QR service. Hermes credentials are never
+QR data. Failed/expired/consumed codes require a fresh QR;
 there is no automatic pairing retry or physical action. Manual code entry remains
 an optional fallback.
 
-The App's explicit “regenerate pairing QR” operation unlocks with the admin PIN
-and reuses PUT `/api/v2/device/remote` with `enabled:true`. It stops app-owned motion
+The App's explicit “regenerate pairing QR” operation reuses PUT
+`/api/v2/device/remote` with `enabled:true`, the renderer session and exact Origin. It stops app-owned motion
 and revokes the previous controller before creating a fresh 120-second code.
 Ordinary status polling never rotates codes or disconnects a paired controller.
 

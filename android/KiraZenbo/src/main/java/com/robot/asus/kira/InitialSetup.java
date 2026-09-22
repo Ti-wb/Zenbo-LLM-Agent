@@ -11,38 +11,44 @@ import java.util.Set;
 final class InitialSetup {
     private InitialSetup() { }
 
-    static synchronized void configure(GatewaySettings settings, DeviceCredentialStore credentials,
-                                       AdminPinStore pinStore, JSONObject body) throws Exception {
-        if (pinStore.isConfigured()) throw new IllegalStateException("Initial setup is already complete");
-        validate(body);
-        configure(settings, credentials, pinStore, body, pinStore.prepareSetup(body.optString("pin", "")));
+    interface Credentials {
+        String load();
+        void save(String key) throws Exception;
+        void clear();
     }
 
     static synchronized void configure(GatewaySettings settings, DeviceCredentialStore credentials,
-                                       AdminPinStore pinStore, JSONObject body,
-                                       AdminPinStore.PreparedVerifier verifier) throws Exception {
-        if (pinStore.isConfigured()) throw new IllegalStateException("Initial setup is already complete");
+                                       JSONObject body) throws Exception {
+        configure(settings, new Credentials() {
+            @Override public String load() { return credentials.load(); }
+            @Override public void save(String key) throws Exception { credentials.save(key); }
+            @Override public void clear() { credentials.clear(); }
+        }, body);
+    }
+
+    static synchronized void configure(GatewaySettings settings, Credentials credentials,
+                                       JSONObject body) throws Exception {
+        if (settings.isOnboardingComplete()) throw new IllegalStateException("Initial setup is already complete");
         JSONObject config = validate(body);
         JSONObject snapshot = settings.snapshotForRollback();
         String previousCredential = credentials.load();
         try {
             settings.update(config);
             credentials.save(body.getString("apiKey").trim());
-            pinStore.setup(verifier);
+            settings.completeOnboarding();
         } catch (Exception error) {
-            pinStore.clear();
-            settings.restore(snapshot);
-            if (previousCredential == null) credentials.clear(); else credentials.save(previousCredential);
-            throw new IllegalStateException("Initial setup could not be saved");
+            IllegalStateException failure = new IllegalStateException("Initial setup could not be saved");
+            try { settings.restore(snapshot); }
+            catch (Exception rollbackError) { failure.addSuppressed(rollbackError); }
+            try { if (previousCredential == null) credentials.clear(); else credentials.save(previousCredential); }
+            catch (Exception rollbackError) { failure.addSuppressed(rollbackError); }
+            throw failure;
         }
     }
 
     static JSONObject validate(JSONObject body) throws Exception {
-        onlyKeys(body, "pin", "confirmPin", "gatewayUrl", "apiKey", "trustMode",
+        onlyKeys(body, "gatewayUrl", "apiKey", "trustMode",
                 "certificatePin", "confirmedFingerprint", "context");
-        String pin = string(body, "pin");
-        AdminPinStore.validatePin(pin);
-        if (!pin.equals(string(body, "confirmPin"))) throw new IllegalArgumentException("PIN confirmation does not match");
         String key = string(body, "apiKey").trim();
         if (key.length() < 16 || key.length() > 4096) throw new IllegalArgumentException("API key length is invalid");
         String url = string(body, "gatewayUrl");

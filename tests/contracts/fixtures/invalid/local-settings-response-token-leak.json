@@ -10,10 +10,8 @@
     },
     "hasApiKey": true,
     "certificatePinConfigured": false,
-    "pinConfigured": true,
-    "unlocked": false,
-    "unlockExpiresAt": null,
-    "apiKey": "this-must-never-be-returned"
+    "apiKey": "this-must-never-be-returned",
+    "onboardingComplete": true
   },
   "error": null
 }

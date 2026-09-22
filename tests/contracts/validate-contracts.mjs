@@ -31,7 +31,7 @@ assert(api.components.schemas.ConversationData.required.includes('lastSequence')
 
 const expectedOperations = {
   '/bootstrap': ['post'], '/status': ['get'], '/motion': ['put'], '/settings': ['get', 'put'],
-  '/settings/setup': ['post'], '/settings/unlock': ['post'], '/settings/test': ['post'],
+  '/settings/setup': ['post'], '/settings/test': ['post'],
   '/conversation': ['get'], '/conversation/new-session': ['post'], '/conversation/turns': ['post'], '/conversation/cancel': ['post'],
   '/conversation/tool-calls/{callId}': ['put'], '/conversation/playback': ['post'],
   '/conversation/audio/{artifactId}': ['get'], '/events': ['get'],
@@ -65,6 +65,15 @@ for (const secret of ['apiKey', 'deviceToken', 'certificatePin', 'confirmedFinge
   assert(!(secret in schemas.SettingsData.properties), `SettingsData leaks ${secret}`);
 }
 assert(schemas.SettingsData.required.includes('hasApiKey'));
+assert(schemas.SettingsData.required.includes('onboardingComplete'));
+assert.equal(schemas.SettingsData.properties.onboardingComplete.type, 'boolean');
+for (const retired of ['pinConfigured', 'unlocked', 'unlockExpiresAt']) {
+  assert(!(retired in schemas.SettingsData.properties));
+}
+assert(!('settingsUnlocked' in schemas.StatusData.properties));
+assert(schemas.StatusData.required.includes('setupRequired'));
+assert(!('pin' in schemas.SettingsSetupRequest.properties));
+assert(!('confirmPin' in schemas.SettingsSetupRequest.properties));
 assert(!('model' in schemas.SettingsData.properties));
 assert.equal(schemas.VoiceTurnRequest.properties.audio['x-max-bytes'], 2097152);
 assert.equal(schemas.VoiceTurnRequest.properties.durationMs.maximum, 30000);
@@ -185,7 +194,6 @@ for (const group of ['valid', 'invalid']) {
         if (value.data?.transcript !== '' || value.data?.assistantText !== '') errors.push('New session must clear displayed text');
       }
 
-      if (file.startsWith('local-settings-setup') && value.pin !== value.confirmPin) errors.push('PIN confirmation mismatch');
       if (file.startsWith('local-settings-') && ('certificatePin' in value || 'confirmedFingerprint' in value) && value.certificatePin !== value.confirmedFingerprint) errors.push('Fingerprint mismatch');
     }
     if (group === 'valid') {

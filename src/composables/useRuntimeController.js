@@ -881,12 +881,7 @@ export function useRuntimeController(options = {}) {
     try {
       const response = await transport.getRuntimeSettings();
       const nativeSettings = response.settings || response.data || response;
-      runtime.patchSettings({
-        ...publicSettings(nativeSettings),
-        ...(nativeSettings.pinConfigured !== undefined
-          ? { onboardingComplete: Boolean(nativeSettings.pinConfigured) }
-          : {}),
-      });
+      runtime.patchSettings(publicSettings(nativeSettings));
     } catch {
       // Native remains authoritative; defaults are only an in-memory startup fallback.
     }
@@ -896,18 +891,11 @@ export function useRuntimeController(options = {}) {
     }
   }
 
-  async function unlockSettings(settings) {
-    const pin = String(settings.unlockPin || '');
-    if (!/^[0-9]{6,12}$/.test(pin)) throw new Error('Unlock PIN 必須是 6–12 位數字。');
-    return transport.unlockRuntimeSettings({ pin });
-  }
-
   async function testSettings(settings) {
     testingSettings.value = true;
     settingsTestResult.value = null;
     runtime.error = '';
     try {
-      if (runtime.settings.onboardingComplete) await unlockSettings(settings);
       const trustMode = settings.trustMode || 'SYSTEM_TRUST';
       const apiKey = String(settings.apiKey || '').trim();
       settingsTestResult.value = await transport.testRuntimeSettings({
@@ -918,7 +906,6 @@ export function useRuntimeController(options = {}) {
     } catch (error) {
       runtime.error = `Hermes 測試失敗：${error.message}`;
     } finally {
-      settings.unlockPin = '';
       settings.apiKey = '';
       testingSettings.value = false;
     }
@@ -947,15 +934,9 @@ export function useRuntimeController(options = {}) {
       }
       const settingsBody = runtimeSettingsBody(safeSettings, apiKey, confirmedFingerprint);
       if (runtime.settings.onboardingComplete) {
-        await unlockSettings(settings);
         await transport.putRuntimeSettings(settingsBody);
       } else {
-        const setupPin = String(settings.pin || '');
-        const confirmPin = String(settings.confirmPin || '');
-        if (!/^[0-9]{6,12}$/.test(setupPin) || setupPin !== confirmPin) {
-          throw new Error('Setup PIN 與確認 PIN 不一致。');
-        }
-        await transport.setupRuntimeSettings({ ...settingsBody, pin: setupPin, confirmPin });
+        await transport.setupRuntimeSettings(settingsBody);
       }
       runtime.patchSettings(safeSettings);
       await loadSettings();
@@ -967,9 +948,6 @@ export function useRuntimeController(options = {}) {
       return;
     } finally {
       settings.apiKey = '';
-      settings.pin = '';
-      settings.confirmPin = '';
-      settings.unlockPin = '';
       savingSettings.value = false;
     }
 

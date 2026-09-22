@@ -35,8 +35,6 @@ const localErrorCodes = new Set([
   'INVALID_BOOTSTRAP_TOKEN',
   'SETUP_REQUIRED',
   'ALREADY_CONFIGURED',
-  'SETTINGS_LOCKED',
-  'INVALID_PIN',
   'INVALID_SETTINGS',
 ]);
 

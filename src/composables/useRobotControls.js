@@ -132,17 +132,14 @@ export function useRobotControls(open, options = {}) {
     return perform('settings', () => transport.putDeviceSettings(value));
   }
 
-  function remote(enabled, pin) {
+  function remote(enabled) {
     if (enabled && pending.value) return Promise.resolve(false);
     const revision = ++remoteRevision;
     const current = generation;
     return perform(enabled ? 'remote' : 'remote-disable', async () => {
-      if (enabled) {
-        await transport.unlockRuntimeSettings({ pin });
-        // Disable and closing the panel revoke an enable still waiting on PIN.
-        // A successful old unlock must never dispatch a new LAN authority.
-        if (disposed || !open.value || current !== generation || revision !== remoteRevision) return false;
-      }
+      // The local session authorizes this immediately. Older responses cannot
+      // revive a disabled controller or mutate a reopened panel.
+      if (enabled && (disposed || !open.value || current !== generation || revision !== remoteRevision)) return false;
       await transport.setRemoteEnabled(enabled);
       if (!enabled && current === generation && revision === remoteRevision && status.value) status.value = { ...status.value, remote: { enabled: false, connected: false, urls: [] } };
     });

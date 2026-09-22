@@ -8,7 +8,7 @@ and run IDs, SSE details, credentials and provider settings never reach the Web.
 - [`openapi.json`](openapi.json): HTTP, settings, recovery, tool-result and
   playback operations.
 - [`bootstrap-security.md`](bootstrap-security.md): one-use bootstrap token,
-  HttpOnly cookie, origin checks, PIN authorization and credential storage.
+  HttpOnly cookie, origin checks, settings authorization and credential storage.
 - [`events.md`](events.md): Native-owned events, local replay and recovery.
 - [`schemas/event.schema.json`](schemas/event.schema.json): control and
   conversation envelopes.
@@ -21,7 +21,7 @@ Hermes profile; the device has no model setting.
 
 Motion permission is persisted by Native and defaults to **off**. The renderer
 uses `PUT /api/v2/motion` with only `{ "enabled": true|false }`, authenticated by
-its cookie and exact Origin; no settings PIN is required. The standard response
+its cookie and exact Origin. The standard response
 contains `data: {motionEnabled,moving}`. Both `/status` and every
 `local.robot.state` event (including initial/recovery controls) carry the required
 `motionEnabled` boolean. While off, `start_robot_following`, `look_at_user` and `move_robot`
@@ -53,6 +53,11 @@ Protocol 2.0 is installed together with its renderer in one APK. Old `/api/v1`
 and Agent Gateway settings do not silently fall back or migrate credentials to
 another profile; an operator completes Hermes setup explicitly.
 
+Removing the management PIN changes only this internal local API: the bundled
+renderer and Native implementation are updated atomically in the same APK.
+This change requires no Hermes plugin upgrade and does not change the remote
+Hermes or device-channel protocol.
+
 Run `npm run test:contracts` to validate schemas, fixtures and boundary invariants.
 
 ## Device controls and camera
@@ -77,7 +82,13 @@ UUID turn ID. `ConversationData.cameraCaptures` is optional recovery metadata fo
 recent captures. No renderer event or snapshot contains `imageBase64`; expired
 artifact URLs must be rendered as unavailable rather than indefinitely retried.
 
-`PUT /device/remote {enabled}` requires the admin unlock lease. It controls a
+`GET /settings` reports `onboardingComplete` with redacted connection settings.
+`POST /settings/setup` stores the first configuration only while `setupRequired`
+is true; `PUT /settings` requires completed onboarding and otherwise returns
+`409 SETUP_REQUIRED`. Settings updates, connection tests and LAN control use the existing
+renderer session and exact Origin; there is no separate settings unlock step.
+
+`PUT /device/remote {enabled}` requires the renderer session and exact Origin. It controls a
 separate, opt-in Android LAN listener on port 8788. That listener exposes no
 loopback settings or Hermes credentials; its narrow pairing/control contract is
 documented in [remote-control.md](remote-control.md).

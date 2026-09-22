@@ -191,13 +191,6 @@ export class RuntimeTransport {
     });
   }
 
-  unlockRuntimeSettings(credentials) {
-    return this.request(`${LOCAL_API_PREFIX}/settings/unlock`, {
-      method: 'POST',
-      body: JSON.stringify(credentials),
-    });
-  }
-
   setupRuntimeSettings(settings) {
     return this.request(`${LOCAL_API_PREFIX}/settings/setup`, {
       method: 'POST',

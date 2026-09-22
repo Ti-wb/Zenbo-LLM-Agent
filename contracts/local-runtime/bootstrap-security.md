@@ -56,42 +56,42 @@ uniform JSON error for HTTP and reject the WebSocket upgrade with `401`.
 
 Bootstrap is rate-limited and MUST NOT rotate or disclose the Hermes API credential.
 
-## Settings lock
+## Settings authorization
 
 - Initial configuration occurs only through `POST /settings/setup` while
-  `setupRequired` is true. The request includes the PIN and confirmation,
-  Gateway URL, write-only Hermes API key, trust mode and runtime
-  context. Runtime validates and persists the entire request atomically; on any
-  failure it stores neither the PIN nor any Gateway setting.
-- PIN verification occurs only through `POST /settings/unlock`; PIN values are
-  never logged or returned.
-- Unlock state is server-side and time-bounded. Updating settings requires a
-  currently unlocked renderer session. Testing is allowed either while
-  `setupRequired` is true or, after setup, while the renderer is unlocked.
-- `GET /settings` returns redacted `hasApiKey` and
+  `setupRequired` is true. The request includes the Gateway URL, write-only
+  Hermes API key, trust mode and runtime context. Runtime validates and persists
+  the entire request atomically; a failure stores no partial configuration.
+  A successful setup marks `onboardingComplete` true; another setup request
+  returns `ALREADY_CONFIGURED`. `setupRequired` is exactly its inverse. Missing
+  credentials after onboarding are repaired through settings updates.
+- Setup, settings updates and connection tests require the current renderer
+  session cookie and exact Origin. The physical-local user can change settings
+  directly; there is no management PIN or unlock lease. The removed
+  `POST /settings/unlock` route is not part of protocol 2.0.
+- `GET /settings` returns `onboardingComplete`, redacted `hasApiKey` and
   `certificatePinConfigured` booleans plus the selected `trustMode`; it never
   returns the stored Hermes API key, certificate pin, or confirmation value.
 - `PUT /settings` may accept a write-only `apiKey`. The native runtime
   stores it using the Android credential facility and excludes it from logs,
-  events, status, crash messages, and subsequent responses.
+  events, status, crash messages, and subsequent responses. Before onboarding
+  completes, this route returns `409 SETUP_REQUIRED`; use the one-time setup
+  route. Connection testing remains available before onboarding.
 - Selecting `CONFIRMED_SPKI_PIN` during setup or update requires both
   `certificatePin` and `confirmedFingerprint`; they MUST match exactly before
   any settings are persisted. Neither value substitutes for the Hermes API key.
 - Underlying model-provider credentials are never accepted; apiKey authenticates only the selected Hermes profile.
 
-The runtime applies retry throttling to setup/unlock attempts and returns
-`RATE_LIMITED` with `Retry-After` when the limit is exceeded.
-
 ## Motion permission
 
-`PUT /api/v2/motion` is a renderer interaction command, separate from locked
-connection settings. It requires the existing renderer cookie and exact Origin,
-but no PIN or settings unlock lease. It accepts only a boolean `enabled` field;
+`PUT /api/v2/motion` is a renderer interaction command, separate from connection
+settings. It requires the existing renderer cookie and exact Origin.
+It accepts only a boolean `enabled` field;
 unknown fields and non-boolean values fail with `INVALID_REQUEST`.
 
 Native persists this non-secret preference with a default of false. Off blocks
 following and looking toward the user; stopping remains available. Credentials,
-TLS trust and PIN state cannot be changed through this route. Enabling requires
+TLS trust and onboarding state cannot be changed through this route. Enabling requires
 a successful save; disabling revokes runtime permission before saving. If that
 save fails, return `INTERNAL_ERROR` while keeping runtime permission off.
 
