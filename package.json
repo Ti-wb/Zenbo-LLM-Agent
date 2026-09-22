@@ -20,6 +20,7 @@
   "dependencies": {
     "@ricky0123/vad-web": "0.0.30",
     "pinia": "3.0.4",
+    "qrcode-generator": "2.0.4",
     "vue": "3.5.25"
   },
   "devDependencies": {

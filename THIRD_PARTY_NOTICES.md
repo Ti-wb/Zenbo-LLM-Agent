@@ -15,6 +15,7 @@ runtime dependencies currently declared in `package.json` are:
 | --- | --- | --- |
 | [VAD Web](https://github.com/ricky0123/vad) (`@ricky0123/vad-web`) | 0.0.30 | ISC |
 | [Pinia](https://github.com/vuejs/pinia) | 3.0.4 | MIT |
+| [QR Code Generator](https://github.com/kazuhikoarase/qrcode-generator) (`qrcode-generator`) | 2.0.4 | MIT |
 | [Vue](https://github.com/vuejs/core) | 3.5.25 | MIT |
 
 Transitive production dependencies are listed in the generated web inventory

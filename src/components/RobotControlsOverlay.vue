@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, toRef, watch } from 'vue';
 import { useRobotControls } from '../composables/useRobotControls';
 import ConversationCameraPreview from './ConversationCameraPreview.vue';
+import LanControlQr from './LanControlQr.vue';
 
 const props = defineProps({
   open: Boolean,
@@ -71,7 +72,7 @@ function onKeydown(event) {
     event.preventDefault();
     emit('close');
   } else if (event.key === 'Tab') {
-    const elements = [...dialog.value.querySelectorAll('button,input,a[href]')]
+    const elements = [...dialog.value.querySelectorAll('button,input,select,a[href]')]
       .filter((element) => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
     const index = elements.indexOf(document.activeElement);
     if (index < 0 || (event.shiftKey ? index === 0 : index === elements.length - 1)) {
@@ -151,6 +152,7 @@ onBeforeUnmount(releaseFocus);
           <div class="remote-address"><span>在手機或電腦開啟</span><a v-for="url in status.remote.urls || []" :key="url" :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a><p v-if="!status.remote.urls?.length">尚未取得區網位址，請確認 Wi-Fi。</p></div>
           <div v-if="status.remote.pairingCode" class="pairing-code"><span>一次性配對碼</span><strong>{{ status.remote.pairingCode }}</strong><small v-if="pairingExpiry">有效至 {{ pairingExpiry }}</small></div>
         </div>
+        <LanControlQr :active="open" :enabled="status?.remote?.enabled === true" :urls="status?.remote?.urls || []" @stop="action('stop')" />
         <form class="remote-form" @submit.prevent="setRemote">
           <label v-if="!status?.remote?.enabled"><span>管理 PIN</span><input v-model="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" minlength="6" maxlength="12" required placeholder="輸入後立即清除" :disabled="!online || Boolean(pending)" /></label>
           <button type="submit" :disabled="['remote', 'remote-disable'].includes(pending) || (!status?.remote?.enabled && (!online || Boolean(pending) || pin.length < 6))">{{ ['remote', 'remote-disable'].includes(pending) ? '設定中…' : status?.remote?.enabled ? '關閉區網遙控' : '啟用區網遙控' }}</button>
