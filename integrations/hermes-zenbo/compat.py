@@ -107,6 +107,22 @@ class HermesCompat:
                 "ttsConfigured": bool(tts)}
 
     @staticmethod
+    def camera_vision_supported():
+        # Probe the installed integration, then ask Hermes' own current-profile
+        # model/provider routing policy. Failure disables image delivery only;
+        # it must never select an auxiliary model or change profile settings.
+        try:
+            registry = importlib.import_module("tools.registry").ToolRegistry
+            dispatch = importlib.import_module("agent.tool_dispatch_helpers")
+            vision = importlib.import_module("tools.vision_tools")
+            probe = {"_multimodal": True, "content": [{"type": "text", "text": "camera compatibility probe"}]}
+            return (registry._normalize_handler_result("capture_camera", probe) is probe
+                    and dispatch._is_multimodal_tool_result(probe)
+                    and vision._should_use_native_vision_fast_path() is True)
+        except Exception:
+            return False
+
+    @staticmethod
     def transcribe(path):
         from tools.transcription_tools import transcribe_audio
         return transcribe_audio(str(path), source="zenbo")

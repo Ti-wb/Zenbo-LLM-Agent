@@ -96,7 +96,7 @@
       "put": {
         "operationId": "setMotionPermission",
         "summary": "Set the persisted device motion permission",
-        "description": "Requires the renderer session cookie and exact Origin, but no settings PIN or unlock lease. The request accepts only enabled. Motion permission defaults to false. When disabled, start_robot_following and look_at_user are rejected with tool error MOTION_DISABLED; stop_robot_following remains available. A rejected motion tool does not fail the conversation turn. Disabling immediately blocks new and queued motion and stops only app-owned active or pending motion; disabling while idle does not call the robot SDK. Enabling grants permission only after persistence succeeds. Storage failures return HTTP 500 INTERNAL_ERROR. If disabling cannot be persisted, runtime permission remains off; the renderer refreshes status after the error instead of restoring permission.",
+        "description": "Requires the renderer session cookie and exact Origin, but no settings PIN or unlock lease. The request accepts only enabled. Motion permission defaults to false. When disabled, start_robot_following, look_at_user and move_robot are rejected with tool error MOTION_DISABLED; stop_robot_following remains available. A rejected motion tool does not fail the conversation turn. Disabling immediately blocks new and queued motion and stops only app-owned active or pending motion; disabling while idle does not call the robot SDK. Enabling grants permission only after persistence succeeds. Storage failures return HTTP 500 INTERNAL_ERROR. If disabling cannot be persisted, runtime permission remains off; the renderer refreshes status after the error instead of restoring permission.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RendererOrigin"
@@ -660,7 +660,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Raw audio bytes; the only non-envelope successful HTTP response",
+            "description": "Raw audio bytes; response is not a JSON envelope",
             "headers": {
               "Digest": {
                 "required": true,
@@ -743,6 +743,401 @@
             "$ref": "#/components/responses/ErrorResponse"
           },
           "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        }
+      }
+    },
+    "/device/status": {
+      "get": {
+        "operationId": "getDeviceStatus",
+        "summary": "Read Native device capabilities and local remote-control pairing state",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Read Native device capabilities and local remote-control pairing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        }
+      }
+    },
+    "/device/settings": {
+      "put": {
+        "operationId": "setDeviceSettings",
+        "summary": "Update camera and speaker attention switches",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Update camera and speaker attention switches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceSettingsRequest"
+              }
+            }
+          }
+        },
+        "description": "Camera access requires the local switch and Android permission. Disabling camera or attention immediately ends its app-owned activity. Hermes speech remains profile-managed."
+      }
+    },
+    "/device/action": {
+      "post": {
+        "operationId": "performDeviceAction",
+        "summary": "Run one app-owned follow, stop or short movement action",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run one app-owned follow, stop or short movement action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceActionRequest"
+              }
+            }
+          }
+        },
+        "description": "Movement requires motionEnabled. Forward/backward are fixed low-speed 0.15 m steps; left/right are fixed 15 degree turns. SDK completion determines success. Stop remains available when motion permission is disabled. Calls are never replayed."
+      }
+    },
+    "/device/attention": {
+      "put": {
+        "operationId": "setDeviceAttention",
+        "summary": "Publish renderer listening, speaking or idle phase",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Publish renderer listening, speaking or idle phase",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceAttentionRequest"
+              }
+            }
+          }
+        },
+        "description": "Native consumes the phase only when attention is enabled. It uses fresh SDK speaker-direction data and does not infer direction from model output."
+      }
+    },
+    "/device/camera/capture": {
+      "post": {
+        "operationId": "captureDeviceCamera",
+        "summary": "Capture one JPEG and return local artifact metadata",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capture one JPEG and return local artifact metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraCaptureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CameraCaptureRequest"
+              }
+            }
+          }
+        },
+        "description": "Returns metadata only, never imageBase64. This local operator capture does not submit an image to Hermes. Native keeps only bounded temporary image bytes."
+      }
+    },
+    "/device/remote": {
+      "put": {
+        "operationId": "setRemoteControl",
+        "summary": "Enable or disable the separate opt-in LAN control listener",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RendererOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enable or disable the separate opt-in LAN control listener",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoteControlRequest"
+              }
+            }
+          }
+        },
+        "description": "Requires the current admin PIN unlock lease. Enabling starts only the Android LAN listener on port 8788 and rotates temporary pairing credentials. It does not expose the loopback settings or Hermes key."
+      }
+    },
+    "/device/camera/frame": {
+      "get": {
+        "operationId": "getCameraFrame",
+        "summary": "Read a fresh low-rate camera preview frame",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "JPEG bytes; response is not a JSON envelope",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "binary",
+                  "x-max-bytes": 524288
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "410": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        }
+      }
+    },
+    "/device/camera/{artifactId}": {
+      "get": {
+        "operationId": "getCameraArtifact",
+        "summary": "Read a retained local camera capture",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ArtifactId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JPEG bytes; response is not a JSON envelope",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "binary",
+                  "x-max-bytes": 524288
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "410": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
             "$ref": "#/components/responses/ErrorResponse"
           }
         }
@@ -904,7 +1299,21 @@
           "SETTINGS_LOCKED",
           "INVALID_PIN",
           "INVALID_SETTINGS",
-          "TURN_BUSY"
+          "TURN_BUSY",
+          "MOTION_DISABLED",
+          "CAMERA_DISABLED",
+          "CAMERA_PERMISSION_REQUIRED",
+          "CAMERA_UNAVAILABLE",
+          "CAMERA_RELEASE_FAILED",
+          "CAMERA_BUSY",
+          "CAMERA_TIMEOUT",
+          "ATTENTION_UNAVAILABLE",
+          "REMOTE_UNAVAILABLE",
+          "LAN_UNAVAILABLE",
+          "APP_NOT_FOREGROUND",
+          "DEVICE_UNAVAILABLE",
+          "ROBOT_BUSY",
+          "PERMISSION_REQUIRED"
         ]
       },
       "LocalError": {
@@ -1433,6 +1842,13 @@
           "assistantText": {
             "type": "string",
             "maxLength": 64000
+          },
+          "cameraCaptures": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/CameraArtifact"
+            }
           }
         }
       },
@@ -1924,6 +2340,360 @@
         "additionalProperties": false,
         "properties": {},
         "description": "An empty JSON object. Profile, provider, credentials and history deletion are not configurable through this command."
+      },
+      "CameraArtifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "format": "uuid",
+            "maxLength": 36
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "image/jpeg"
+            ]
+          },
+          "byteLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 524288
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "artifactId",
+          "mimeType",
+          "byteLength",
+          "sha256",
+          "width",
+          "height",
+          "capturedAt"
+        ]
+      },
+      "CameraCaptureData": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "artifactId": {
+            "type": "string",
+            "format": "uuid",
+            "maxLength": 36
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "image/jpeg"
+            ]
+          },
+          "byteLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 524288
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "accepted",
+          "artifactId",
+          "mimeType",
+          "byteLength",
+          "sha256",
+          "width",
+          "height",
+          "capturedAt"
+        ]
+      },
+      "DeviceStatusData": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "robotReady": {
+            "type": "boolean"
+          },
+          "motionEnabled": {
+            "type": "boolean"
+          },
+          "following": {
+            "type": "boolean"
+          },
+          "attentionEnabled": {
+            "type": "boolean"
+          },
+          "attentionState": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "paused_for_camera",
+              "paused_for_following",
+              "motion_disabled",
+              "idle",
+              "finding_face",
+              "tracking_face",
+              "looking_at_speaker",
+              "stop_unconfirmed",
+              "unavailable",
+              "waiting_for_face",
+              "waiting_for_direction"
+            ]
+          },
+          "cameraEnabled": {
+            "type": "boolean"
+          },
+          "cameraState": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "permission_pending",
+              "releasing",
+              "starting",
+              "ready",
+              "error"
+            ]
+          },
+          "cameraPermission": {
+            "type": "string",
+            "enum": [
+              "granted",
+              "required"
+            ]
+          },
+          "remote": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "urls": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              },
+              "pairingCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 64
+              },
+              "pairingExpiresAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "connected": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled",
+              "urls",
+              "pairingCode",
+              "pairingExpiresAt",
+              "connected"
+            ]
+          },
+          "moving": {
+            "type": "boolean"
+          },
+          "attentionSource": {
+            "type": "string",
+            "enum": [
+              "face_tracking",
+              "sdk_doa"
+            ]
+          },
+          "cameraError": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "robotReady",
+          "motionEnabled",
+          "following",
+          "attentionEnabled",
+          "attentionState",
+          "cameraEnabled",
+          "cameraState",
+          "cameraPermission",
+          "remote"
+        ]
+      },
+      "DeviceSettingsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cameraEnabled": {
+            "type": "boolean"
+          },
+          "attentionEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "DeviceActionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "follow",
+              "stop",
+              "forward",
+              "backward",
+              "left",
+              "right"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "DeviceActionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "DeviceAttentionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "listening",
+              "speaking"
+            ]
+          }
+        },
+        "required": [
+          "phase"
+        ]
+      },
+      "RemoteControlRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "CameraCaptureRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "DeviceStatusResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DeviceStatusData"
+              }
+            }
+          }
+        ]
+      },
+      "DeviceActionResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DeviceActionData"
+              }
+            }
+          }
+        ]
+      },
+      "CameraCaptureResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SuccessEnvelope"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/CameraCaptureData"
+              }
+            }
+          }
+        ]
       }
     }
   }

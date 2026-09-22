@@ -10,6 +10,7 @@ from aiohttp import WSMsgType, web
 
 from .audio import ArtifactStore, MAX_UPLOAD, Speech
 from .broker import Broker, Rejected
+from .camera import MAX_CONTROL_BYTES, MAX_FRAME_BYTES
 from .schema import TOOLS
 
 PREFIX = "/zenbo/{profile}/v1"
@@ -89,7 +90,7 @@ class Runtime:
 
     async def channel(self, request):
         profile, device, principal = request["zenbo_identity"]
-        socket = web.WebSocketResponse(heartbeat=20, receive_timeout=60, max_msg_size=32768, compress=False)
+        socket = web.WebSocketResponse(heartbeat=20, receive_timeout=60, max_msg_size=MAX_FRAME_BYTES, compress=False)
         await socket.prepare(request)
         self.sockets.add(socket)
         binding = None
@@ -106,6 +107,11 @@ class Runtime:
                     if not isinstance(body, dict):
                         raise Rejected("invalid_request")
                     kind = body.get("type")
+                    if len(frame.data.encode("utf-8")) > MAX_CONTROL_BYTES:
+                        pending = binding.pending.get(body.get("callId")) if binding is not None else None
+                        if (kind != "tool.result" or body.get("status") != "succeeded" or pending is None
+                                or pending.tool != "capture_camera" or pending.future.done()):
+                            raise Rejected("frame_too_large")
                     if kind == "device.bind":
                         fields(body, {"type", "sessionId"})
                         if binding is not None or not identifier(body["sessionId"]):

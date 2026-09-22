@@ -15,7 +15,7 @@ Hermes SSE event; no local sequence is a remote resume cursor.
 
 Existing conversation type names remain local UI vocabulary: `session.ready`,
 `session.snapshot`, `turn.accepted`, `stt.final`, `agent.thinking`, `tool.call`,
-`agent.text.final`, `tts.ready`, `turn.completed`, `turn.error`, `turn.cancelled`,
+`agent.text.final`, `tts.ready`, `camera.captured`, `turn.completed`, `turn.error`, `turn.cancelled`,
 `session.expired`, and `session.closed`. Native translates Hermes lifecycle into
 these types. `session.ready`'s legacy `gatewayTime` field means Native's current
 ISO timestamp, and `resumedAfter` is a local sequence.
@@ -25,6 +25,14 @@ ISO timestamp, and `resumedAfter` is a local sequence.
 bytes before exposing them locally. Web plays in order and reports each artifact
 via `POST /api/v2/conversation/playback`; only completion of the final artifact
 emits `turn.completed`. Playback receipts are never forwarded to Hermes.
+
+`camera.captured.data` contains exactly `artifactId`, `mimeType`, `byteLength`,
+`sha256`, `width`, `height`, and `capturedAt`. Native emits it only after a fresh,
+authorized `capture_camera` tool succeeds, with Native session/turn UUIDs. Its
+artifact ID addresses `/api/v2/device/camera/{artifactId}`. The optional
+`ConversationData.cameraCaptures` array restores recent metadata after renderer
+recovery. Neither event nor snapshot carries `imageBase64`, remote run IDs or
+remote image URLs. Recovery never reopens the camera or resends a captured image.
 
 The four controls are `local.gateway.state`, `local.robot.state`,
 `local.screen.state`, and `local.interaction`. They also advance the local

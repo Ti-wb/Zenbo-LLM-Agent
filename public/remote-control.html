@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Zenbo 區網遙控</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;background:#07121a;color:#e8f6f5}*{box-sizing:border-box}body{margin:0;padding:30px 20px 40px}main{max-width:920px;margin:auto}header{display:flex;align-items:center;gap:15px;margin-bottom:28px}.eyebrow{font-size:10px;letter-spacing:.18em;color:#8ebdb6;margin:0 0 7px}h1{font-size:27px;margin:0}h2{font-size:17px;margin:0}p{line-height:1.6}.status{margin-left:auto;font-size:12px;color:#b5c8cd}.status.live{color:#9de0bf}.status:before{content:'●';margin-right:7px;color:inherit;font-size:9px}button,input{font:inherit}button{min-height:46px;padding:0 17px;color:#e5f7f0;background:#142e38;border:1px solid #39535c;border-radius:10px;cursor:pointer;touch-action:manipulation}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #a1e1c6;outline-offset:3px}.secondary{background:transparent;font-size:12px}#pair-section{max-width:440px;margin:64px auto;background:#0e222b;border:1px solid #2c454e;border-radius:18px;padding:28px}.intro{font-size:14px;color:#aec3c8;margin:15px 0 23px}label{display:block;font-size:12px;color:#bad0d3}input{display:block;width:100%;height:55px;margin:10px 0 16px;background:#07171e;border:1px solid #486068;border-radius:9px;padding:0 14px;color:#ecfff4;font-size:24px;letter-spacing:.2em}#pair-form button{width:100%;background:#9fdfc4;color:#0b2e21;border-color:transparent;font-weight:650}.hint{font-size:12px;color:#94b0ba;margin:10px 0 0}.notice{font-size:13px;padding:12px 15px;border-radius:9px;background:#42282c;color:#ffe0d4;margin:0 0 18px}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:22px}.camera{min-width:0}.section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.badge{font-size:11px;color:#9cc4bc;border:1px solid #34524e;border-radius:5px;padding:4px 7px}.camera-view{display:grid;place-items:center;aspect-ratio:4/3;position:relative;border:1px solid #30464e;background:#020b10;border-radius:14px;overflow:hidden}.camera-view img{width:100%;height:100%;object-fit:contain}.placeholder{text-align:center;color:#9db5bd;padding:25px}.placeholder span{font-size:42px;color:#497681}.placeholder p{font-size:13px;margin:15px 0 0}.frame-meta{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:#8eacb7;margin-top:10px;min-height:32px}.controls{padding:19px;background:#0d2029;border:1px solid #2c444d;border-radius:14px}.controls .hint{font-size:11px;min-height:36px}.direction-pad{display:grid;grid-template:repeat(3,63px)/repeat(3,1fr);gap:7px;margin:17px 0 19px}.direction-pad button{padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px}.direction-pad button span{font-size:24px;line-height:1}.forward{grid-area:1/2}.left{grid-area:2/1}.stop{grid-area:2/2}.right{grid-area:2/3}.backward{grid-area:3/2}.direction-pad .stop{background:#633439;border-color:#b47a76;color:#fff0e9}#follow{width:100%;font-size:13px}#reconnect{margin-top:14px;width:100%}.session-note{border-top:1px solid #233e48;padding-top:17px;margin-top:22px;font-size:12px;color:#96b4bd}footer{margin-top:26px;color:#597984;font-size:11px}[hidden]{display:none!important}@media(max-width:650px){body{padding:21px 16px 30px}h1{font-size:23px}header{gap:10px;flex-wrap:wrap;margin-bottom:22px}.status{font-size:11px}.workspace{grid-template-columns:1fr;gap:18px}.controls{padding:18px}.direction-pad{max-width:270px;margin:17px auto}#follow{max-width:270px;display:block;margin:auto}.controls .hint{min-height:0}#pair-section{margin-top:35px}#logout{margin-left:auto}.frame-meta{font-size:10px}.session-note{margin-top:17px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">ZENBO · LOCAL CONNECTION</p><h1>區網遙控</h1></div><span id="connection-status" class="status" role="status">尚未配對</span><button id="logout" class="secondary" type="button" hidden>結束遙控</button></header>
+  <p id="error" class="notice" role="alert" hidden></p>
+  <section id="pair-section" aria-labelledby="pair-title">
+    <h2 id="pair-title">連接你的 Zenbo</h2><p class="intro">在 Zenbo 的「機器控制」啟用區網遙控，再輸入畫面上的一次性配對碼。</p>
+    <form id="pair-form"><label for="code">一次性配對碼</label><input id="code" inputmode="numeric" autocomplete="off" maxlength="12" required pattern="[0-9]{6,12}" aria-describedby="pair-hint" placeholder="配對碼" /><button id="pair-button" type="submit">配對並開啟畫面</button></form>
+    <p class="hint" id="pair-hint">手機或電腦需與 Zenbo 連接同一個 Wi-Fi。</p>
+  </section>
+  <section id="remote-section" hidden>
+    <div class="workspace">
+      <section class="camera" aria-labelledby="camera-title"><div class="section-heading"><h2 id="camera-title">Zenbo 眼前畫面</h2><span class="badge">約 2 FPS</span></div><div class="camera-view"><img id="frame" alt="Zenbo 即時相機畫面" hidden /><div id="placeholder" class="placeholder"><span aria-hidden="true">◉</span><p id="camera-message">等待第一張畫面</p></div></div><div class="frame-meta"><span id="frame-time">尚未收到影像</span><span id="camera-status">相機狀態未知</span></div></section>
+      <section class="controls" aria-labelledby="control-title"><div class="section-heading"><h2 id="control-title">移動控制</h2></div><p class="hint" id="motion-hint">每次最多前後移動 15 公分，或轉向 15°。</p><div class="direction-pad"><button type="button" class="forward" data-action="forward" disabled><span aria-hidden="true">↑</span>前進</button><button type="button" class="left" data-action="left" disabled><span aria-hidden="true">↶</span>左轉</button><button type="button" class="stop" data-action="stop"><span aria-hidden="true">■</span>停止</button><button type="button" class="right" data-action="right" disabled><span aria-hidden="true">↷</span>右轉</button><button type="button" class="backward" data-action="backward" disabled><span aria-hidden="true">↓</span>後退</button></div><button id="follow" type="button" disabled>開始跟隨</button><p id="follow-hint" class="hint" hidden>跟隨需先在 Zenbo 關閉相機。</p><button id="reconnect" type="button" hidden>重新連線</button><p class="hint" id="action-status" role="status"></p></section>
+    </div>
+    <p class="session-note">移動需先在 Zenbo 開啟「動作」。頁面離開或連線中斷時會停止移動；重新連線後請重新操作。</p>
+  </section>
+  <footer>Zenbo Agent · 相機與動作由機器端控制</footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const el = (id) => document.getElementById(id);
+  let csrf = '';
+  let connected = false;
+  let status = null;
+  let generation = 0;
+  let imageUrl = '';
+  let lastFrameAt = 0;
+  let actionPending = false;
+  let framePending = false;
+  let heartbeatTimer, statusTimer, frameTimer;
+  const controllers = new Set();
+  // Native: attention stop (2 s) + avoidance (1.5 s) + follow (3 s) / move (2 s),
+  // plus 1 s for scheduling/HTTP. Heartbeat/status/frame keep the short deadline.
+  const actionTimeoutMs = { follow:7500, forward:6500, backward:6500, left:6500, right:6500, stop:3000 };
+  const motionButtons = [...document.querySelectorAll('[data-action]:not([data-action="stop"])')];
+
+  function errorMessage(error) {
+    const messages = {
+      CAMERA_BUSY:'相機正由其他功能使用，請先停止跟隨後再試。', CAMERA_DISABLED:'請在 Zenbo 開啟相機。',
+      CAMERA_PERMISSION_REQUIRED:'請在 Zenbo 允許相機權限。', CAMERA_PERMISSION_DENIED:'請在 Zenbo 允許相機權限。',
+      MOTION_DISABLED:'請在 Zenbo 主畫面開啟「動作」。', ROBOT_BUSY:'機器正在執行其他動作，請先停止或稍後再試。',
+      ROBOT_UNAVAILABLE:'機器控制尚未就緒，請確認 Zenbo App 已開啟。', PAIRING_EXPIRED:'配對碼已過期，請在 Zenbo 重新開啟區網遙控。',
+      UNAUTHORIZED:'配對已失效，請結束遙控後重新配對。', INVALID_PAIRING_CODE:'配對碼不正確或已過期，請確認 Zenbo 畫面。',
+      RATE_LIMITED:'操作太頻繁，請稍後再試。',
+    };
+    return messages[error && error.code] || (error && error.name === 'AbortError' ? '連線逾時，請確認 Wi-Fi 與 Zenbo。' : '操作未完成，請確認 Zenbo 狀態後再試。');
+  }
+
+  function showError(message) { el('error').textContent = message; el('error').hidden = !message; }
+  function clearFrame(message) {
+    if (imageUrl) URL.revokeObjectURL(imageUrl);
+    imageUrl = ''; lastFrameAt = 0;
+    el('frame').removeAttribute('src'); el('frame').hidden = true;
+    el('placeholder').hidden = false; el('camera-message').textContent = message;
+    el('frame-time').textContent = '目前沒有即時影像';
+  }
+  function updateControls() {
+    const enabled = connected && !actionPending && status && status.robotReady && status.motionEnabled;
+    const cameraReleasing = status && (status.cameraState === 'releasing' || status.cameraError === 'CAMERA_RELEASE_FAILED');
+    const cameraBlocksFollow = status && (status.cameraEnabled || cameraReleasing);
+    motionButtons.forEach((button) => { button.disabled = !enabled; });
+    el('follow').disabled = !(connected && status && (status.following || (enabled && !cameraBlocksFollow)));
+    el('follow-hint').hidden = !(cameraBlocksFollow && !status.following);
+    el('follow-hint').textContent = cameraReleasing ? '相機尚未釋放，暫時無法開始跟隨。' : '跟隨需先在 Zenbo 關閉相機。';
+    el('follow').textContent = status && status.following ? '停止跟隨' : '開始跟隨';
+    el('follow').setAttribute('aria-pressed', String(Boolean(status && status.following)));
+    el('motion-hint').textContent = status && !status.motionEnabled ? '請先在 Zenbo 主畫面開啟「動作」。' : '每次最多前後移動 15 公分，或轉向 15°。';
+  }
+  function applyStatus(value) {
+    status = value;
+    el('camera-status').textContent = status.cameraEnabled ? '相機已啟用' : '相機已關閉';
+    if (!status.cameraEnabled) clearFrame('請在 Zenbo 開啟相機');
+    updateControls();
+  }
+  async function request(path, body, raw = false, timeoutMs = 1800) {
+    const abort = new AbortController(); controllers.add(abort);
+    const timeout = setTimeout(() => abort.abort(), timeoutMs);
+    try {
+      const response = await fetch(path, {
+        method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal: abort.signal,
+        headers: { Accept: raw ? 'image/jpeg' : 'application/json', ...(body === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      if (raw && response.ok) {
+        const blob = await response.blob();
+        if (blob.type !== 'image/jpeg' || !blob.size || blob.size > 2097152) throw new Error('影像格式無效');
+        return blob;
+      }
+      const payload = await response.json();
+      if (!payload || typeof payload.ok !== 'boolean') throw new Error('回應格式無效');
+      if (!response.ok || !payload.ok) {
+        const error = new Error(payload.error && payload.error.message || '無法完成操作');
+        error.code = payload.error && payload.error.code; error.status = response.status;
+        error.nativeRejection = payload.ok === false && payload.error && typeof payload.error.code === 'string'
+          && payload.error.code.length > 0 && typeof payload.error.message === 'string';
+        throw error;
+      }
+      return payload.data;
+    } finally { clearTimeout(timeout); controllers.delete(abort); }
+  }
+  function bestEffortStop() {
+    if (!csrf) return;
+    fetch('/remote/action', { method:'POST', credentials:'same-origin', keepalive:true,
+      headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify({action:'stop'}) }).catch(() => {});
+  }
+  function disconnect(message) {
+    generation += 1; connected = false;
+    clearTimeout(heartbeatTimer); clearTimeout(statusTimer); clearTimeout(frameTimer);
+    controllers.forEach((controller) => controller.abort());
+    el('connection-status').textContent = '連線已暫停'; el('connection-status').classList.remove('live');
+    el('reconnect').hidden = !csrf;
+    clearFrame(message || '連線中斷，等待重新連線'); updateControls();
+  }
+  async function heartbeat(current) {
+    if (!connected || current !== generation || document.hidden) return;
+    try { await request('/remote/heartbeat', {}); }
+    catch (error) { if (current === generation) { bestEffortStop(); disconnect('連線中斷，影像已清除'); showError(error.status === 401 ? '配對已失效，請結束遙控後重新配對。' : '連線中斷，請確認 Wi-Fi 與 Zenbo。'); } return; }
+    if (connected && current === generation) heartbeatTimer = setTimeout(() => heartbeat(current), 500);
+  }
+  async function pollStatus(current) {
+    if (!connected || current !== generation) return;
+    try { const value = await request('/remote/status'); if (current === generation) applyStatus(value); }
+    catch (error) { if (current === generation) { bestEffortStop(); disconnect(); showError(errorMessage(error)); } return; }
+    if (connected && current === generation) statusTimer = setTimeout(() => pollStatus(current), 1000);
+  }
+  async function pollFrame(current) {
+    if (!connected || current !== generation || framePending) return;
+    framePending = true;
+    try {
+      if (status && status.cameraEnabled) {
+        const blob = await request('/remote/frame', undefined, true);
+        if (!connected || current !== generation) return;
+        if (imageUrl) URL.revokeObjectURL(imageUrl);
+        imageUrl = URL.createObjectURL(blob); lastFrameAt = Date.now();
+        el('frame').src = imageUrl; el('frame').hidden = false; el('placeholder').hidden = true;
+        el('frame-time').textContent = '收到畫面 ' + new Date(lastFrameAt).toLocaleTimeString('zh-TW');
+      }
+    } catch (error) { if (current === generation) clearFrame(error.name === 'AbortError' ? '影像逾時，等待新畫面' : errorMessage(error)); }
+    finally { framePending = false; if (connected && current === generation) frameTimer = setTimeout(() => pollFrame(current), 500); }
+  }
+  async function connect(value) {
+    const current = ++generation; connected = true;
+    applyStatus(value); showError('');
+    el('pair-section').hidden = true; el('remote-section').hidden = false; el('logout').hidden = false; el('reconnect').hidden = true;
+    el('connection-status').textContent = '已連接 Zenbo'; el('connection-status').classList.add('live');
+    if (document.hidden) { bestEffortStop(); disconnect('頁面已暫停，請重新連線'); return; }
+    void heartbeat(current); void pollStatus(current); void pollFrame(current);
+  }
+  async function sendAction(action) {
+    if (!csrf || (action !== 'stop' && (!connected || actionPending))) return;
+    const current = generation;
+    actionPending = true; updateControls(); el('action-status').textContent = '';
+    try {
+      const result = await request('/remote/action', {action}, false, actionTimeoutMs[action] || 1800);
+      if (!result || result.accepted !== true) throw new Error('動作回應格式無效');
+      if (current === generation) el('action-status').textContent = action === 'stop' ? '已送出停止' : '指令已送出';
+    } catch (error) {
+      if (current === generation) { el('action-status').textContent = errorMessage(error); if (!error.nativeRejection) { bestEffortStop(); disconnect('動作結果未確認，請重新連線'); } }
+    } finally { actionPending = false; updateControls(); }
+  }
+  el('pair-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const code = el('code').value.trim(); el('code').value = ''; el('pair-button').disabled = true; showError('');
+    try { const result = await request('/remote/pair', {code}); csrf = result.csrfToken; await connect(result.status); }
+    catch (error) { showError(error.name === 'AbortError' ? '配對逾時，請確認 Zenbo 的區網遙控已啟用。' : errorMessage(error)); }
+    finally { el('pair-button').disabled = false; }
+  });
+  document.querySelectorAll('[data-action]').forEach((button) => {
+    button.addEventListener('keydown', (event) => { if (event.repeat) event.preventDefault(); });
+    button.addEventListener('click', () => { void sendAction(button.dataset.action); });
+  });
+  el('follow').addEventListener('click', () => { void sendAction(status && status.following ? 'stop' : 'follow'); });
+  el('reconnect').addEventListener('click', async () => {
+    el('reconnect').disabled = true;
+    try { const value = await request('/remote/status'); await connect(value); }
+    catch (error) { showError(errorMessage(error)); }
+    finally { el('reconnect').disabled = false; }
+  });
+  el('logout').addEventListener('click', async () => {
+    bestEffortStop(); disconnect('已結束遙控');
+    try { await request('/remote/logout', {}); } catch { /* Native lease still expires without heartbeat. */ }
+    csrf = ''; status = null; showError(''); el('remote-section').hidden = true; el('logout').hidden = true; el('pair-section').hidden = false;
+    el('connection-status').textContent = '尚未配對'; el('code').focus();
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && csrf) { bestEffortStop(); disconnect('頁面已暫停，請重新連線'); } });
+  window.addEventListener('pagehide', () => { bestEffortStop(); disconnect(); });
+  setInterval(() => { if (lastFrameAt && Date.now() - lastFrameAt > 2000) clearFrame('畫面已過期，等待新影像'); }, 250);
+})();
+</script>
+</body>
+</html>

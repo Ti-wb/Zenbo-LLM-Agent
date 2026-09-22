@@ -9,6 +9,8 @@ export const NATIVE_TOOL_NAMES = Object.freeze([
   'start_robot_following',
   'stop_robot_following',
   'look_at_user',
+  'move_robot',
+  'capture_camera',
 ]);
 
 export const WEB_TOOL_NAMES = Object.freeze(['show_emotion', 'go_to_sleep']);

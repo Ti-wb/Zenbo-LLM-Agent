@@ -211,7 +211,9 @@
             "stop_robot_following",
             "look_at_user",
             "show_emotion",
-            "go_to_sleep"
+            "go_to_sleep",
+            "move_robot",
+            "capture_camera"
           ]
         },
         "toolVersion": {
@@ -221,7 +223,12 @@
           "type": "object"
         },
         "timeoutMs": {
-          "const": 5000
+          "type": "integer",
+          "enum": [
+            5000,
+            6500,
+            7500
+          ]
         },
         "deadlineAt": {
           "type": "string",
@@ -244,6 +251,9 @@
                 "additionalProperties": false,
                 "properties": {},
                 "required": []
+              },
+              "timeoutMs": {
+                "const": 5000
               }
             }
           }
@@ -270,6 +280,9 @@
                   }
                 },
                 "required": []
+              },
+              "timeoutMs": {
+                "const": 7500
               }
             }
           }
@@ -289,6 +302,9 @@
                 "additionalProperties": false,
                 "properties": {},
                 "required": []
+              },
+              "timeoutMs": {
+                "const": 5000
               }
             }
           }
@@ -316,6 +332,9 @@
                 "required": [
                   "doa"
                 ]
+              },
+              "timeoutMs": {
+                "const": 5000
               }
             }
           }
@@ -353,6 +372,9 @@
                 "required": [
                   "emotion"
                 ]
+              },
+              "timeoutMs": {
+                "const": 5000
               }
             }
           }
@@ -372,6 +394,65 @@
                 "additionalProperties": false,
                 "properties": {},
                 "required": []
+              },
+              "timeoutMs": {
+                "const": 5000
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "toolName": {
+                "const": "move_robot"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "forward",
+                      "backward",
+                      "left",
+                      "right"
+                    ]
+                  }
+                },
+                "required": [
+                  "direction"
+                ]
+              },
+              "timeoutMs": {
+                "const": 6500
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "toolName": {
+                "const": "capture_camera"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+              },
+              "timeoutMs": {
+                "const": 5000
               }
             }
           }

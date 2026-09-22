@@ -9,6 +9,7 @@ import time
 import types
 
 from .schema import TOOLS
+from .camera import model_result
 
 _SHARED_NAME = "_hermes_zenbo_runtime_v1"
 
@@ -43,13 +44,18 @@ def register(ctx):
                 # worker's interrupt state in a thread-safe cancellation signal.
                 cancelled = threading.Event()
                 future = asyncio.run_coroutine_threadsafe(runtime.broker.execute(identity, name, args, cancelled.is_set), runtime.loop)
-                end = time.monotonic() + 5.5
+                # The broker owns the manifest deadline; leave its result 500 ms to cross threads.
+                end = time.monotonic() + TOOLS[name]["timeoutMs"] / 1000 + 0.5
                 try:
                     while True:
                         if runtime.compat.interrupt.is_interrupted():
                             cancelled.set()
                         try:
                             result = future.result(timeout=0.05)
+                            if runtime.compat.interrupt.is_interrupted() or cancelled.is_set():
+                                return json.dumps({"error": {"code": "cancelled", "message": "Device tool cancelled"}})
+                            if name == "capture_camera" and "error" not in result:
+                                return model_result(result, runtime.compat.camera_vision_supported())
                             return json.dumps(result, ensure_ascii=False, allow_nan=False)
                         except concurrent.futures.TimeoutError:
                             if runtime.closed or not runtime.loop.is_running() or time.monotonic() >= end:

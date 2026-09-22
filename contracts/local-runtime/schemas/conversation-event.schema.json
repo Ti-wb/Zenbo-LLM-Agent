@@ -52,7 +52,8 @@
         "turn.error",
         "session.expired",
         "turn.cancelled",
-        "session.closed"
+        "session.closed",
+        "camera.captured"
       ]
     },
     "timestamp": {
@@ -230,6 +231,19 @@
         },
         "data": {
           "$ref": "#/$defs/sessionClosed"
+        }
+      }
+    },
+    {
+      "properties": {
+        "turnId": {
+          "$ref": "#/$defs/turnId"
+        },
+        "type": {
+          "const": "camera.captured"
+        },
+        "data": {
+          "$ref": "#/$defs/cameraCaptured"
         }
       }
     }
@@ -426,7 +440,9 @@
             "stop_robot_following",
             "look_at_user",
             "show_emotion",
-            "go_to_sleep"
+            "go_to_sleep",
+            "move_robot",
+            "capture_camera"
           ]
         },
         "toolVersion": {
@@ -482,6 +498,9 @@
           "format": "date-time"
         }
       }
+    },
+    "cameraCaptured": {
+      "$ref": "../openapi.json#/components/schemas/CameraArtifact"
     }
   }
 }

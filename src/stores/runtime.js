@@ -49,6 +49,7 @@ export const RuntimeEventType = Object.freeze({
   LOCAL_ROBOT_STATE: 'local.robot.state',
   LOCAL_SCREEN_STATE: 'local.screen.state',
   LOCAL_INTERACTION: 'local.interaction',
+  CAMERA_CAPTURED: 'camera.captured',
 });
 
 const runtimeEventTypes = new Set(Object.values(RuntimeEventType));
@@ -101,6 +102,7 @@ export const useRuntimeStore = defineStore('runtime', {
     lastSequence: 0,
     transcript: '',
     assistantText: '',
+    cameraCaptures: [],
     pendingEmotion: '',
     pendingEmotionDurationMs: 0,
     explicitEmotion: Emotion.NEUTRAL,
@@ -176,6 +178,12 @@ export const useRuntimeStore = defineStore('runtime', {
   },
 
   actions: {
+    addCameraCapture(metadata) {
+      if (!metadata || !metadata.artifactId || metadata.mimeType !== 'image/jpeg') return;
+      const capture = Object.fromEntries(['artifactId', 'mimeType', 'byteLength', 'sha256', 'width', 'height', 'capturedAt']
+        .map((key) => [key, metadata[key]]));
+      this.cameraCaptures = [...this.cameraCaptures.filter((item) => item.artifactId !== capture.artifactId), capture].slice(-8);
+    },
     setBattery(battery) {
       const percentage = battery?.percentage;
       this.battery = {
@@ -265,8 +273,10 @@ export const useRuntimeStore = defineStore('runtime', {
         lastSequence: Number.isInteger(snapshot.lastSequence) ? snapshot.lastSequence : 0,
         transcript: snapshot.transcript || '',
         assistantText: snapshot.assistantText || '',
+        cameraCaptures: [],
         error: '',
       });
+      for (const capture of snapshot.cameraCaptures || []) this.addCameraCapture(capture);
     },
 
     setEmotion(emotion, durationMs = 0) {

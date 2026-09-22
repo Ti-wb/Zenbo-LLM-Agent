@@ -17,6 +17,7 @@ except ImportError:
     aiohttp = None
 
 from test_audio import wav_bytes
+from test_camera import capture_output, large_jpeg
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "zenbo_route_tests"
@@ -97,7 +98,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
         response = await self.client.get(self.root + "/capabilities", headers=self.headers)
         self.assertEqual(response.status, 200)
-        self.assertEqual(len((await response.json())["tools"]), 6)
+        self.assertEqual(len((await response.json())["tools"]), 8)
         response = await self.client.get("/zenbo/default/v1/capabilities", headers=self.headers)
         self.assertEqual(response.status, 401)
 
@@ -119,6 +120,66 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         await socket.send_json({"type": "run.deactivate", "sessionId": "session", "runId": "run", "turnId": self.turn, "reason": "cancelled"})
         self.assertEqual((await socket.receive_json())["type"], "run.inactive")
         self.assertIn("error", await task)
+        await socket.close()
+
+    async def test_camera_terminal_result_reaches_model_as_real_multimodal_content(self):
+        socket = await self.bind()
+        await self.activate(socket)
+        plugin = importlib.import_module(PACKAGE + ".plugin")
+        old = getattr(plugin.shared(), "runtime", None)
+        plugin.shared().runtime = self.runtime
+        self.compat.tool_identity = lambda session: ("robot", session, "run")
+        self.compat.interrupt = types.SimpleNamespace(is_interrupted=lambda: False)
+        registered = []
+        ctx = types.SimpleNamespace(register_tool=lambda **kw: registered.append(kw),
+                                    register_platform_handler=lambda *args: None, on_unload=lambda callback: None)
+        plugin.register(ctx)
+        handler = next(tool["handler"] for tool in registered if tool["name"] == "capture_camera")
+        try:
+            for supported in (True, False):
+                self.compat.camera_vision_supported = lambda: supported
+                task = asyncio.create_task(asyncio.to_thread(handler, {}, session_id="session"))
+                call = await socket.receive_json()
+                output = capture_output(large_jpeg())
+                response = {"type": "tool.result", "sessionId": "session", "runId": "run", "turnId": self.turn,
+                            "callId": call["callId"], "status": "succeeded", "updatedAt": "2026-09-22T00:00:00Z", "output": output}
+                await socket.send_json({**response, "output": {**output, "sha256": "a" * 64}})
+                self.assertEqual((await socket.receive_json())["code"], "invalid_camera_result")
+                await socket.send_json(response)
+                self.assertEqual((await socket.receive_json())["type"], "tool.ack")
+                result = await asyncio.wait_for(task, 2)
+                if supported:
+                    self.assertIs(result["_multimodal"], True)
+                    self.assertEqual(result["content"][1]["image_url"]["url"], "data:image/jpeg;base64," + output["imageBase64"])
+                else:
+                    self.assertEqual(json.loads(result)["imageDelivery"], "image_not_delivered_to_model")
+                    self.assertNotIn(output["imageBase64"], result)
+                await socket.send_json(response)
+                self.assertEqual((await socket.receive_json())["code"], "frame_too_large")
+        finally:
+            plugin.shared().runtime = old
+            await socket.close()
+
+    async def test_large_non_camera_frames_and_late_camera_results_are_rejected(self):
+        socket = await self.bind()
+        await self.activate(socket)
+        task = asyncio.create_task(self.runtime.broker.execute(("robot", "session", "run"), "stop_robot_following", {}))
+        call = await socket.receive_json()
+        response = {"type": "tool.result", "sessionId": "session", "runId": "run", "turnId": self.turn,
+                    "callId": call["callId"], "status": "succeeded", "updatedAt": "2026-09-22T00:00:00Z"}
+        await socket.send_json({**response, "output": {"accepted": True, "padding": "x" * 32768}})
+        self.assertEqual((await socket.receive_json())["code"], "frame_too_large")
+        await socket.send_json({**response, "output": {"accepted": True}})
+        self.assertEqual((await socket.receive_json())["type"], "tool.ack")
+        self.assertEqual(await task, {"accepted": True})
+        task = asyncio.create_task(self.runtime.broker.execute(("robot", "session", "run"), "capture_camera", {}))
+        call = await socket.receive_json()
+        await socket.send_json({"type": "run.deactivate", "sessionId": "session", "runId": "run",
+                                "turnId": self.turn, "reason": "cancelled"})
+        self.assertEqual((await socket.receive_json())["type"], "run.inactive")
+        self.assertIn("error", await task)
+        await socket.send_json({**response, "callId": call["callId"], "output": capture_output()})
+        self.assertEqual((await socket.receive_json())["code"], "unknown_or_completed_call")
         await socket.close()
 
     async def test_speech_wav_multipart_chunks_and_scoped_artifact(self):

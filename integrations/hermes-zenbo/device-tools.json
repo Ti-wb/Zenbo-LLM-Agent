@@ -1,6 +1,6 @@
 {
   "protocolVersion": "2.0",
-  "manifestVersion": "hermes-zenbo-1",
+  "manifestVersion": "hermes-zenbo-2",
   "tools": [
     {
       "name": "get_system_status",
@@ -79,7 +79,7 @@
       "sideEffect": "physical",
       "idempotent": false,
       "requiresConfirmation": false,
-      "timeoutMs": 5000
+      "timeoutMs": 7500
     },
     {
       "name": "stop_robot_following",
@@ -237,6 +237,125 @@
       },
       "sideEffect": "ui",
       "idempotent": true,
+      "requiresConfirmation": false,
+      "timeoutMs": 5000
+    },
+    {
+      "name": "move_robot",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Make one low-speed step: forward/backward 0.15 m or left/right 15 degrees. Native motion permission and obstacle safety apply. Never chain moves without a user request.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "forward",
+              "backward",
+              "left",
+              "right"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "sideEffect": "physical",
+      "idempotent": false,
+      "requiresConfirmation": false,
+      "timeoutMs": 6500
+    },
+    {
+      "name": "capture_camera",
+      "owner": "native",
+      "version": "1.0.0",
+      "description": "Capture the current camera view when the user asks to see, send or describe what is in front of Zenbo. The image is shown in the current conversation; use vision only if image content is delivered. Camera permission and the local camera switch are required.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "artifactId": {
+            "type": "string",
+            "format": "uuid",
+            "maxLength": 36
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "image/jpeg"
+            ]
+          },
+          "byteLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 524288
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1280
+          },
+          "capturedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64
+          },
+          "imageBase64": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 699052
+          }
+        },
+        "required": [
+          "accepted",
+          "artifactId",
+          "mimeType",
+          "byteLength",
+          "sha256",
+          "width",
+          "height",
+          "capturedAt",
+          "imageBase64"
+        ]
+      },
+      "sideEffect": "none",
+      "idempotent": false,
       "requiresConfirmation": false,
       "timeoutMs": 5000
     }

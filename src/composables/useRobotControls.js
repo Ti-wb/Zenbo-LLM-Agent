@@ -1,0 +1,179 @@
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { RuntimeTransport } from '../services/runtimeTransport';
+import { deviceMessage } from '../services/deviceMessages';
+
+export function useRobotControls(open, options = {}) {
+  const transport = options.transport || new RuntimeTransport();
+  const imageUrls = options.imageUrls || globalThis.URL;
+  const status = ref(null);
+  const error = ref('');
+  const pending = ref('');
+  const online = ref(false);
+  const previewEnabled = ref(false);
+  const imageUrl = ref('');
+  const imageLabel = ref('');
+  const imageError = ref('');
+  let generation = 0;
+  let statusRevision = 0;
+  let statusTimer;
+  let frameTimer;
+  let frameAbort;
+  let framePending = false;
+  let disposed = false;
+
+  const canMove = computed(() => online.value && status.value?.robotReady === true
+    && status.value?.motionEnabled === true && !pending.value);
+  const canFollow = computed(() => canMove.value && !status.value?.cameraEnabled
+    && status.value?.cameraState !== 'releasing' && status.value?.cameraError !== 'CAMERA_RELEASE_FAILED');
+
+  function clearImage() {
+    if (imageUrl.value) imageUrls.revokeObjectURL(imageUrl.value);
+    imageUrl.value = '';
+    imageLabel.value = '';
+  }
+
+  function replaceImage(blob, label) {
+    clearImage();
+    imageUrl.value = imageUrls.createObjectURL(blob);
+    imageLabel.value = label;
+  }
+
+  async function refresh() {
+    const current = generation;
+    const revision = statusRevision;
+    try {
+      const result = await transport.getDeviceStatus();
+      if (disposed || !open.value || current !== generation || revision !== statusRevision) return;
+      status.value = result;
+      online.value = true;
+      if (!result.cameraEnabled) {
+        previewEnabled.value = false;
+        stopPreview();
+      }
+    } catch (cause) {
+      if (current !== generation || disposed) return;
+      online.value = false;
+      error.value = deviceMessage(cause);
+      clearImage();
+    }
+  }
+
+  async function pollStatus() {
+    const current = generation;
+    await refresh();
+    if (!disposed && open.value && current === generation) statusTimer = setTimeout(pollStatus, 1000);
+  }
+
+  function stopPreview() {
+    clearTimeout(frameTimer);
+    frameAbort?.abort();
+    frameAbort = null;
+    clearImage();
+  }
+
+  async function pollFrame() {
+    if (framePending || disposed || !open.value || !previewEnabled.value || !online.value) return;
+    const current = generation;
+    framePending = true;
+    const abort = new AbortController();
+    frameAbort = abort;
+    const timeout = setTimeout(() => { abort.abort(); clearImage(); }, 2000);
+    try {
+      const blob = await transport.getCameraImage('', { signal: abort.signal });
+      if (disposed || !open.value || current !== generation || !previewEnabled.value || abort.signal.aborted) return;
+      replaceImage(blob, `畫面更新 · ${new Date().toLocaleTimeString('zh-TW')}`);
+      imageError.value = '';
+    } catch (cause) {
+      if (!disposed && current === generation && previewEnabled.value) {
+        clearImage();
+        imageError.value = cause.name === 'AbortError' ? '影像逾時，等待新畫面' : deviceMessage(cause);
+      }
+    } finally {
+      clearTimeout(timeout);
+      framePending = false;
+      if (frameAbort === abort) frameAbort = null;
+      if (!disposed && open.value && previewEnabled.value) frameTimer = setTimeout(pollFrame, 500);
+    }
+  }
+
+  async function perform(name, operation) {
+    if (pending.value && !['stop', 'remote-disable'].includes(name)) return false;
+    const current = generation;
+    statusRevision += 1;
+    pending.value = name;
+    error.value = '';
+    try {
+      await operation();
+      if (disposed || current !== generation) return false;
+      statusRevision += 1;
+      await refresh();
+      return true;
+    } catch (cause) {
+      if (!disposed && current === generation) error.value = deviceMessage(cause);
+      return false;
+    } finally {
+      if (pending.value === name) pending.value = '';
+    }
+  }
+
+  function action(name) {
+    if (name === 'follow' && !canFollow.value) return Promise.resolve(false);
+    if (name !== 'stop' && !canMove.value) return Promise.resolve(false);
+    return perform(name, () => transport.sendDeviceAction(name));
+  }
+
+  function settings(value) {
+    return perform('settings', () => transport.putDeviceSettings(value));
+  }
+
+  function remote(enabled, pin) {
+    return perform(enabled ? 'remote' : 'remote-disable', async () => {
+      if (enabled) await transport.unlockRuntimeSettings({ pin });
+      await transport.setRemoteEnabled(enabled);
+      if (!enabled && status.value) status.value = { ...status.value, remote: { enabled: false, connected: false, urls: [] } };
+    });
+  }
+
+  async function capture() {
+    previewEnabled.value = false;
+    stopPreview();
+    const current = generation;
+    return perform('capture', async () => {
+      const metadata = await transport.captureCamera();
+      const blob = await transport.getCameraImage(metadata.artifactId);
+      if (!disposed && open.value && current === generation) {
+        replaceImage(blob, `本機照片 · ${new Date(metadata.capturedAt).toLocaleTimeString('zh-TW')}`);
+        imageError.value = '';
+      }
+    });
+  }
+
+  watch([open, previewEnabled, online], ([visible, preview, connected]) => {
+    stopPreview();
+    if (visible && preview && connected) void pollFrame();
+  });
+
+  watch(open, (visible) => {
+    generation += 1;
+    clearTimeout(statusTimer);
+    if (visible) {
+      error.value = '';
+      void pollStatus();
+    } else {
+      previewEnabled.value = false;
+      online.value = false;
+      status.value = null; // Pairing codes never survive closing the controls.
+      stopPreview();
+    }
+  }, { immediate: true });
+
+  onBeforeUnmount(() => {
+    disposed = true;
+    generation += 1;
+    clearTimeout(statusTimer);
+    stopPreview();
+  });
+
+  return { status, error, pending, online, canMove, canFollow, previewEnabled, imageUrl, imageLabel,
+    imageError, refresh, action, settings, remote, capture };
+}

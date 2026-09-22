@@ -4,7 +4,7 @@ import org.json.JSONObject;
 import java.util.Set;
 
 /** Injectable hardware boundary. Tests must never invoke the physical RobotAPI. */
-interface RobotOperations {
+public interface RobotOperations {
     interface ResultCallback { void onResult(JSONObject result); }
     boolean isReady();
     boolean isMoving();

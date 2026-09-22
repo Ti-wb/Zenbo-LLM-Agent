@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import PixelFace from './components/PixelFace.vue';
 import SettingsOverlay from './components/SettingsOverlay.vue';
+import RobotControlsOverlay from './components/RobotControlsOverlay.vue';
 import { useIdleExpression } from './composables/useIdleExpression';
 import { useRuntimeController } from './composables/useRuntimeController';
 import { createListeningCue } from './services/listeningCue';
@@ -23,6 +24,10 @@ const {
   saveSettings,
   setMotionEnabled,
   startNewSession,
+  canAskCamera = ref(false),
+  cameraRequestPending = ref(false),
+  cameraRequestMessage = ref(''),
+  requestCameraView,
   testSettings,
   toggleListening,
 } = useRuntimeController();
@@ -33,8 +38,18 @@ const listeningCue = createListeningCue();
 const now = ref(new Date());
 const settingsHolding = ref(false);
 const errorVisible = ref(false);
+const robotControlsOpen = ref(false);
+const cameraNotice = ref(false);
+const latestCapture = computed(() => runtime.cameraCaptures[runtime.cameraCaptures.length - 1] || null);
 let clockTimer;
 let settingsHoldTimer;
+let cameraNoticeTimer;
+
+watch(() => latestCapture.value?.artifactId, (artifactId, previous) => {
+  window.clearTimeout(cameraNoticeTimer);
+  cameraNotice.value = Boolean(artifactId && artifactId !== previous);
+  if (cameraNotice.value) cameraNoticeTimer = window.setTimeout(() => { cameraNotice.value = false; }, 8000);
+});
 
 const canIndicateListening = computed(() =>
   !runtime.sleeping && !runtime.error && !runtime.waitingForPreviousTurn
@@ -119,6 +134,7 @@ function handleSettingsKeyUp(event) {
 
 onBeforeUnmount(() => {
   window.clearInterval(clockTimer);
+  window.clearTimeout(cameraNoticeTimer);
   cancelSettingsHold();
   listeningCue.destroy();
 });
@@ -175,6 +191,12 @@ onBeforeUnmount(() => {
         <p v-if="motionError" class="motion-error" role="status">{{ motionError }}</p>
       </div>
       <button
+        class="new-session-button robot-controls-button"
+        type="button"
+        :disabled="!runtime.settings.onboardingComplete"
+        @click="robotControlsOpen = true"
+      >機器</button>
+      <button
         class="icon-button settings-hold"
         :class="{ holding: settingsHolding }"
         type="button"
@@ -220,12 +242,13 @@ onBeforeUnmount(() => {
       <p v-if="runtime.transcript || runtime.assistantText" class="caption">
         {{ runtime.assistantText || runtime.transcript }}
       </p>
+      <button v-if="cameraNotice" type="button" class="camera-notice" @click="robotControlsOpen = true; cameraNotice = false">已拍攝眼前畫面 · 開啟照片</button>
       <button v-if="runtime.sleeping" class="wake-button" type="button" @click="toggleListening">
         喚醒 Zenbo
       </button>
     </section>
 
-    <div v-if="errorVisible && runtime.error && !runtime.settingsOpen" class="error-overlay" role="alertdialog" aria-modal="true">
+    <div v-if="errorVisible && runtime.error && !runtime.settingsOpen && !robotControlsOpen" class="error-overlay" role="alertdialog" aria-modal="true">
       <section class="error-card" aria-labelledby="runtime-error-title">
         <p class="error-kicker">LOCAL RUNTIME</p>
         <h2 id="runtime-error-title">連線需要處理</h2>
@@ -248,6 +271,15 @@ onBeforeUnmount(() => {
       @close="runtime.settingsOpen = false"
       @save="saveSettings"
       @test="testSettings"
+    />
+    <RobotControlsOverlay
+      :open="robotControlsOpen"
+      :can-ask-camera="canAskCamera"
+      :camera-request-pending="cameraRequestPending"
+      :camera-request-message="cameraRequestMessage"
+      :latest-capture="latestCapture"
+      @close="robotControlsOpen = false"
+      @ask-camera="requestCameraView?.()"
     />
   </main>
 </template>
@@ -326,6 +358,8 @@ onBeforeUnmount(() => {
   background: #102922;
   color: #a3e8cf;
 }
+.robot-controls-button { min-width: 60px; }
+.camera-notice { margin-top: 8px; min-height: 36px; padding: 0 14px; border: 1px solid #3b6059; border-radius: 18px; background: #0e2824; color: #b4e9d4; font-size: 12px; cursor: pointer; }
 
 .motion-toggle:focus-visible,
 .new-session-button:focus-visible {

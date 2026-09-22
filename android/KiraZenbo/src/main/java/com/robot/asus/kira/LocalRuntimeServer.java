@@ -53,6 +53,8 @@ public final class LocalRuntimeServer {
     private final AdminPinStore adminPinStore;
     private final RemoteSessionCoordinator coordinator;
     private final RobotGateway robotGateway;
+    private final DeviceHardware deviceHardware;
+    private final LanRemoteServer lanRemote;
     private final LoopbackAsyncHttpServer server = new LoopbackAsyncHttpServer();
     private final Set<WebSocket> clients = Collections.synchronizedSet(new HashSet<>());
     private final LinkedHashMap<String, JSONObject> completedOperations = new LinkedHashMap<>();
@@ -77,7 +79,15 @@ public final class LocalRuntimeServer {
             RemoteSessionCoordinator coordinator,
             RobotGateway robotGateway
     ) {
+        this(context, settings, credentialStore, coordinator, robotGateway, null);
+    }
+
+    public LocalRuntimeServer(Context context, GatewaySettings settings,
+            DeviceCredentialStore credentialStore, RemoteSessionCoordinator coordinator,
+            RobotGateway robotGateway, DeviceHardware deviceHardware) {
         this.context = context.getApplicationContext();
+        this.deviceHardware = deviceHardware;
+        this.lanRemote = deviceHardware == null ? null : new LanRemoteServer(this.context, deviceHardware, coordinator);
         this.settings = settings;
         this.credentialStore = credentialStore;
         this.adminPinStore = new AdminPinStore(context.getApplicationContext());
@@ -94,12 +104,16 @@ public final class LocalRuntimeServer {
     }
 
     public synchronized void stop() {
+        if (lanRemote != null) lanRemote.close();
         if (!started) return;
         server.stop();
+        WebSocket[] closing;
         synchronized (clients) {
-            for (WebSocket client : clients) client.close();
+            closing = clients.toArray(new WebSocket[0]);
             clients.clear();
         }
+        // close() can invoke callbacks synchronously; never acquire coordinator under clients.
+        for (WebSocket client : closing) client.close();
         rendererToken = null;
         rendererTokenExpiresAt = 0L;
         bootstrapSecret = null;
@@ -122,13 +136,13 @@ public final class LocalRuntimeServer {
 
     public void publish(JSONObject event) {
         String text = event.toString();
-        synchronized (clients) {
-            for (WebSocket client : clients) {
-                try {
-                    client.send(text);
-                } catch (Exception error) {
-                    Log.w(TAG, "Could not publish local runtime event", error);
-                }
+        WebSocket[] recipients;
+        synchronized (clients) { recipients = clients.toArray(new WebSocket[0]); }
+        for (WebSocket client : recipients) {
+            try {
+                client.send(text);
+            } catch (Exception error) {
+                Log.w(TAG, "Could not publish local runtime event", error);
             }
         }
     }
@@ -152,6 +166,7 @@ public final class LocalRuntimeServer {
             ));
         });
 
+        registerDeviceRoutes();
         registerSessionRoute("/api/v2/bootstrap$");
         registerStatusRoute("/api/v2/status$");
         registerConversationRoute("/api/v2/conversation$");
@@ -463,6 +478,116 @@ public final class LocalRuntimeServer {
         server.get("/(.+)$", (request, response) -> serveAppAsset(request, response));
     }
 
+    private JSONObject deviceStatus() {
+        JSONObject state = deviceHardware.status();
+        try {
+            state.put("motionEnabled", coordinator.isMotionEnabled());
+            state.put("remote", lanRemote.status(true));
+        } catch (JSONException invalid) { throw new IllegalStateException(invalid); }
+        return state;
+    }
+
+    static boolean validDeviceAction(String action) {
+        return "follow".equals(action) || "stop".equals(action) || "forward".equals(action)
+                || "backward".equals(action) || "left".equals(action) || "right".equals(action);
+    }
+
+    private void registerDeviceRoutes() {
+        if (deviceHardware == null) return;
+        server.get("/api/v2/device/status$", (request,response) -> {
+            if (requireSession(request,response)) sendJson(response,200,deviceStatus());
+        });
+        server.addAction("PUT", "/api/v2/device/settings$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            JSONObject body = readJson(request);
+            try {
+                requireOnlyKeys(body,"cameraEnabled","attentionEnabled");
+                if (body.length() == 0) throw new JSONException("At least one setting is required");
+                for (String field : Arrays.asList("cameraEnabled","attentionEnabled")) {
+                    if (body.has(field) && !(body.opt(field) instanceof Boolean)) throw new JSONException("Settings must be boolean");
+                }
+                if (body.has("attentionEnabled")) deviceHardware.setAttentionEnabled(body.getBoolean("attentionEnabled"));
+                if (body.has("cameraEnabled")) {
+                    deviceHardware.setCameraEnabled(body.getBoolean("cameraEnabled"), result ->
+                            com.koushikdutta.async.AsyncServer.getDefault().post(() -> sendDeviceResult(response,result,true,false)));
+                } else sendJson(response,200,deviceStatus());
+            } catch (Exception invalid) { sendError(response,400,"INVALID_REQUEST","Invalid device settings"); }
+        }, headers -> new BoundedJsonBody());
+        server.addAction("PUT", "/api/v2/device/attention$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            try {
+                JSONObject body = readJson(request); requireOnlyKeys(body,"phase");
+                String phase = body.optString("phase","");
+                if (!("idle".equals(phase) || "listening".equals(phase) || "speaking".equals(phase))) throw new JSONException("Invalid phase");
+                deviceHardware.setInteractionPhase(phase);
+                sendJson(response,200,deviceStatus());
+            } catch (Exception invalid) { sendError(response,400,"INVALID_REQUEST","Invalid interaction phase"); }
+        }, headers -> new BoundedJsonBody());
+        server.addAction("POST", "/api/v2/device/action$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            try {
+                JSONObject body = readJson(request); requireOnlyKeys(body,"action");
+                String action = body.optString("action","");
+                if (!validDeviceAction(action)) throw new JSONException("Invalid device action");
+                if (!"stop".equals(action) && !coordinator.manualDeviceActionAllowed()) {
+                    sendError(response,409,"TURN_BUSY","Conversation currently owns the robot"); return;
+                }
+                deviceHardware.action("follow".equals(action) ? "follow_start" : action,
+                        operation -> ("stop".equals(action) || coordinator.manualDeviceActionAllowed()) && runDeviceOperation(operation),
+                        result -> com.koushikdutta.async.AsyncServer.getDefault().post(() -> sendDeviceResult(response,result,false,false)));
+            } catch (Exception invalid) { sendError(response,400,"INVALID_REQUEST","Invalid device action"); }
+        }, headers -> new BoundedJsonBody());
+        server.get("/api/v2/device/camera/frame$", (request,response) -> {
+            if (requireSession(request,response)) sendDeviceImage(response,"");
+        });
+        server.addAction("POST", "/api/v2/device/camera/capture$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            try {
+                if (request.getBody() == null || !(request.getBody().get() instanceof JSONObject)) throw new JSONException("Expected JSON");
+                requireOnlyKeys(readJson(request));
+            }
+            catch (Exception invalid) { sendError(response,400,"INVALID_REQUEST","Expected an empty object"); return; }
+            deviceHardware.capture(result -> com.koushikdutta.async.AsyncServer.getDefault().post(() -> sendDeviceResult(response,result,false,true)));
+        }, headers -> new BoundedJsonBody());
+        server.get("/api/v2/device/camera/([a-fA-F0-9-]{36})$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            String artifactId = request.getPath().substring(request.getPath().lastIndexOf('/') + 1);
+            try { if (!UUID.fromString(artifactId).toString().equalsIgnoreCase(artifactId)) throw new IllegalArgumentException(); }
+            catch (Exception invalid) { sendError(response,400,"INVALID_REQUEST","Invalid camera artifact"); return; }
+            sendDeviceImage(response,artifactId);
+        });
+        server.addAction("PUT", "/api/v2/device/remote$", (request,response) -> {
+            if (!requireSession(request,response)) return;
+            try {
+                JSONObject body = readJson(request); requireOnlyKeys(body,"enabled");
+                if (!(body.opt("enabled") instanceof Boolean)) throw new JSONException("enabled must be boolean");
+                if (body.getBoolean("enabled") && !isUnlocked()) {
+                    sendError(response,423,"SETTINGS_LOCKED","Unlock settings with the admin PIN first"); return;
+                }
+                lanRemote.setEnabled(body.getBoolean("enabled"));
+                sendJson(response,200,deviceStatus());
+            } catch (JSONException invalid) { sendError(response,400,"INVALID_REQUEST","enabled must be boolean"); }
+            catch (Exception unavailable) { sendError(response,503,"LAN_UNAVAILABLE","LAN listener could not start; connect to a private Wi-Fi network"); }
+        }, headers -> new BoundedJsonBody());
+    }
+
+    private static boolean runDeviceOperation(Runnable operation) { operation.run(); return true; }
+    private void sendDeviceImage(AsyncHttpServerResponse response,String artifactId) {
+        byte[] image = deviceHardware.cameraJpeg(artifactId);
+        if (image == null) { sendError(response,404,"CAMERA_UNAVAILABLE","No fresh camera image is available"); return; }
+        secureHeaders(response); response.send("image/jpeg",image);
+    }
+    private void sendDeviceResult(AsyncHttpServerResponse response,JSONObject result,boolean status,boolean capture) {
+        if ("error".equals(result.optString("status"))) {
+            JSONObject error = result.optJSONObject("error");
+            sendError(response,409,error == null ? "DEVICE_UNAVAILABLE" : error.optString("code","DEVICE_UNAVAILABLE"),
+                    error == null ? "Device operation is unavailable" : error.optString("message","Device operation is unavailable"));
+            return;
+        }
+        JSONObject output = result.optJSONObject("result");
+        sendJson(response,200,status ? deviceStatus() : capture ? RemoteSessionCoordinator.cameraMetadata(output) : json("accepted",true));
+    }
+
     private void registerSessionRoute(String path) {
         server.post(path, (request, response) -> {
             if (!requireLoopback(request, response)) return;
@@ -673,8 +798,8 @@ public final class LocalRuntimeServer {
                 webSocket.close();
                 return;
             }
-            webSocket.setClosedCallback(error -> clients.remove(webSocket));
-            webSocket.setEndCallback(error -> clients.remove(webSocket));
+            webSocket.setClosedCallback(error -> rendererDisconnected(webSocket));
+            webSocket.setEndCallback(error -> rendererDisconnected(webSocket));
             // Match the coordinator -> client lock order used by event publication.
             // Subscription and retained-history selection are atomic with native sequencing.
             synchronized (coordinator) {
@@ -699,6 +824,20 @@ public final class LocalRuntimeServer {
                 }
             }
         });
+    }
+
+    private void rendererDisconnected(WebSocket webSocket) {
+        // Keep coordinator -> clients lock order, matching publication and socket subscription.
+        synchronized (coordinator) {
+            if (removeLastRenderer(clients, webSocket)) coordinator.onRendererDisconnected();
+        }
+    }
+
+    static <T> boolean removeLastRenderer(Set<T> connected, T client) {
+        synchronized (connected) {
+            // End and close can both fire. A replaced socket must not revoke the new renderer.
+            return connected.remove(client) && connected.isEmpty();
+        }
     }
 
     private void updateSettings(AsyncHttpServerRequest request, AsyncHttpServerResponse response) {
@@ -974,7 +1113,9 @@ public final class LocalRuntimeServer {
                 "SESSION_EXPIRED", "TURN_CANCELLED", "ROBOT_INITIALIZING", "ROBOT_UNAVAILABLE",
                 "TOOL_REJECTED", "TIMEOUT", "ARTIFACT_EXPIRED", "INTERNAL_ERROR",
                 "INVALID_BOOTSTRAP_TOKEN", "SETUP_REQUIRED", "ALREADY_CONFIGURED", "SETTINGS_LOCKED",
-                "INVALID_PIN", "INVALID_SETTINGS"
+                "INVALID_PIN", "INVALID_SETTINGS", "LAN_UNAVAILABLE", "CAMERA_UNAVAILABLE",
+                "CAMERA_DISABLED", "CAMERA_BUSY", "CAMERA_PERMISSION_REQUIRED", "MOTION_DISABLED",
+                "APP_NOT_FOREGROUND", "DEVICE_UNAVAILABLE", "ROBOT_BUSY", "PERMISSION_REQUIRED"
         ));
         if (allowed.contains(normalized)) return normalized;
         if (normalized.contains("TLS") || normalized.contains("CERTIFICATE")) return "GATEWAY_TLS";
@@ -1113,7 +1254,7 @@ public final class LocalRuntimeServer {
         try { return Integer.parseInt(value); } catch (Exception ignored) { return fallback; }
     }
 
-    private static String isoTime(long timestamp) {
+    static String isoTime(long timestamp) {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
         format.setTimeZone(TimeZone.getTimeZone("UTC"));
         return format.format(new Date(timestamp));

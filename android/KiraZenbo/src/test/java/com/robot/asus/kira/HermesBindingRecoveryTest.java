@@ -226,7 +226,7 @@ public class HermesBindingRecoveryTest {
                     }
                     if (path.equals("/zenbo/robot/v1/capabilities")) return json("{\"pluginVersion\":\"1.0\","
                             + "\"tools\":[\"get_system_status\",\"start_robot_following\",\"stop_robot_following\",\"look_at_user\","
-                            + "\"show_emotion\",\"go_to_sleep\"],\"speech\":{\"sttConfigured\":true,\"ttsConfigured\":true}}");
+                            + "\"show_emotion\",\"go_to_sleep\",\"move_robot\",\"capture_camera\"],\"speech\":{\"sttConfigured\":true,\"ttsConfigured\":true}}");
                     if (path.equals("/p/robot/api/sessions") && "POST".equals(request.getMethod())) {
                         try {
                             JSONObject body = new JSONObject(request.getBody().readUtf8());

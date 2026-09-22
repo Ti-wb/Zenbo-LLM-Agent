@@ -1,9 +1,12 @@
 import contextvars
+import concurrent.futures
 import importlib
+import json
 from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "zenbo_compat_tests"
@@ -91,7 +94,67 @@ class CompatTests(unittest.TestCase):
 
 
 class PluginTests(unittest.TestCase):
-    def test_six_tools_register_and_fail_closed_without_listener(self):
+    def invoke_with_fake_future(self, name, future, clock, interrupted=False):
+        plugin = importlib.import_module(PACKAGE + ".plugin")
+        old = getattr(plugin.shared(), "runtime", None)
+        runtime = types.SimpleNamespace(closed=False,
+            compat=types.SimpleNamespace(tool_identity=lambda session: ("robot", session, "run-1"),
+                interrupt=types.SimpleNamespace(is_interrupted=lambda: interrupted)),
+            broker=types.SimpleNamespace(execute=Mock(return_value=object())),
+            loop=types.SimpleNamespace(is_running=lambda: True))
+        plugin.shared().runtime = runtime
+        registered = []
+        ctx = types.SimpleNamespace(register_tool=lambda **kwargs: registered.append(kwargs),
+            register_platform_handler=lambda *args: None, on_unload=lambda callback: None)
+        try:
+            plugin.register(ctx)
+            handler = next(tool["handler"] for tool in registered if tool["name"] == name)
+            with patch.object(plugin, "time", types.SimpleNamespace(monotonic=lambda: clock[0])), \
+                    patch.object(plugin.asyncio, "run_coroutine_threadsafe", return_value=future):
+                result = handler({}, session_id="session-1")
+            self.assertEqual(runtime.broker.execute.call_args.args[:3], (("robot", "session-1", "run-1"), name, {}))
+            self.assertTrue(runtime.broker.execute.call_args.args[3]())
+            return json.loads(result)
+        finally:
+            plugin.shared().runtime = old
+
+    def test_handler_does_not_cancel_a_broker_result_within_each_full_native_budget(self):
+        for name, native_seconds in (("start_robot_following", 6.5), ("move_robot", 5.5)):
+            with self.subTest(tool=name):
+                clock = [100.0]
+                attempts = []
+
+                def result(timeout):
+                    attempts.append(timeout)
+                    if len(attempts) == 1:
+                        clock[0] += native_seconds
+                        raise concurrent.futures.TimeoutError()
+                    return {"accepted": True}
+
+                future = types.SimpleNamespace(result=result, cancel=Mock())
+                self.assertEqual(self.invoke_with_fake_future(name, future, clock), {"accepted": True})
+                future.cancel.assert_not_called()
+                self.assertEqual(attempts, [0.05, 0.05])
+
+    def test_handler_cancels_a_stalled_broker_after_manifest_budget_plus_handoff_margin(self):
+        for name, handler_seconds in (("start_robot_following", 8.0), ("move_robot", 7.0), ("stop_robot_following", 5.5)):
+            with self.subTest(tool=name):
+                clock = [100.0]
+
+                def result(timeout):
+                    clock[0] += handler_seconds
+                    raise concurrent.futures.TimeoutError()
+
+                future = types.SimpleNamespace(result=result, cancel=Mock())
+                self.assertEqual(self.invoke_with_fake_future(name, future, clock)["error"]["code"], "plugin_unavailable")
+                future.cancel.assert_called_once_with()
+
+    def test_handler_still_rejects_a_completed_result_after_worker_interruption(self):
+        future = types.SimpleNamespace(result=lambda timeout: {"accepted": True}, cancel=Mock())
+        self.assertEqual(self.invoke_with_fake_future("start_robot_following", future, [100.0], interrupted=True)
+                         ["error"]["code"], "cancelled")
+
+    def test_eight_tools_register_and_fail_closed_without_listener(self):
         plugin = importlib.import_module(PACKAGE + ".plugin")
         # Isolate the real process-shared slot from other test runtimes.
         old = getattr(plugin.shared(), "runtime", None)
@@ -102,7 +165,7 @@ class PluginTests(unittest.TestCase):
                                     on_unload=lambda callback: cleanup.append(callback))
         try:
             plugin.register(ctx)
-            self.assertEqual(len(registered), 6)
+            self.assertEqual(len(registered), 8)
             self.assertEqual(factories[0][0], "api_server")
             for tool in registered:
                 self.assertIn("plugin_unavailable", tool["handler"]({}, session_id="session"))

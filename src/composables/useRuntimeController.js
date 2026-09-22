@@ -82,6 +82,8 @@ export function useRuntimeController(options = {}) {
   const newSessionPending = ref(false);
   const newSessionMessage = ref('');
   const cancellationPending = ref(false);
+  const cameraRequestPending = ref(false);
+  const cameraRequestMessage = ref('');
   const started = ref(false);
   const disposers = [];
   const timers = options.timers || createRuntimeTimers(options.timerOptions);
@@ -90,6 +92,7 @@ export function useRuntimeController(options = {}) {
   let speechTurnId = '';
   let activePlaylist = null;
   let pendingVoiceTurn = null;
+  let pendingCameraTurn = null;
   let newSessionBarrier = null;
   let latestReadySequence = 0;
   let interactionPromise = null;
@@ -98,6 +101,99 @@ export function useRuntimeController(options = {}) {
   let disposed = false;
   let sleepReason = '';
   let nativeScreenOff = false;
+  let attentionDesired = 'idle';
+  let attentionDelivered = 'idle';
+  let attentionSending = false;
+
+  // Keep phase changes ordered; attention never grants microphone permission.
+  async function setAttentionPhase(phase) {
+    attentionDesired = phase;
+    if (attentionSending || !transport.setDeviceAttention) return;
+    attentionSending = true;
+    try {
+      while (attentionDesired !== attentionDelivered) {
+        const next = attentionDesired;
+        try { await transport.setDeviceAttention(next); } catch { /* Native capability may be unavailable. */ }
+        attentionDelivered = next;
+      }
+    } finally { attentionSending = false; }
+  }
+
+  function cameraTurnCanStart() {
+    return !disposed &&
+      !newSessionPending.value && !cancellationPending.value && !runtime.sleeping &&
+      !nativeScreenOff && !globalThis.document?.hidden &&
+      runtime.connectionState === CONNECTION_STATES.READY && !runtime.activeTurnId &&
+      !runtime.turnBusy && [TURN_STATES.IDLE, TURN_STATES.LISTENING].includes(runtime.turnState);
+  }
+
+  const canAskCamera = computed(() => !cameraRequestPending.value && cameraTurnCanStart());
+
+  async function requestCameraView() {
+    if (!canAskCamera.value) return false;
+    cameraRequestPending.value = true;
+    cameraRequestMessage.value = '';
+    timers.clearInactivity();
+    let request = null;
+    const requestIsCurrent = () => !disposed && request && pendingCameraTurn === request &&
+      request.sessionId === runtime.sessionId && request.turnId !== revokedTurnId &&
+      !newSessionPending.value;
+    try {
+      // pauseListening invalidates earlier capture work synchronously. Capture
+      // its generation before awaiting so an intervening press/reset wins.
+      const paused = pauseListening();
+      const generation = listeningGeneration;
+      await paused;
+      if (generation !== listeningGeneration || !cameraTurnCanStart()) return false;
+      const turnId = createId();
+      request = { turnId, sessionId: runtime.sessionId, accepted: false };
+      pendingCameraTurn = request;
+      runtime.transition('thinking_started', { turnId, transcript: '請拍下眼前畫面，並告訴我你看到了什麼。', assistantText: '', error: '' });
+      const response = await transport.submitTextTurn({
+        turnId, text: runtime.transcript, language: runtime.settings.language,
+      });
+      if (!requestIsCurrent()) return false;
+      if (response?.type) await handleRuntimeEvent(response);
+      if (!requestIsCurrent()) return false;
+      cameraRequestMessage.value = '已請 Zenbo 拍照並傳給 Hermes。';
+      return true;
+    } catch (error) {
+      if (!requestIsCurrent()) return false;
+      if (!request.accepted && error.code !== 'TURN_BUSY') {
+        try {
+          // A lost HTTP response does not undo Native acceptance. Read status
+          // without moving the replay cursor past pending tool/audio events.
+          const status = await transport.getRuntimeStatus();
+          if (!requestIsCurrent()) return false;
+          request.accepted ||= status?.activeSessionId === request.sessionId &&
+            status?.activeTurnId === request.turnId;
+        } catch { /* Unconfirmed requests take the explicit safe-stop path below. */ }
+      }
+      if (!requestIsCurrent()) return false;
+      if (request.accepted) {
+        cameraRequestMessage.value = '已請 Zenbo 拍照並傳給 Hermes。';
+        return true;
+      }
+      if (runtime.activeTurnId === request.turnId) {
+        if (error.code === 'TURN_BUSY') {
+          runtime.transition('reset', { turnId: '', error: '' });
+          cameraRequestMessage.value = '上一輪尚未結束，請稍後再試。';
+          scheduleListeningResume();
+        } else {
+          // Never retry a camera request whose delivery is uncertain. Revoke
+          // local tool/playback authority before asking Native to stop it.
+          await enterIdle('client-cancelled').catch(() => null);
+          if (!disposed && request.sessionId === runtime.sessionId) {
+            cameraRequestMessage.value = '未收到拍照回合確認，已要求停止；請確認連線後再試。';
+          }
+        }
+      }
+      return false;
+    } finally {
+      if (pendingCameraTurn === request) pendingCameraTurn = null;
+      cameraRequestPending.value = false;
+    }
+  }
 
   const canStartNewSession = computed(() => !newSessionPending.value && !cancellationPending.value &&
     runtime.connectionState === CONNECTION_STATES.READY &&
@@ -191,6 +287,7 @@ export function useRuntimeController(options = {}) {
       newSessionBarrier = snapshot.lastSequence;
       runtime.setSession(snapshot);
       runtime.transition('reset', { turnId: '', transcript: '', assistantText: '', error: '' });
+      runtime.cameraCaptures = [];
       runtime.recoveryNotice = '';
       // The HTTP cursor is a barrier, not permission to skip local events.
       // READY may already have arrived while its HTTP response was in flight.
@@ -287,6 +384,7 @@ export function useRuntimeController(options = {}) {
       runtime.transition('speech_started', {
         turnId: speechTurnId, transcript: '', assistantText: '', error: '',
       });
+      void setAttentionPhase('listening');
     },
     onSpeechEnd: async ({ blob }) => {
       if (!captureIsCurrent() || !speechTurnId) return;
@@ -301,7 +399,10 @@ export function useRuntimeController(options = {}) {
       pendingVoiceTurn = { turnId, blob };
       await submitPendingVoiceTurn(pendingVoiceTurn);
     },
-    onError: (error) => runtime.transition('failed', { error: error.message }),
+    onError: (error) => {
+      void setAttentionPhase('idle');
+      runtime.transition('failed', { error: error.message });
+    },
   });
 
   tools.register({
@@ -412,6 +513,7 @@ export function useRuntimeController(options = {}) {
   });
 
   async function stopResponse(reason = 'client-cancelled') {
+    void setAttentionPhase('idle');
     pendingVoiceTurn = null;
     timers.clearTurnRetry();
     runtime.waitingForPreviousTurn = false;
@@ -495,11 +597,13 @@ export function useRuntimeController(options = {}) {
               runtime.activatePendingEmotion();
             }
             runtime.transition('playback_started', { turnId });
+            void setAttentionPhase('speaking');
             startedReport = reportPlayback('started');
           },
           onEnded: async () => {
             if (!isCurrent() || segmentTerminal) return;
             segmentTerminal = true;
+            void setAttentionPhase('idle');
             await reportTerminal('completed');
             if (!isCurrent()) return;
             if (index + 1 < artifacts.length) {
@@ -511,6 +615,7 @@ export function useRuntimeController(options = {}) {
             if (!runtime.sleeping) scheduleListeningResume();
           },
           onInterrupted: (reason) => {
+            void setAttentionPhase('idle');
             void interrupt(reason);
             if (isCurrent()) {
               activePlaylist = null;
@@ -597,6 +702,10 @@ export function useRuntimeController(options = {}) {
       return;
     }
     const turnId = envelope.turnId || '';
+    if (pendingCameraTurn?.turnId === turnId && runtime.activeTurnId === turnId &&
+        turnId !== revokedTurnId && !cancellationPending.value) {
+      pendingCameraTurn.accepted = true;
+    }
     const toolCallCanRun =
       runtime.turnState === TURN_STATES.THINKING ||
       runtime.turnState === TURN_STATES.AWAITING_TOOL;
@@ -673,6 +782,9 @@ export function useRuntimeController(options = {}) {
         break;
       case RuntimeEventType.AGENT_THINKING:
         runtime.transition('thinking_started', { turnId });
+        break;
+      case RuntimeEventType.CAMERA_CAPTURED:
+        runtime.addCameraCapture(payload);
         break;
       case RuntimeEventType.AGENT_TEXT_FINAL:
         runtime.transition(payload.final === false ? 'thinking_started' : 'synthesis_started', {
@@ -884,6 +996,7 @@ export function useRuntimeController(options = {}) {
   }
 
   function pauseListening() {
+    void setAttentionPhase('idle');
     listeningGeneration += 1;
     return vad.pause();
   }
@@ -1096,6 +1209,7 @@ export function useRuntimeController(options = {}) {
 
   onBeforeUnmount(async () => {
     disposed = true;
+    void setAttentionPhase('idle');
     clearListeningIntent();
     timers.clearAll();
     disposers.forEach((dispose) => dispose());
@@ -1111,6 +1225,10 @@ export function useRuntimeController(options = {}) {
     motionUpdating,
     motionError,
     setMotionEnabled,
+    canAskCamera,
+    cameraRequestPending,
+    cameraRequestMessage,
+    requestCameraView,
     canStartNewSession,
     newSessionPending,
     newSessionMessage,

@@ -248,8 +248,8 @@ public final class TlsTrust {
                                         HermesClient.authorizedRequest(endpoints.pluginCapabilities(), apiKey, deviceId).get().build(),
                                         new HermesTransport.ResultCallback() {
                                             @Override public void onSuccess(JSONObject plugin) {
-                                                if (!"1.0".equals(plugin.optString("pluginVersion")) || !hasSixTools(plugin)) {
-                                                    callback.onError("GATEWAY_INCOMPATIBLE", "The Zenbo plugin does not provide the six device tools");
+                                                if (!"1.0".equals(plugin.optString("pluginVersion")) || !hasRequiredDeviceTools(plugin)) {
+                                                    callback.onError("GATEWAY_INCOMPATIBLE", "Update the Zenbo plugin: eight device tools including camera and motion are required");
                                                     return;
                                                 }
                                                 try {
@@ -278,13 +278,13 @@ public final class TlsTrust {
         });
     }
 
-    private static boolean hasSixTools(JSONObject plugin) {
+    private static boolean hasRequiredDeviceTools(JSONObject plugin) {
         org.json.JSONArray array = plugin.optJSONArray("tools");
-        if (array == null || array.length() != 6) return false;
+        if (array == null || array.length() != 8) return false;
         java.util.Set<String> names = new java.util.HashSet<>();
         for (int i = 0; i < array.length(); i++) names.add(array.optString(i));
         return names.containsAll(java.util.Arrays.asList("get_system_status", "start_robot_following",
-                "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep"));
+                "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep", "move_robot", "capture_camera"));
     }
 
     private static String certificatePin(Handshake handshake) {

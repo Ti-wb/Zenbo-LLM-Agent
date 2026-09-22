@@ -114,6 +114,6 @@ public class HermesRecoveryTest {
                 + "\"runs_idempotency\":{\"supported\":true,\"durable\":true,\"retention_seconds\":86400}}}";
     }
     private static String plugin() {
-        return "{\"pluginVersion\":\"1.0\",\"tools\":[\"get_system_status\",\"start_robot_following\",\"stop_robot_following\",\"look_at_user\",\"show_emotion\",\"go_to_sleep\"],\"speech\":{\"sttConfigured\":true,\"ttsConfigured\":true}}";
+        return "{\"pluginVersion\":\"1.0\",\"tools\":[\"get_system_status\",\"start_robot_following\",\"stop_robot_following\",\"look_at_user\",\"show_emotion\",\"go_to_sleep\",\"move_robot\",\"capture_camera\"],\"speech\":{\"sttConfigured\":true,\"ttsConfigured\":true}}";
     }
 }

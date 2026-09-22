@@ -32,7 +32,7 @@ Unknown profiles and wrong keys fail; they never fall back to another profile.
 `GET /capabilities` at the plugin root returns:
 
 ```json
-{"pluginVersion":"1.0","tools":["get_system_status","start_robot_following","stop_robot_following","look_at_user","show_emotion","go_to_sleep"],"speech":{"sttConfigured":true,"ttsConfigured":true}}
+{"pluginVersion":"1.0","tools":["get_system_status","start_robot_following","stop_robot_following","look_at_user","show_emotion","go_to_sleep","move_robot","capture_camera"],"speech":{"sttConfigured":true,"ttsConfigured":true}}
 ```
 
 Configured speech is discovery metadata, not proof that synthesis/recognition or
@@ -50,11 +50,11 @@ Transport liveness uses WebSocket ping/pong, without an application heartbeat.
 2. Native submits the Hermes run and obtains `run_id`, then sends `run.activate`
    with `sessionId`, `runId`, and Native UUID `turnId`. Plugin returns `run.active`.
 3. Tool handlers derive profile/session/run from Hermes execution context, never
-   from model-supplied arguments or device IDs. A handler may wait at most five
-   seconds for activation, included in its total deadline. It cannot dispatch
+   from model-supplied arguments or device IDs. A handler may wait for activation
+   within its tool's declared total deadline. It cannot dispatch
    before activation.
 4. Plugin sends `tool.call` with a fresh UUID `callId`, all three correlation IDs,
-   fixed `toolName`, `toolVersion: "1.0.0"`, strict `arguments`, `timeoutMs: 5000`,
+   fixed `toolName`, `toolVersion: "1.0.0"`, strict `arguments`, the exact manifest `timeoutMs`,
    and ISO `deadlineAt`.
 5. Native sends `tool.result`, echoing IDs, with `updatedAt` and `status` of
    `accepted`, `succeeded`, `failed`, or `rejected`; success uses `output`, failure
@@ -63,6 +63,14 @@ Transport liveness uses WebSocket ping/pong, without an application heartbeat.
    an `accepted` receipt is not completion.
 6. Native sends `run.deactivate` with the three IDs and a reason, receiving
    `run.inactive`. Deactivation fails all pending calls and revokes authority.
+
+`start_robot_following` has a 7,500 ms deadline and `move_robot` has 6,500 ms.
+These include the possible 2,000 ms attention stop, 1,500 ms avoidance setup,
+3,000 ms follow acquisition or 2,000 ms move, and 1,000 ms scheduling/transport
+margin. Other tools retain 5,000 ms, including `stop_robot_following`. The plugin
+uses each manifest deadline for its full activation/send/result wait; Native
+checks the same tool-specific value and honors an earlier `deadlineAt` without
+extending it. Acceptance never restarts the deadline.
 
 A fast run may already be `completed` when its first `run.activate` arrives.
 After verifying ownership, the plugin may establish this initial binding for
@@ -77,9 +85,54 @@ never replay tools, including idempotent physical tools. Unknown calls, wrong
 owners, mismatched correlation IDs, duplicate terminal results, and invalid
 arguments are rejected. Errors use `{type:"error",code,message}`.
 
-The exact six tools and their input/result schemas are defined in
+The exact eight tools and their input/result schemas are defined in
 [`device-tools.json`](device-tools.json). Native validates ownership and safety;
 Web-owned `show_emotion` and `go_to_sleep` still pass through Native mediation.
+
+## Camera and short movement extension
+
+Plugin package 1.1.0 / manifest `hermes-zenbo-2` adds `move_robot` and
+`capture_camera`; the channel framing remains version 1.0. This App requires all
+eight tools at discovery and rejects the older six-tool plugin as incompatible.
+Update the plugin on Hermes and restart its existing gateway before using this
+App version. The model and STT/TTS configuration remain owned by the profile.
+
+`move_robot` accepts only `direction: forward|backward|left|right`. Native executes
+one low-speed 0.15 m translation or 15 degree turn, with motion permission and SDK
+safety enabled. There is no model-selected distance, velocity or avoidance bypass.
+`stop_robot_following` stops app-owned following/movement. Every tool enforces its
+manifest total deadline, terminal result checks and no-replay rule.
+
+`capture_camera` accepts only `{}`. A successful terminal output contains exactly
+`accepted: true`, UUID `artifactId`, `mimeType: image/jpeg`, `byteLength`, lowercase
+SHA-256 `sha256`, `width`, `height`, ISO `capturedAt`, and `imageBase64`. JPEG bytes
+are at most 524,288 bytes; each dimension is 1–1,280. The Native camera boundary
+decodes and re-encodes the image. The plugin validates canonical base64, actual
+byte count, digest, JPEG markers/scan framing and encoded dimensions; it does not
+perform an additional pixel decode or install an image library.
+
+Device-channel messages are limited to 32 KiB, except a successful result for a
+live pending `capture_camera` call, whose frame may reach 768 KiB. Large unrelated,
+expired, duplicate or unknown results do not gain an exception. Existing identity
+and cancellation checks apply before any image reaches the tool handler.
+
+The handler probes the installed Hermes registry's multimodal result support and
+uses Hermes' current-profile native-vision policy. When both pass, it returns a
+real `_multimodal: true` dictionary containing an `image_url` content block with a
+JPEG data URL. It does **not** JSON-encode this envelope into model text. The
+reference implementation is Hermes'
+[tool registry](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py)
+and [native vision tool](https://github.com/NousResearch/hermes-agent/blob/main/tools/vision_tools.py).
+Public main is reference evidence, not an installed-version compatibility result.
+
+If the installed implementation or profile model cannot receive image content,
+the tool returns bounded metadata with `imageDelivery: image_not_delivered_to_model`
+and tells the model not to describe the image. The local capture can still be shown
+in the App. No auxiliary provider, remote image URL fetch or second run is used.
+On successful multimodal delivery, the image becomes part of Hermes' conversation
+and provider input and follows their existing history/retention policy. The plugin
+does not write camera files. Renderer events/snapshots contain metadata only;
+Native serves bounded temporary JPEG bytes over its authenticated local route.
 
 ## Speech and audio
 

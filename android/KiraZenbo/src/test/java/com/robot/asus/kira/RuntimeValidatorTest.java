@@ -248,22 +248,24 @@ public class RuntimeValidatorTest {
     @Test
     public void nativeToolManifestHasExactOwnersEffectsSchemasAndTimeouts() {
         List<ToolManifestSpec.Definition> tools = ToolManifestSpec.definitions();
-        assertEquals(6, tools.size());
+        assertEquals(8, tools.size());
         Set<String> names = new HashSet<>();
         for (ToolManifestSpec.Definition tool : tools) {
             String name = tool.name;
             names.add(name);
             boolean webOwned = "show_emotion".equals(name) || "go_to_sleep".equals(name);
             assertEquals(webOwned ? "web" : "native", tool.owner);
-            assertEquals(webOwned ? "ui" : "get_system_status".equals(name) ? "none" : "physical",
+            assertEquals(webOwned ? "ui" : ("get_system_status".equals(name) || "capture_camera".equals(name)) ? "none" : "physical",
                     tool.sideEffect);
-            assertEquals(5_000, tool.timeoutMs);
-            assertEquals(!"start_robot_following".equals(name), tool.idempotent);
+            assertEquals("start_robot_following".equals(name) ? 7_500 : "move_robot".equals(name) ? 6_500 : 5_000,
+                    tool.timeoutMs);
+            assertEquals(tool.timeoutMs, ToolManifestSpec.timeoutMs(name));
+            assertEquals(!Arrays.asList("start_robot_following", "move_robot", "capture_camera").contains(name), tool.idempotent);
         }
 
         assertEquals(new HashSet<>(Arrays.asList(
                 "get_system_status", "start_robot_following", "stop_robot_following",
-                "look_at_user", "show_emotion", "go_to_sleep"
+                "look_at_user", "show_emotion", "go_to_sleep", "move_robot", "capture_camera"
         )), names);
 
         assertEquals(set(), propertyNames(findTool(tools, "get_system_status").inputProperties));
@@ -274,6 +276,17 @@ public class RuntimeValidatorTest {
         assertEquals(set("emotion", "durationMs"),
                 propertyNames(findTool(tools, "show_emotion").inputProperties));
         assertEquals(set(), propertyNames(findTool(tools, "go_to_sleep").inputProperties));
+        assertEquals(set("direction"), propertyNames(findTool(tools, "move_robot").inputProperties));
+        assertEquals(Arrays.asList("forward", "backward", "left", "right"),
+                findProperty(findTool(tools, "move_robot").inputProperties, "direction").allowedValues);
+        assertEquals(set(), propertyNames(findTool(tools, "capture_camera").inputProperties));
+        ToolManifestSpec.Definition camera = findTool(tools, "capture_camera");
+        assertEquals(set("accepted", "artifactId", "mimeType", "byteLength", "sha256", "width", "height", "capturedAt", "imageBase64"),
+                propertyNames(camera.resultProperties));
+        assertEquals(Boolean.TRUE, findProperty(camera.resultProperties, "accepted").constant);
+        assertEquals(524_288, findProperty(camera.resultProperties, "byteLength").maximum.intValue());
+        assertEquals(699_052, findProperty(camera.resultProperties, "imageBase64").maxLength.intValue());
+        assertEquals("uuid", findProperty(camera.resultProperties, "artifactId").format);
 
         assertEquals(set("accepted", "robotReady", "moving", "androidSdk", "robotModel"),
                 propertyNames(findTool(tools, "get_system_status").resultProperties));

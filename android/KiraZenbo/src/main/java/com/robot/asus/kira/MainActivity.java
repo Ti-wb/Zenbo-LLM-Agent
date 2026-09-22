@@ -24,6 +24,8 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
     private static final String TAG = "MainActivity";
     private static final int AUDIO_PERMISSION_REQUEST_CODE = 1;
     private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 2;
+    private static final int CAMERA_PERMISSION_REQUEST_CODE = 3;
+    private static volatile MainActivity foregroundActivity;
 
     private GeckoView mGeckoView;
     private GeckoSession mGeckoSession;
@@ -112,6 +114,7 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
     @Override
     protected void onResume() {
         super.onResume();
+        foregroundActivity = this;
         // Keep the display awake only while this activity owns the foreground.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         RobotApiService.setRendererForeground(true);
@@ -119,6 +122,7 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
 
     @Override
     protected void onPause() {
+        if (foregroundActivity == this) foregroundActivity = null;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         RobotApiService.setRendererForeground(false);
         super.onPause();
@@ -149,7 +153,22 @@ public class MainActivity extends Activity implements GeckoSession.PermissionDel
         } else if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
             // The foreground service is started regardless; this permission only
             // controls whether Android 13+ shows its notification to the user.
+        } else if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
+            DeviceHardware hardware = RobotApiService.getDeviceHardware();
+            if (hardware != null) hardware.onCameraPermissionResult(grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED);
         }
+    }
+
+    /** The native Activity owns Android permission prompts; the Web renderer cannot grant them. */
+    static boolean requestNativeCameraPermission() {
+        MainActivity activity = foregroundActivity;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return false;
+        activity.runOnUiThread(() -> {
+            if (foregroundActivity == activity) ActivityCompat.requestPermissions(activity,
+                    new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST_CODE);
+        });
+        return true;
     }
 
     @Override

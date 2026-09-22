@@ -153,6 +153,23 @@ public class HermesClientTest {
         }
     }
 
+    @Test public void oldSixToolPluginIsRejectedInsteadOfSilentlyLosingCameraAndMotion() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().setBody("{\"data\":[{\"id\":\"profile-model\"}]}"));
+            server.enqueue(new MockResponse().setBody(capabilities().toString()));
+            JSONObject oldPlugin = plugin().put("tools", new JSONArray(java.util.Arrays.asList(
+                    "get_system_status", "start_robot_following", "stop_robot_following",
+                    "look_at_user", "show_emotion", "go_to_sleep")));
+            server.enqueue(new MockResponse().setBody(oldPlugin.toString()));
+            Capture capture = new Capture();
+            TlsTrust.testCapabilities(new OkHttpClient(), new HermesEndpoints(server.url("/p/robot/v1"), true),
+                    "zenbo", KEY, 0L, capture);
+            capture.await();
+            assertEquals("GATEWAY_INCOMPATIBLE", capture.code);
+            assertEquals(3, server.getRequestCount());
+        }
+    }
+
     @Test public void emptyModelInventoryFailsWithoutTryingAnotherProfile() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.enqueue(new MockResponse().setBody("{\"data\":[]}"));
@@ -226,7 +243,7 @@ public class HermesClientTest {
     private static JSONObject plugin() throws Exception {
         return new JSONObject().put("pluginVersion", "1.0")
                 .put("tools", new JSONArray(java.util.Arrays.asList("get_system_status", "start_robot_following",
-                        "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep")))
+                        "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep", "move_robot", "capture_camera")))
                 .put("speech", new JSONObject().put("sttConfigured", false).put("ttsConfigured", true));
     }
 

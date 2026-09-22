@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "requestId": "80000000-0000-4000-8000-000000000091",
+  "data": {
+    "robotReady": true,
+    "motionEnabled": true,
+    "moving": false,
+    "following": false,
+    "attentionEnabled": true,
+    "attentionState": "paused_for_camera",
+    "attentionSource": "face_tracking",
+    "cameraEnabled": false,
+    "cameraState": "releasing",
+    "cameraPermission": "granted",
+    "cameraError": "",
+    "remote": {
+      "enabled": false,
+      "urls": [],
+      "pairingCode": null,
+      "pairingExpiresAt": null,
+      "connected": false
+    }
+  },
+  "error": null
+}

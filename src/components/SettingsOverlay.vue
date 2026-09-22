@@ -324,7 +324,7 @@ function testHermes() {
         <code>{{ testResult.fingerprint }}</code>
         <span v-if="testResult.confirmationRequired"><br />儲存前必須明確確認這個 fingerprint。</span>
         <p>Hermes Profile：{{ readiness.hermesReachable ? '連線成功' : '尚未驗證' }}</p>
-        <p>Zenbo 插件：{{ readiness.pluginAvailable ? '可用' : '尚未就緒' }}；六個裝置工具：{{ readiness.toolsReady ? '就緒' : '尚未就緒' }}</p>
+        <p>Zenbo 插件：{{ readiness.pluginAvailable ? '可用' : '尚未就緒' }}；裝置工具：{{ readiness.toolsReady ? '就緒' : '尚未就緒' }}</p>
         <p v-if="readiness.pluginAvailable && !readiness.toolsReady">缺少工具：{{ readiness.missingTools.join('、') }}</p>
         <p>語音辨識：{{ readiness.sttConfigured ? '已配置' : '未配置' }}；語音合成：{{ readiness.ttsConfigured ? '已配置' : '未配置' }}</p>
         <small>語音已配置後，仍需在 Zenbo 實際說話與播放確認。</small>

@@ -2,14 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { NATIVE_TOOL_NAMES, ToolOwner, WEB_TOOL_NAMES, toolOwner } from './toolOwnership';
 
 describe('fixed device tool ownership', () => {
-  it('keeps the four physical/status tools native-owned', () => {
+  it('keeps physical/status and camera tools native-owned', () => {
     expect(NATIVE_TOOL_NAMES).toEqual([
       'get_system_status',
       'start_robot_following',
       'stop_robot_following',
       'look_at_user',
+      'move_robot',
+      'capture_camera',
     ]);
-    expect(NATIVE_TOOL_NAMES.map(toolOwner)).toEqual(Array(4).fill(ToolOwner.NATIVE));
+    expect(NATIVE_TOOL_NAMES.map(toolOwner)).toEqual(Array(6).fill(ToolOwner.NATIVE));
   });
 
   it('executes only the two face-state tools in Web', () => {

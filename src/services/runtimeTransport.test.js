@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   consumeBootstrapToken,
   LOCAL_API_PREFIX,
@@ -47,6 +47,118 @@ class FakeWebSocket {
 }
 
 describe('RuntimeTransport', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ['follow', 6500],
+    ['forward', 5500],
+    ['backward', 5500],
+    ['left', 5500],
+    ['right', 5500],
+    ['stop', 2000],
+  ])('waits for the complete Native %s chain before its HTTP deadline', async (action, nativeBudgetMs) => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn((_url, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')), { once: true });
+      setTimeout(() => resolve(jsonResponse({ accepted: true })), nativeBudgetMs);
+    }));
+    const transport = new RuntimeTransport({ fetchImpl });
+    const result = transport.sendDeviceAction(action);
+    await vi.advanceTimersByTimeAsync(nativeBudgetMs);
+    await expect(result).resolves.toEqual({ accepted: true });
+    expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([['follow', 7500], ['forward', 6500], ['stop', 3000]])(
+    'aborts an unconfirmed %s at its bounded deadline without replay', async (action, deadlineMs) => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')), { once: true });
+      }));
+      const transport = new RuntimeTransport({ fetchImpl });
+      const rejected = expect(transport.sendDeviceAction(action)).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(deadlineMs - 1);
+      expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      await rejected;
+      expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(true);
+      expect(fetchImpl.mock.calls.map(([, request]) => JSON.parse(request.body).action))
+        .toEqual([action, 'stop']);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(['network', 'invalid JSON', 'invalid receipt'])(
+    'stops once after an uncertain local action %s failure and preserves the original error', async (failure) => {
+      const originalError = failure === 'network' ? new TypeError('Connection reset') : new SyntaxError('Invalid JSON');
+      const fetchImpl = vi.fn((_url, request) => {
+        if (JSON.parse(request.body).action === 'stop') return Promise.resolve(jsonResponse({ accepted: true }));
+        if (failure === 'network') return Promise.reject(originalError);
+        if (failure === 'invalid JSON') return Promise.resolve({
+          ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => { throw originalError; },
+        });
+        return Promise.resolve(jsonResponse({}));
+      });
+      const transport = new RuntimeTransport({ fetchImpl });
+      const result = transport.sendDeviceAction('follow');
+      if (failure === 'invalid receipt') await expect(result).rejects.toThrow('回應格式無效');
+      else await expect(result).rejects.toBe(originalError);
+      expect(fetchImpl.mock.calls.map(([, request]) => JSON.parse(request.body).action)).toEqual(['follow', 'stop']);
+    },
+  );
+
+  it('does not issue a fallback stop after an authoritative Native rejection', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: false, data: null,
+      error: { code: 'ROBOT_BUSY', message: 'Robot is busy' } }, 409, false));
+    const transport = new RuntimeTransport({ fetchImpl });
+    await expect(transport.sendDeviceAction('forward')).rejects.toMatchObject({ code: 'ROBOT_BUSY' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes only one bounded fallback attempt when a stop request itself has an uncertain result', async () => {
+    const originalError = new TypeError('Stop connection reset');
+    const fetchImpl = vi.fn().mockRejectedValue(originalError);
+    const transport = new RuntimeTransport({ fetchImpl });
+    await expect(transport.sendDeviceAction('stop')).rejects.toBe(originalError);
+    expect(fetchImpl.mock.calls.map(([, request]) => JSON.parse(request.body).action)).toEqual(['stop', 'stop']);
+  });
+
+  it('keeps device control and attention on loopback with the renderer session', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ accepted: true }));
+    const transport = new RuntimeTransport({ fetchImpl });
+    await transport.getDeviceStatus();
+    await transport.putDeviceSettings({ cameraEnabled: true, attentionEnabled: false });
+    await transport.sendDeviceAction('forward');
+    await transport.setDeviceAttention('listening');
+    await transport.setRemoteEnabled(false);
+    await transport.captureCamera();
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:8787/api/v2/device/status',
+      'http://127.0.0.1:8787/api/v2/device/settings',
+      'http://127.0.0.1:8787/api/v2/device/action',
+      'http://127.0.0.1:8787/api/v2/device/attention',
+      'http://127.0.0.1:8787/api/v2/device/remote',
+      'http://127.0.0.1:8787/api/v2/device/camera/capture',
+    ]);
+    expect(fetchImpl.mock.calls.every(([, request]) => request.credentials === 'include')).toBe(true);
+    expect(JSON.parse(fetchImpl.mock.calls[2][1].body)).toEqual({ action: 'forward' });
+    expect(JSON.parse(fetchImpl.mock.calls[3][1].body)).toEqual({ phase: 'listening' });
+  });
+
+  it('fetches bounded no-store JPEGs and preserves permission errors', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['jpeg'], { type: 'image/jpeg' }) });
+    const transport = new RuntimeTransport({ fetchImpl });
+    expect((await transport.getCameraImage('local-photo')).type).toBe('image/jpeg');
+    expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:8787/api/v2/device/camera/local-photo');
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({ credentials: 'include', cache: 'no-store' });
+    fetchImpl.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['html'], { type: 'text/html' }) });
+    await expect(transport.getCameraImage()).rejects.toThrow('格式');
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ ok: false, data: null, error: { code: 'CAMERA_DISABLED', message: 'disabled' } }, 403, false));
+    await expect(transport.getCameraImage()).rejects.toMatchObject({ code: 'CAMERA_DISABLED' });
+  });
   it('omits Content-Type on bodyless reads so Native does not parse an empty JSON body', async () => {
     const fetchImpl = vi.fn(async (_url, request) => {
       if (!request.body && request.headers['Content-Type'] === 'application/json') {

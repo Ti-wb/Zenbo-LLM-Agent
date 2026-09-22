@@ -60,6 +60,7 @@ public class RobotApiService extends Service {
     private GatewaySettings gatewaySettings;
     private DeviceCredentialStore credentialStore;
     private RobotGateway robotGateway;
+    private DeviceHardware deviceHardware;
     private RemoteSessionCoordinator sessionCoordinator;
     private LocalRuntimeServer localRuntimeServer;
     private BroadcastReceiver screenEventReceiver;
@@ -127,13 +128,18 @@ public class RobotApiService extends Service {
         gatewaySettings = new GatewaySettings(getApplicationContext());
         credentialStore = new DeviceCredentialStore(getApplicationContext());
         robotGateway = new RobotGateway();
+        deviceHardware = new DeviceHardware(getApplicationContext(), robotGateway);
+        deviceHardware.setMotionAllowed(gatewaySettings.isMotionEnabled());
+        deviceHardware.setForeground(rendererForeground);
         sessionCoordinator = new RemoteSessionCoordinator(gatewaySettings, credentialStore, robotGateway);
+        sessionCoordinator.setDeviceHardware(deviceHardware);
         localRuntimeServer = new LocalRuntimeServer(
                 getApplicationContext(),
                 gatewaySettings,
                 credentialStore,
                 sessionCoordinator,
-                robotGateway
+                robotGateway,
+                deviceHardware
         );
         sessionCoordinator.setLocalPublisher(localRuntimeServer::publish);
         registerBatteryReceiver();
@@ -208,6 +214,7 @@ public class RobotApiService extends Service {
             @Override
             public void onResult(int cmd, int serial, RobotErrorCode err_code, Bundle result) {
                 super.onResult(cmd, serial, err_code, result);
+                displayHandler.post(() -> robotGateway.onCommandResult(serial, result));
                 JSONObject obj = new JSONObject();
                 try {
                     obj.put("cmd", cmd);
@@ -269,6 +276,7 @@ public class RobotApiService extends Service {
 
             @Override
             public void onVoiceDetect(JSONObject jsonObject) {
+                deviceHardware.onVoiceEvent(jsonObject);
                 // Background SDK voice events must not interrupt Settings, HOME, or another app.
                 // The renderer is opened only by an explicit user launch or notification tap.
                 sendEvent("onVoiceDetect", jsonObject);
@@ -288,11 +296,13 @@ public class RobotApiService extends Service {
 
             @Override
             public void onEventUserUtterance(JSONObject jsonObject) {
+                deviceHardware.onVoiceEvent(jsonObject);
                 sendEvent("onEventUserUtterance", jsonObject);
             }
 
             @Override
             public void onResult(JSONObject jsonObject) {
+                deviceHardware.onVoiceEvent(jsonObject);
                 sendEvent("onDsdResult", jsonObject);
             }
 
@@ -361,10 +371,12 @@ public class RobotApiService extends Service {
                 Log.i(TAG, "Screen/power event received: " + action);
 
                 if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                    if (deviceHardware != null) deviceHardware.setForeground(false);
                     sendEvent("ScreenOff", new JSONObject());
                 } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                     sendEvent("ScreenOn", new JSONObject());
                 } else if (Intent.ACTION_SHUTDOWN.equals(action)) {
+                    if (deviceHardware != null) deviceHardware.setForeground(false);
                     sendEvent("DeviceShutdown", new JSONObject());
                 }
             }
@@ -441,6 +453,7 @@ public class RobotApiService extends Service {
             localRuntimeServer.stop();
             localRuntimeServer = null;
         }
+        if (deviceHardware != null) deviceHardware.close();
         if (robotGateway != null) robotGateway.detach();
         if (robotAPI != null) {
             robotAPI.release();
@@ -460,7 +473,13 @@ public class RobotApiService extends Service {
     public static void setRendererForeground(boolean foreground) {
         rendererForeground = foreground;
         RobotApiService service = activeRobotService;
+        if (service != null && service.deviceHardware != null) service.deviceHardware.setForeground(foreground);
         if (service != null && foreground) service.displayHandler.post(service::configureRendererForeground);
+    }
+
+    public static DeviceHardware getDeviceHardware() {
+        RobotApiService service = activeRobotService;
+        return service == null ? null : service.deviceHardware;
     }
 
     private void configureRendererForeground() {

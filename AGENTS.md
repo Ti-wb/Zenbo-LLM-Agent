@@ -9,8 +9,10 @@ branch. Use Conventional Commits when committing or publishing.
 
 ## Architecture and trust boundaries
 
-This project connects Zenbo to a configured Hermes profile. The only server
-addition is one plugin in the Hermes process. Do not add another server,
+This project connects Zenbo to a configured Hermes profile. The only remote server
+addition is one plugin in the Hermes process. The approved on-device LAN control
+listener uses port 8788, is opt-in and separate from the private loopback API.
+Do not add another remote server,
 database or provider fallback without an explicit design decision.
 
 - Vue renders PixelFace, captures WAV with VAD, manages interaction state and
@@ -34,7 +36,7 @@ database or provider fallback without an explicit design decision.
 ## Normative interfaces
 
 `contracts/hermes-zenbo/README.md` defines the plugin channel and profile routing.
-`contracts/hermes-zenbo/device-tools.json` is the shared six-tool schema.
+`contracts/hermes-zenbo/device-tools.json` is the shared eight-tool schema.
 `contracts/local-runtime/` defines renderer bootstrap, HTTP and Native-owned
 protocol 2.0 events. Change implementation, schema, fixtures and tests together.
 
@@ -50,7 +52,7 @@ The remote run must become terminal before starting another; new turns receive
 run audio/tools. Playback completion is local and only the last ordered artifact
 completes the turn; Hermes has no plugin playback API.
 
-## Six fixed device tools
+## Eight allowlisted device tools
 
 | Tool | Owner |
 | --- | --- |
@@ -60,10 +62,18 @@ completes the turn; Hermes has no plugin playback API.
 | `look_at_user` | Native |
 | `show_emotion` | Web through Native |
 | `go_to_sleep` | Web through Native |
+| `move_robot` | Native |
+| `capture_camera` | Native |
 
 Preserve strict arguments, ownership, deadlines, movement safety and duplicate
 terminal rejection. Disconnected or uncertain physical tool calls are never
-replayed. Bind profile/session/run from authenticated Hermes context, not model
+replayed. `move_robot` performs one fixed low-speed 0.15 m step or 15 degree turn.
+`capture_camera` returns a bounded JPEG only after the local camera switch and
+Android permission allow it. Never expose camera base64 in renderer events or
+snapshots; use Native UUID artifact routes. Hermes receives image content only
+through its verified multimodal tool-result path, with an explicit text fallback
+when the installed Hermes/model cannot accept it.
+Bind profile/session/run from authenticated Hermes context, not model
 arguments. The plugin waits for terminal device results, not just acceptance.
 
 `show_emotion` is staged until first answer audio starts. Keep the five existing

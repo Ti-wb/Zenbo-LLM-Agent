@@ -51,6 +51,8 @@ function fakeTransport({ status, conversation }) {
     getRuntimeSettings: vi.fn().mockResolvedValue({ pinConfigured: true }),
     getRuntimeStatus: vi.fn().mockResolvedValue(status),
     setMotionEnabled: vi.fn(),
+    setDeviceAttention: vi.fn().mockResolvedValue({}),
+    submitTextTurn: vi.fn().mockResolvedValue({ accepted: true }),
     startNewSession: vi.fn(),
     getConversation: vi.fn().mockResolvedValue(conversation),
     resetCursor: vi.fn(),
@@ -135,6 +137,86 @@ async function manualListeningHarness(conversation = {}) {
 }
 
 describe('manual listening intent', () => {
+  it('signals attention only for actual speech and audio playback, then returns idle', async () => {
+    const { app, controller, transport, vadCallbacks, runtime, playback } = await manualListeningHarness();
+    await controller.toggleListening();
+    expect(transport.setDeviceAttention).not.toHaveBeenCalled();
+    await vadCallbacks.onSpeechStart();
+    expect(transport.setDeviceAttention).toHaveBeenLastCalledWith('listening');
+    const turnId = runtime.activeTurnId;
+    await vadCallbacks.onSpeechEnd({ blob: new Blob(['voice'], { type: 'audio/wav' }) });
+    expect(transport.setDeviceAttention).toHaveBeenLastCalledWith('idle');
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 4, turnId,
+      data: { artifacts: [{ artifactId: 'audio' }] } });
+    const callbacks = playback.play.mock.calls[0][1];
+    callbacks.onStarted(); await nextTick();
+    expect(transport.setDeviceAttention).toHaveBeenLastCalledWith('speaking');
+    await callbacks.onEnded();
+    expect(transport.setDeviceAttention).toHaveBeenLastCalledWith('idle');
+    app.unmount();
+  });
+
+  it('orders idle behind an in-flight listening phase without replaying a stale phase', async () => {
+    const { app, controller, transport, vadCallbacks } = await manualListeningHarness();
+    let resolveAttention;
+    transport.setDeviceAttention.mockImplementationOnce(() => new Promise((resolve) => { resolveAttention = resolve; }));
+    await controller.toggleListening();
+    await vadCallbacks.onSpeechStart();
+    await controller.toggleListening();
+    expect(transport.setDeviceAttention).toHaveBeenCalledTimes(1);
+    resolveAttention({}); await nextTick();
+    expect(transport.setDeviceAttention.mock.calls).toEqual([['listening'], ['idle']]);
+    app.unmount();
+  });
+
+  it('asks Hermes for a camera capture through a text turn without granting microphone intent', async () => {
+    const { app, controller, transport, vad, runtime, playback, timers } = await manualListeningHarness();
+    expect(await controller.requestCameraView()).toBe(true);
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    expect(transport.submitTextTurn.mock.calls[0][0]).toMatchObject({ text: '請拍下眼前畫面，並告訴我你看到了什麼。', language: 'zh-TW' });
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(controller.canAskCamera.value).toBe(false);
+    const turnId = runtime.activeTurnId;
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_ACCEPTED, sequence: 4, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.AGENT_THINKING, sequence: 5, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TOOL_CALL, sequence: 6, turnId,
+      data: { toolName: 'capture_camera', callId: 'native-camera-call', arguments: {} } });
+    expect(transport.sendToolResult).not.toHaveBeenCalled();
+    const metadata = { artifactId: 'local-image', mimeType: 'image/jpeg', byteLength: 44, sha256: 'a'.repeat(64), width: 640, height: 480, capturedAt: '2026-09-22T10:00:00Z' };
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.CAMERA_CAPTURED, sequence: 7, turnId, data: { ...metadata, imageBase64: 'never-in-store' } });
+    expect(runtime.cameraCaptures).toEqual([metadata]);
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.AGENT_TEXT_FINAL, sequence: 8, turnId,
+      data: { text: '桌上有一個杯子。', final: true } });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 9, turnId,
+      data: { artifacts: [{ artifactId: 'camera-answer' }] } });
+    await vi.waitFor(() => expect(playback.play).toHaveBeenCalledOnce());
+    const callbacks = playback.play.mock.calls[0][1];
+    callbacks.onStarted();
+    await callbacks.onEnded();
+    expect(transport.sendPlayback.mock.calls).toEqual([
+      ['started', turnId, { artifactId: 'camera-answer' }],
+      ['completed', turnId, { artifactId: 'camera-answer' }],
+    ]);
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_COMPLETED, sequence: 10, turnId, data: {} });
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.assistantText).toBe('桌上有一個杯子。');
+    expect(runtime.lastSequence).toBe(10);
+    expect(controller.canAskCamera.value).toBe(true);
+    expect(vad.start).not.toHaveBeenCalled();
+    expect(timers.scheduleResume).not.toHaveBeenCalled();
+    expect(transport.uploadVoiceTurn).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('does not retry a rejected camera text turn', async () => {
+    const { app, controller, transport, runtime } = await manualListeningHarness();
+    transport.submitTextTurn.mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'TURN_BUSY' }));
+    expect(await controller.requestCameraView()).toBe(false);
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    expect(runtime.activeTurnId).toBe('');
+    expect(controller.cameraRequestMessage.value).toContain('尚未結束');
+    app.unmount();
+  });
   it.each([TURN_STATES.IDLE, TURN_STATES.LISTENING])('starts awake with the microphone off for a %s snapshot', async (turnState) => {
     const { app, controller, transport, runtime, vad, vadCallbacks } = await manualListeningHarness({ turnState });
     expect(runtime.sleeping).toBe(false);
@@ -375,6 +457,164 @@ describe('manual listening intent', () => {
     expect(vad.start).not.toHaveBeenCalled();
     expect(vad.isRunning.value).toBe(false);
   });
+});
+
+describe('camera turn request races', () => {
+  it.each([false, true])('keeps Native acceptance after a lost text POST response (audio already started=%s)', async (audioStarted) => {
+    const { app, controller, transport, runtime, playback, vad } = await manualListeningHarness();
+    let rejectPost;
+    const fetchImpl = vi.fn(() => new Promise((_resolve, reject) => { rejectPost = reject; }));
+    const wireTransport = new RuntimeTransport({ fetchImpl });
+    transport.submitTextTurn.mockImplementation(wireTransport.submitTextTurn.bind(wireTransport));
+    const camera = controller.requestCameraView();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    const turnId = runtime.activeTurnId;
+    const [url, request] = fetchImpl.mock.calls[0];
+    expect(new URL(url).pathname).toBe('/api/v2/conversation/turns');
+    expect(request.headers['Idempotency-Key']).toBe(turnId);
+    expect(JSON.parse(request.body)).toMatchObject({ clientTurnId: turnId, language: 'zh-TW' });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_ACCEPTED, sequence: 4, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.AGENT_THINKING, sequence: 5, turnId, data: {} });
+    const audio = { protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 6, turnId,
+      data: { artifacts: [{ artifactId: 'camera-answer' }] } };
+    if (audioStarted) {
+      await transport.emit('event', audio);
+      await vi.waitFor(() => expect(playback.play).toHaveBeenCalledOnce());
+      playback.play.mock.calls[0][1].onStarted();
+    }
+    rejectPost(new TypeError('NetworkError when attempting to fetch resource'));
+    expect(await camera).toBe(true);
+    expect(runtime.activeTurnId).toBe(turnId);
+    expect(controller.canAskCamera.value).toBe(false);
+    expect(transport.getRuntimeStatus).toHaveBeenCalledOnce(); // Startup only; Native events already confirmed acceptance.
+    expect(transport.cancelTurn).not.toHaveBeenCalled();
+    if (!audioStarted) {
+      await transport.emit('event', audio);
+      await vi.waitFor(() => expect(playback.play).toHaveBeenCalledOnce());
+      playback.play.mock.calls[0][1].onStarted();
+    }
+    await playback.play.mock.calls[0][1].onEnded();
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_COMPLETED, sequence: 7, turnId, data: {} });
+    expect(transport.sendPlayback).toHaveBeenLastCalledWith('completed', turnId, { artifactId: 'camera-answer' });
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.turnState).toBe(TURN_STATES.IDLE);
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    expect(vad.start).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('confirms an ambiguous text POST from Native status without skipping retained events', async () => {
+    const { app, controller, transport, runtime, playback, initial } = await manualListeningHarness();
+    transport.submitTextTurn.mockRejectedValueOnce(new TypeError('NetworkError'));
+    transport.getRuntimeStatus.mockImplementationOnce(async () => ({
+      gatewayState: 'READY', activeSessionId: initial.sessionId, activeTurnId: runtime.activeTurnId,
+      turnBusy: true, lastSequence: 8,
+    }));
+    expect(await controller.requestCameraView()).toBe(true);
+    const turnId = runtime.activeTurnId;
+    expect(runtime.lastSequence).toBe(3);
+    expect(transport.getConversation).toHaveBeenCalledOnce(); // Startup only.
+    expect(transport.resetCursor).toHaveBeenCalledOnce();
+    expect(transport.cancelTurn).not.toHaveBeenCalled();
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_ACCEPTED, sequence: 4, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.AGENT_THINKING, sequence: 5, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TOOL_CALL, sequence: 6, turnId,
+      data: { toolName: 'capture_camera', callId: 'native-camera-call', arguments: {} } });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 7, turnId,
+      data: { artifacts: [{ artifactId: 'camera-answer' }] } });
+    await vi.waitFor(() => expect(playback.play).toHaveBeenCalledOnce());
+    playback.play.mock.calls[0][1].onStarted();
+    await playback.play.mock.calls[0][1].onEnded();
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_COMPLETED, sequence: 8, turnId, data: {} });
+    expect(transport.sendToolResult).not.toHaveBeenCalled();
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    expect(transport.failProtocol).not.toHaveBeenCalled();
+    expect(runtime.lastSequence).toBe(8);
+    app.unmount();
+  });
+
+  it.each([false, true])('safely cancels an unconfirmed camera request without replay (status unavailable=%s)', async (statusUnavailable) => {
+    const { app, controller, transport, runtime, timers } = await manualListeningHarness();
+    let turnId;
+    transport.submitTextTurn.mockImplementationOnce(async (request) => {
+      turnId = request.turnId;
+      throw new TypeError('NetworkError');
+    });
+    if (statusUnavailable) transport.getRuntimeStatus.mockRejectedValueOnce(new TypeError('NetworkError'));
+    transport.cancelTurn.mockRejectedValueOnce(new TypeError('Cancel response also lost'));
+    expect(await controller.requestCameraView()).toBe(false);
+    expect(transport.cancelTurn).toHaveBeenCalledExactlyOnceWith(turnId, 'user_interaction');
+    expect(runtime.activeTurnId).toBe('');
+    expect(controller.cameraRequestMessage.value).toContain('已要求停止');
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_ACCEPTED, sequence: 4, turnId, data: {} });
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TTS_READY, sequence: 5, turnId,
+      data: { artifacts: [{ artifactId: 'cancelled-audio' }] } });
+    expect(transport.resolveAudio).not.toHaveBeenCalled();
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    expect(timers.scheduleTurnRetry).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('preserves a newer acceptance that arrives while the status read is pending', async () => {
+    const { app, controller, transport, runtime } = await manualListeningHarness();
+    let finishStatus;
+    transport.submitTextTurn.mockRejectedValueOnce(new TypeError('NetworkError'));
+    transport.getRuntimeStatus.mockImplementationOnce(() => new Promise((resolve) => { finishStatus = resolve; }));
+    const camera = controller.requestCameraView();
+    await vi.waitFor(() => expect(transport.getRuntimeStatus).toHaveBeenCalledTimes(2));
+    const turnId = runtime.activeTurnId;
+    await transport.emit('event', { protocolVersion: '2.0', type: RuntimeEventType.TURN_ACCEPTED, sequence: 4, turnId, data: {} });
+    finishStatus({ gatewayState: 'READY', activeTurnId: null });
+    expect(await camera).toBe(true);
+    expect(runtime.activeTurnId).toBe(turnId);
+    expect(runtime.lastSequence).toBe(4);
+    expect(transport.cancelTurn).not.toHaveBeenCalled();
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it('does not restore a cancelled camera turn from a delayed status read', async () => {
+    const { app, controller, transport, runtime, initial } = await manualListeningHarness();
+    let finishStatus;
+    transport.submitTextTurn.mockRejectedValueOnce(new TypeError('NetworkError'));
+    transport.getRuntimeStatus.mockImplementationOnce(() => new Promise((resolve) => { finishStatus = resolve; }));
+    const camera = controller.requestCameraView();
+    await vi.waitFor(() => expect(transport.getRuntimeStatus).toHaveBeenCalledTimes(2));
+    const turnId = runtime.activeTurnId;
+    await controller.toggleListening();
+    finishStatus({ gatewayState: 'READY', activeSessionId: initial.sessionId, activeTurnId: turnId });
+    expect(await camera).toBe(false);
+    expect(runtime.activeTurnId).toBe('');
+    expect(runtime.turnState).toBe(TURN_STATES.LISTENING);
+    expect(transport.cancelTurn).toHaveBeenCalledExactlyOnceWith(turnId, 'user_interaction');
+    expect(transport.submitTextTurn).toHaveBeenCalledOnce();
+    app.unmount();
+  });
+
+  it.each(['button', 'head-press', 'new-session', 'screen-off', 'unmount'])(
+    'does not submit a camera request invalidated by %s during VAD pause', async (interruption) => {
+      const { app, controller, transport, runtime, vad, initial } = await manualListeningHarness();
+      await controller.toggleListening();
+      let finishPause;
+      vad.pause.mockImplementationOnce(() => new Promise((resolve) => { finishPause = resolve; }));
+      const camera = controller.requestCameraView();
+      expect(controller.cameraRequestPending.value).toBe(true);
+      if (interruption === 'button') await controller.toggleListening();
+      if (interruption === 'head-press') await transport.emit('event', localEvent('local.interaction', 4, { kind: 'HEAD_PRESS' }));
+      if (interruption === 'screen-off') await transport.emit('event', localEvent('local.screen.state', 4, { state: 'OFF' }));
+      if (interruption === 'new-session') {
+        transport.startNewSession.mockResolvedValueOnce({ ...initial, sessionId: 'session-2', lastSequence: 4 });
+        expect(await controller.startNewSession()).toBe(true);
+      }
+      if (interruption === 'unmount') app.unmount();
+      finishPause();
+      expect(await camera).toBe(false);
+      expect(transport.submitTextTurn).not.toHaveBeenCalled();
+      expect(runtime.activeTurnId).toBe('');
+      expect(controller.cameraRequestPending.value).toBe(false);
+      if (interruption !== 'unmount') app.unmount();
+    },
+  );
 });
 
 function sleepToolEvent(argumentsValue = {}) {

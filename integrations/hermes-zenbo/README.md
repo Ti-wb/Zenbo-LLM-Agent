@@ -1,6 +1,6 @@
 # Hermes Zenbo plugin
 
-One drop-in Python plugin adds six allowlisted Zenbo tools and speech routes to
+One drop-in Python plugin adds eight allowlisted Zenbo tools and speech routes to
 Hermes' existing API process. It creates no server or database and changes no
 model/provider settings. Native omits model overrides and uses the selected
 profile's model, STT and TTS configuration.
@@ -37,6 +37,42 @@ upgrading Hermes. Reference: official
 and [run execution](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/api_server_runs.py).
 Public `main` is a reference, not proof of the installed revision.
 
+The current package is 1.1.0 with the eight-tool `hermes-zenbo-2` manifest.
+The matching App rejects a six-tool plugin during discovery; upgrade this plugin
+and restart the existing Hermes gateway together with the App update. The device
+channel wire version remains 1.0.
+
+`capture_camera` receives one bounded JPEG from the authenticated Native device.
+The plugin checks its base64, digest and JPEG dimensions/framing in memory, then
+returns Hermes' native multimodal tool envelope when the installed implementation
+and profile model support it. Unsupported configurations return
+`image_not_delivered_to_model` with metadata, without image bytes or a new provider.
+See the [camera contract](../../contracts/hermes-zenbo/README.md#camera-and-short-movement-extension)
+for limits, compatibility checks and the distinction between local capture and
+model delivery. `move_robot` is a fixed short Native movement; it never accepts
+arbitrary velocity, distance or safety overrides.
+
+## Source package
+
+From a fresh repository checkout, build the drop-in ZIP with the tracked helper:
+
+```sh
+python scripts/package-hermes-zenbo.py --output .local/zenbo-plugin.zip
+```
+
+The archive contains the runtime Python modules (including `camera.py`), plugin
+manifest, device contract, README and license under `zenbo/`. The helper checks
+contract parity, all relative runtime imports including deferred route imports,
+and ZIP CRCs before replacing the output. Tests, caches, credentials, APKs and
+vendor JARs are excluded. An existing local read-only compatibility helper can
+be included explicitly with `--preflight /path/to/preflight.py`; it is optional
+and not required to build from a fresh checkout.
+
+The package test extracts the archive in a temporary directory, imports its
+runtime modules and registers all eight tools with synthetic Hermes callbacks.
+This verifies package completeness; installed Hermes compatibility and device
+behavior still require their separate checks below.
+
 ## Routes and device authority
 
 For an example profile API base of
@@ -53,7 +89,7 @@ Capabilities are available before device binding.
 
 | Method | Suffix | Purpose |
 | --- | --- | --- |
-| GET | `/capabilities` | Six tools and configured speech metadata |
+| GET | `/capabilities` | Eight tools and configured speech metadata |
 | WSS | `/device-channel` | Bind device/session, activate/revoke run, tool calls/results |
 | POST | `/audio/transcriptions` | Multipart PCM16 WAV to text |
 | POST | `/audio/speech` | Completed answer to ordered audio artifacts |
@@ -66,8 +102,9 @@ cannot choose a device. Profile-specific plugin imports share one process-local
 broker. Each device/session has one active run. Cancellation or disconnect
 revokes authority and fails pending calls. The next run waits for authoritative
 terminal status and pending-call cleanup. Tools never replay. `accepted` is a
-receipt; the handler waits for a valid terminal result within five seconds,
-including activation and transport time.
+receipt; the handler waits for a valid terminal result within the manifest's
+total deadline, including activation and transport time: 7,500 ms for following,
+6,500 ms for moving, and 5,000 ms for all other tools, including stopping.
 Native activation wakes waiting tool calls immediately; a bounded interrupt
 check remains while waiting, within the same original deadline.
 
@@ -111,9 +148,9 @@ Using Python with Hermes' existing `aiohttp` dependency, from the repository roo
 python -m unittest discover -s integrations/hermes-zenbo/tests -v
 ```
 
-Without `aiohttp`, HTTP/WS tests explicitly skip; complete acceptance requires
-no skips. Tests exercise local aiohttp HTTP/WS with synthetic Hermes callbacks,
-tool/schema/manifest consistency, profile/device isolation, cancellation,
+Without `aiohttp`, HTTP/WS and extracted-package import tests explicitly skip;
+complete acceptance requires no skips. Tests exercise local aiohttp HTTP/WS with
+synthetic Hermes callbacks, tool/schema/manifest consistency, profile/device isolation, cancellation,
 deadline/no-replay behavior, multipart/audio validation, chunk ordering, artifact
 scope/TTL/hash, and cleanup/error privacy. Deployment revision, actual speech
 providers, TLS proxy, Android 6 and Zenbo hardware require separate checks.

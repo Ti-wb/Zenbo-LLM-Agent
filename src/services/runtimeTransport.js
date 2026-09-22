@@ -4,6 +4,16 @@ const CLIENT_VERSION = '0.1.0';
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_VOICE_BYTES = 2 * 1024 * 1024;
 const MAX_VOICE_DURATION_MS = 30000;
+// Native may stop attention (2 s), enable avoidance (1.5 s), then acquire
+// follow (3 s) or complete a move (2 s). Leave 1 s for scheduling/HTTP.
+const DEVICE_ACTION_TIMEOUT_MS = Object.freeze({
+  follow: 7500,
+  forward: 6500,
+  backward: 6500,
+  left: 6500,
+  right: 6500,
+  stop: 3000,
+});
 
 function trimSlash(value) {
   return String(value || '').replace(/\/+$/, '');
@@ -127,6 +137,8 @@ export class RuntimeTransport {
         error.code = payload.error?.code || '';
         error.retryable = payload.error?.retryable === true;
         error.requestId = payload.requestId || '';
+        error.nativeRejection = typeof payload.error?.code === 'string' && payload.error.code.length > 0
+          && typeof payload.error?.message === 'string';
         throw error;
       }
       return payload.data ?? null;
@@ -208,6 +220,80 @@ export class RuntimeTransport {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     });
+  }
+
+  async deviceRequest(path, options = {}, timeoutMs = 2500) {
+    const abort = new AbortController();
+    const timeout = this.setTimeoutImpl(() => abort.abort(), timeoutMs);
+    try {
+      return await this.request(`${LOCAL_API_PREFIX}/device${path}`, { ...options, signal: abort.signal });
+    } finally { this.clearTimeoutImpl(timeout); }
+  }
+
+  getDeviceStatus() {
+    return this.deviceRequest('/status', { method: 'GET' });
+  }
+
+  putDeviceSettings(settings) {
+    return this.deviceRequest('/settings', {
+      method: 'PUT', body: JSON.stringify(settings),
+    });
+  }
+
+  async sendDeviceAction(action, options = {}) {
+    try {
+      const result = await this.deviceRequest('/action', {
+        method: 'POST', body: JSON.stringify({ action }), ...options,
+      }, DEVICE_ACTION_TIMEOUT_MS[action] || 2500);
+      if (result?.accepted !== true) throw new Error('機器動作回應格式無效。');
+      return result;
+    } catch (error) {
+      // A missing/invalid reply cannot prove the physical action did not start.
+      // Stop once under its own deadline; never replay the original action.
+      if (!error.nativeRejection) {
+        try {
+          await this.deviceRequest('/action', {
+            method: 'POST', body: JSON.stringify({ action: 'stop' }),
+          }, DEVICE_ACTION_TIMEOUT_MS.stop);
+        } catch { /* Native safety still owns an unconfirmed stop. */ }
+      }
+      throw error;
+    }
+  }
+
+  setDeviceAttention(phase) {
+    return this.deviceRequest('/attention', {
+      method: 'PUT', body: JSON.stringify({ phase }),
+    });
+  }
+
+  setRemoteEnabled(enabled) {
+    return this.deviceRequest('/remote', {
+      method: 'PUT', body: JSON.stringify({ enabled }),
+    });
+  }
+
+  captureCamera() {
+    return this.deviceRequest('/camera/capture', {
+      method: 'POST', body: JSON.stringify({}),
+    }, 15000);
+  }
+
+  async getCameraImage(artifactId = '', options = {}) {
+    const path = artifactId ? encodeURIComponent(artifactId) : 'frame';
+    const response = await this.fetchImpl(`${this.origin}${LOCAL_API_PREFIX}/device/camera/${path}`, {
+      method: 'GET', credentials: 'include', cache: 'no-store',
+      headers: { Accept: 'image/jpeg' }, ...options,
+    });
+    if (!response.ok) {
+      await this.parseResponse(response);
+      throw new Error(`無法取得相機畫面（${response.status}）。`);
+    }
+    const blob = await response.blob();
+    if (blob.type !== 'image/jpeg' || blob.size > 2 * 1024 * 1024 || !blob.size) {
+      throw new Error('相機回傳的影像格式或大小無效。');
+    }
+    return blob;
   }
 
   startNewSession(idempotencyKey = this.randomUuidImpl()) {

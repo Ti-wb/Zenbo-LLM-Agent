@@ -6,7 +6,7 @@ are synthetic contract examples, not recorded device or service observations.
 
 The validator checks the loopback-only v2 route, cookie and origin boundary,
 write-only Hermes settings, Native-owned event sequence, ordered audio metadata,
-six strict tool schemas, and positive/negative HTTP/event fixtures. It resolves
+eight strict tool schemas, and positive/negative HTTP/event fixtures. It resolves
 local schema references and separately checks PIN/fingerprint confirmation and
 one-use bootstrap token rejection.
 

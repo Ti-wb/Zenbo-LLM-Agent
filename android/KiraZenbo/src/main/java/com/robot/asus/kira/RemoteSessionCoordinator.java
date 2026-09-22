@@ -43,6 +43,13 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     private final AtomicReference<String> physicalToolOwner = new AtomicReference<>();
     private final TurnAuthority turnAuthority = new TurnAuthority();
     private LocalPublisher localPublisher;
+    interface HardwareLifecycle {
+        void setMotionAllowed(boolean allowed);
+        void stop();
+        void suspend();
+    }
+    private HardwareLifecycle deviceHardware;
+    private final Deque<JSONObject> cameraCaptures = new ArrayDeque<>();
     private long sequence;
     private long generation;
     private boolean stopped;
@@ -112,6 +119,25 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     }
 
     public synchronized void setLocalPublisher(LocalPublisher publisher) { localPublisher = publisher; }
+    public synchronized void setDeviceHardware(DeviceHardware hardware) {
+        setHardwareLifecycle(hardware == null ? null : new HardwareLifecycle() {
+            @Override public void setMotionAllowed(boolean allowed) { hardware.setMotionAllowed(allowed); }
+            @Override public void stop() { hardware.stop(); }
+            @Override public void suspend() { hardware.suspend(); }
+        });
+    }
+    synchronized void setHardwareLifecycle(HardwareLifecycle hardware) {
+        deviceHardware = hardware;
+        if (hardware != null) hardware.setMotionAllowed(motionEnabled);
+    }
+    synchronized void onRendererDisconnected() {
+        if (stopped) return;
+        cancelActiveTurn("", "screen_off", NO_OP_CALLBACK);
+        if (deviceHardware != null) deviceHardware.suspend();
+    }
+    synchronized boolean manualDeviceActionAllowed() {
+        return !stopped && active == null && !newSessionPending && physicalToolOwner.get() == null;
+    }
     public void start() { gatewayClient.start(); }
     public synchronized void reloadGateway() {
         cancelActiveTurn("", "user_interaction", NO_OP_CALLBACK);
@@ -125,6 +151,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     public synchronized void stop() {
         cancelActiveTurn("", "screen_off", NO_OP_CALLBACK);
         stopped = true;
+        if (deviceHardware != null) deviceHardware.suspend();
+        for (ToolCall tool : tools.values()) releaseCameraBytes(tool);
         generation++;
         gatewayClient.shutdown();
         scheduler.shutdownNow();
@@ -153,6 +181,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         transcript = "";
         assistantText = "";
         conversation.clear();
+        cameraCaptures.clear();
         onStateChanged("CONNECTING", "");
         JSONObject snapshot = getConversationSnapshot(sequence);
         snapshot.put("lastSequence", sequence + 1);
@@ -164,9 +193,11 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             // Never grant hardware authority before its durable preference is saved.
             settings.setMotionEnabled(true);
             motionEnabled = true;
+            if (deviceHardware != null) deviceHardware.setMotionAllowed(true);
             publishRobotState();
         } else {
             motionEnabled = false;
+            if (deviceHardware != null) deviceHardware.setMotionAllowed(false);
             boolean motionPending = robotGateway.isMoving();
             for (ToolCall tool : new ArrayList<>(tools.values())) {
                 if (requiresMotionPermission(tool.name) && tool.terminal == null) {
@@ -205,7 +236,8 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     public synchronized JSONObject getConversationSnapshot(long ignored) {
         return json("sessionId", sessionId, "activeTurnId", nullable(getActiveTurnId()),
                 "turnState", active == null || active.localTerminal ? "IDLE" : active.state,
-                "lastSequence", sequence, "transcript", transcript, "assistantText", assistantText);
+                "lastSequence", sequence, "transcript", transcript, "assistantText", assistantText,
+                "cameraCaptures", new JSONArray(cameraCaptures));
     }
 
     public synchronized JSONObject submitTurn(JSONObject input) throws JSONException {
@@ -291,6 +323,9 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             newSessionPending = false;
         }
         connectionState = GatewayStateMapper.normalize(state);
+        if (deviceHardware != null && ("OFFLINE".equals(connectionState) || "ERROR".equals(connectionState))) {
+            deviceHardware.stop();
+        }
         emit("local.gateway.state", null, json("state", connectionState,
                 "detail", safeDetail(detail)));
         if ("READY".equals(connectionState) && !announcedReady) {
@@ -403,6 +438,9 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     public synchronized void cancelActiveTurn(String expectedTurnId, String reason,
                                                HermesTransport.ResultCallback callback) {
         boolean robotStopped = robotGateway.emergencyStop();
+        // Native cancellation must also revoke passive attention and queued camera callbacks.
+        // Otherwise a later SDK voice event can restart head motion after a head press or cancel.
+        if (deviceHardware != null) deviceHardware.stop();
         physicalToolOwner.set(null);
         Turn turn = active;
         if (turn == null || (!expectedTurnId.isEmpty() && !expectedTurnId.equals(turn.id))) {
@@ -565,13 +603,24 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                 throw new IllegalArgumentException("Tool is not for the active run");
             if (!robotGateway.getAllowedTools().contains(name) || !"1.0.0".equals(call.optString("toolVersion", "")))
                 throw new IllegalArgumentException("Unsupported device tool");
+            if ("capture_camera".equals(name)) {
+                for (ToolCall pending : tools.values()) {
+                    JSONObject output = pending.terminal == null ? null : pending.terminal.optJSONObject("output");
+                    if ("capture_camera".equals(pending.name) && !pending.deliveryAcknowledged && !pending.deliveryAbandoned
+                            && (pending.terminal == null || (output != null && output.has("imageBase64")))) {
+                        throw new IllegalArgumentException("A camera result is still awaiting acknowledgement");
+                    }
+                }
+            }
             String owner = call.optString("owner", robotGateway.isNativeTool(name) ? "native" : "web");
             if (!owner.equals(robotGateway.isNativeTool(name) ? "native" : "web")) throw new IllegalArgumentException("Wrong tool owner");
             if (args == null) throw new IllegalArgumentException("Tool arguments are required");
             validateArguments(name, args);
-            int timeoutMs = call.getInt("timeoutMs");
-            if (timeoutMs < 100 || timeoutMs > 15_000) throw new IllegalArgumentException("Invalid timeout");
-            deadline = Math.min(parseDeadline(call.getString("deadlineAt")), System.currentTimeMillis() + Math.min(timeoutMs, 5_000));
+            int timeoutMs = ToolManifestSpec.timeoutMs(name);
+            Object declaredTimeout = call.get("timeoutMs");
+            if (!(declaredTimeout instanceof Number) || ((Number) declaredTimeout).doubleValue() != timeoutMs)
+                throw new IllegalArgumentException("Invalid timeout");
+            deadline = Math.min(parseDeadline(call.getString("deadlineAt")), System.currentTimeMillis() + timeoutMs);
             if (deadline <= System.currentTimeMillis()) throw new IllegalArgumentException("Expired tool call");
             if ((motionEnabled || !requiresMotionPermission(name))
                     && robotGateway.isPhysicalTool(name) && !tryClaimPhysicalTool(physicalToolOwner, callId))
@@ -582,6 +631,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             return;
         }
         if ("go_to_sleep".equals(name)) {
+            if (deviceHardware != null) deviceHardware.suspend();
             // Stop hardware immediately, but keep this web tool alive until its succeeded ACK.
             for (ToolCall physical : new ArrayList<>(tools.values())) {
                 if (robotGateway.isPhysicalTool(physical.name) && physical.terminal == null)
@@ -635,9 +685,17 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                                 return;
                             }
                             boolean success = !"error".equals(result.optString("status", ""));
+                            JSONObject output = result.optJSONObject("result");
+                            if (success && "capture_camera".equals(tool.name)) {
+                                JSONObject metadata = cameraMetadata(output);
+                                metadata.remove("accepted");
+                                cameraCaptures.addLast(metadata);
+                                while (cameraCaptures.size() > 4) cameraCaptures.removeFirst();
+                                emit("camera.captured", tool.turn.id, metadata);
+                            }
                             terminalTool(tool, toolUpdate(success ? "succeeded" : "failed",
-                                    success ? result.optJSONObject("result") : null,
-                                    success ? null : toolError("EXECUTION_FAILED", "Robot could not execute the tool")));
+                                    success ? output : null,
+                                    success ? null : nativeToolError(result.optJSONObject("error"))));
                             publishRobotState();
                         }
                     });
@@ -692,6 +750,13 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         tool.terminalAt = System.currentTimeMillis();
         if (tool.timeout != null) tool.timeout.cancel(false);
         releasePhysicalTool(physicalToolOwner, tool.id);
+        if ("capture_camera".equals(tool.name)) {
+            scheduler.schedule(() -> {
+                synchronized (RemoteSessionCoordinator.this) {
+                    if (!tool.deliveryAcknowledged && !tool.deliveryAbandoned) abandonToolDelivery(tool);
+                }
+            }, TERMINAL_TOOL_RETENTION_MS, TimeUnit.MILLISECONDS);
+        }
         deliverTerminal(tool);
     }
     private void deliverTerminal(ToolCall tool) {
@@ -704,6 +769,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                     tool.deliveryInFlight = false;
                     if (tool.deliveryAbandoned) return;
                     tool.deliveryAcknowledged = true;
+                    releaseCameraBytes(tool);
                     List<HermesTransport.ResultCallback> callbacks = new ArrayList<>(tool.deliveryWaiters);
                     tool.deliveryWaiters.clear();
                     for (HermesTransport.ResultCallback callback : callbacks) callback.onSuccess(tool.terminal);
@@ -746,8 +812,14 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             if (!tool.deliveryAcknowledged) abandonToolDelivery(tool);
         }
     }
+    private static void releaseCameraBytes(ToolCall tool) {
+        if (!"capture_camera".equals(tool.name) || tool.terminal == null) return;
+        JSONObject output = tool.terminal.optJSONObject("output");
+        if (output != null) output.remove("imageBase64");
+    }
     private void abandonToolDelivery(ToolCall tool) {
         tool.deliveryAbandoned = true;
+        releaseCameraBytes(tool);
         tool.deliveryScheduled = false;
         List<HermesTransport.ResultCallback> callbacks = new ArrayList<>(tool.deliveryWaiters);
         tool.deliveryWaiters.clear();
@@ -790,7 +862,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                 "motionEnabled", motionEnabled, "battery", battery.toJson()));
     }
     private static boolean requiresMotionPermission(String name) {
-        return "start_robot_following".equals(name) || "look_at_user".equals(name);
+        return "start_robot_following".equals(name) || "look_at_user".equals(name) || "move_robot".equals(name);
     }
     private static JSONObject motionDisabledResult() {
         return toolUpdate("rejected", null, toolError("MOTION_DISABLED", "Robot motion is disabled on this device"));
@@ -811,6 +883,7 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
         turn.artifacts.clear();
         terminalizeTools(turn, "TURN_CANCELLED");
         robotGateway.emergencyStop();
+        if (deviceHardware != null) deviceHardware.stop();
         emit("turn.error", turn.id, json("error", json("code", safeCode(code), "message", message,
                 "retryable", "GATEWAY_OFFLINE".equals(code))));
         if (turn.runId != null && !turn.remoteTerminal) requestRemoteStop(turn);
@@ -838,6 +911,13 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
     }
     private static JSONObject toolError(String code, String message) {
         return json("code", code, "message", message, "retryable", false);
+    }
+    static JSONObject nativeToolError(JSONObject detail) {
+        String code = detail == null ? "" : detail.optString("code", "");
+        if (!code.matches("[A-Z][A-Z0-9_]{1,63}")) code = "EXECUTION_FAILED";
+        String message = detail == null ? "" : detail.optString("message", "");
+        if (message.isEmpty()) message = "Robot could not execute the tool";
+        return toolError(code, ProtocolStrings.truncate(message, 512));
     }
     private static JSONObject toolUpdate(String status, JSONObject output, JSONObject error) {
         JSONObject value = json("status", status, "updatedAt", isoNow());
@@ -892,6 +972,13 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
             allowed.add("largePreview");
             requireBooleanIfPresent(arguments, "enablePreview");
             requireBooleanIfPresent(arguments, "largePreview");
+        } else if ("move_robot".equals(name)) {
+            allowed.add("direction");
+            String direction = arguments.optString("direction", "");
+            if (!("forward".equals(direction) || "backward".equals(direction)
+                    || "left".equals(direction) || "right".equals(direction))) {
+                throw new IllegalArgumentException("move_robot.direction is invalid");
+            }
         } else if ("look_at_user".equals(name)) {
             allowed.add("doa");
         } else if ("show_emotion".equals(name)) {
@@ -924,6 +1011,19 @@ public final class RemoteSessionCoordinator implements HermesTransport.Listener 
                 }
             }
         }
+    }
+
+    /** Only explicitly allowed snapshot metadata may enter renderer events or recovery state. */
+    static JSONObject cameraMetadata(JSONObject output) {
+        JSONObject metadata = new JSONObject();
+        if (output == null) return metadata;
+        for (String key : Arrays.asList("accepted", "artifactId", "mimeType", "byteLength", "sha256", "width", "height", "capturedAt")) {
+            if (output.has(key)) {
+                try { metadata.put(key, output.get(key)); }
+                catch (JSONException invalid) { throw new IllegalArgumentException("Invalid camera metadata"); }
+            }
+        }
+        return metadata;
     }
 
     private static void requireBooleanIfPresent(JSONObject arguments, String name) {

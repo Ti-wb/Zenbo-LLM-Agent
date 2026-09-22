@@ -7,6 +7,7 @@ import sys
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +62,54 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
     def result(call, status="succeeded", **fields):
         return {"type": "tool.result", **{key: call[key] for key in
                 ("callId", "sessionId", "runId", "turnId")}, "status": status, **fields}
+
+    async def test_declared_deadlines_cover_the_full_native_chain_without_a_five_second_cap(self):
+        for cap in (None, 60):
+            for tool, args, native_seconds, declared_ms in (
+                    ("start_robot_following", {}, 2 + 1.5 + 3, 7500),
+                    ("move_robot", {"direction": "forward"}, 2 + 1.5 + 2, 6500),
+                    ("stop_robot_following", {}, 2, 5000)):
+                with self.subTest(tool=tool, cap=cap):
+                    broker = Broker(timeout=cap)
+                    clock = [100.0]
+                    events = []
+
+                    async def send(event):
+                        events.append(event)
+                        self.assertEqual(event["timeoutMs"], declared_ms)
+                        self.assertEqual(event["deadlineAt"], broker_module.iso_time(1_800_000_000 + declared_ms / 1000))
+                        clock[0] += native_seconds
+                        broker.result(binding, self.result(event, output={"accepted": True}))
+
+                    binding = broker.bind("robot", "device-1", "session-1", "principal-1", send, self.statuses.get)
+                    broker.activate(binding, "run-1", "turn-1")
+                    fake_time = types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1_800_000_000)
+                    with patch.object(broker_module, "time", fake_time):
+                        result = await broker.execute(("robot", "session-1", "run-1"), tool, args)
+                    self.assertEqual(result, {"accepted": True})
+                    self.assertEqual(len(events), 1)
+                    self.assertFalse(binding.pending)
+                    broker.close()
+
+    async def test_result_after_declared_deadline_is_rejected_without_replay(self):
+        broker = Broker()
+        clock = [100.0]
+        events = []
+
+        async def send(event):
+            events.append(event)
+            clock[0] += event["timeoutMs"] / 1000 + 0.001
+            self.reject("call_expired", broker.result, binding, self.result(event, output={"accepted": True}))
+
+        binding = broker.bind("robot", "device-1", "session-1", "principal-1", send, self.statuses.get)
+        broker.activate(binding, "run-1", "turn-1")
+        fake_time = types.SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1_800_000_000)
+        with patch.object(broker_module, "time", fake_time):
+            result = await broker.execute(("robot", "session-1", "run-1"), "start_robot_following", {})
+        self.assertEqual(result["error"]["code"], "tool_timeout")
+        self.assertEqual(len(events), 1)
+        self.assertFalse(binding.pending)
+        broker.close()
 
     async def test_activation_requires_owned_active_status(self):
         for status in (None, {"session_id": "other", "status": "running"},

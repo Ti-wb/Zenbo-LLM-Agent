@@ -15,7 +15,8 @@ const base = {
 };
 const call = (name, args) => ({
   type: 'tool.call', ...base, toolName: name, toolVersion: '1.0.0',
-  arguments: args, timeoutMs: 5000, deadlineAt: '2026-09-17T00:00:05Z',
+  arguments: args, timeoutMs: manifest.tools.find((tool) => tool.name === name)?.timeoutMs || 5000,
+  deadlineAt: '2026-09-17T00:00:10Z',
 });
 
 test('sanitized recorded discovery exposes native runs and a profile-managed model', () => {
@@ -36,11 +37,12 @@ test('sanitized recorded discovery exposes native runs and a profile-managed mod
   assert.equal(capabilities.response.endpoints.run_stop.path, '/v1/runs/{run_id}/stop');
 });
 
-test('all six tools accept only their strict existing input shape', () => {
+test('all eight tools accept only their strict existing input shape', () => {
   const examples = {
     get_system_status: {}, start_robot_following: { enablePreview: false, largePreview: false },
     stop_robot_following: {}, look_at_user: { doa: -180 },
     show_emotion: { emotion: 'HAPPY', durationMs: 0 }, go_to_sleep: {},
+    move_robot: { direction: 'forward' }, capture_camera: {},
   };
   for (const tool of manifest.tools) {
     assert.deepEqual(valid(call(tool.name, examples[tool.name]), channel), []);
@@ -50,7 +52,25 @@ test('all six tools accept only their strict existing input shape', () => {
     ['look_at_user', {}], ['look_at_user', { doa: 181 }],
     ['show_emotion', { emotion: 'ANGRY' }], ['show_emotion', { emotion: 'HAPPY', durationMs: 30001 }],
     ['start_robot_following', { enablePreview: 'yes' }], ['shell', {}],
+    ['move_robot', { direction: 'stop' }], ['move_robot', { direction: 'forward', distance: 50 }],
+    ['capture_camera', { url: 'https://untrusted.invalid/camera' }],
   ]) assert(valid(call(name, args), channel).length > 0, name);
+});
+
+test('tool deadlines cover the complete SDK chain and reject another tool deadline', () => {
+  for (const [name, args, nativeBudgetMs] of [
+    ['start_robot_following', {}, 2000 + 1500 + 3000],
+    ['move_robot', { direction: 'forward' }, 2000 + 1500 + 2000],
+  ]) {
+    const message = call(name, args);
+    assert.equal(message.timeoutMs, nativeBudgetMs + 1000);
+    assert.deepEqual(valid(message, channel), []);
+    for (const timeoutMs of [5000, 6500, 7500].filter((value) => value !== message.timeoutMs)) {
+      assert(valid({ ...message, timeoutMs }, channel).length > 0, `${name}: ${timeoutMs}`);
+    }
+  }
+  assert.equal(call('stop_robot_following', {}).timeoutMs, 5000);
+  assert(valid({ ...call('stop_robot_following', {}), timeoutMs: 7500 }, channel).length > 0);
 });
 
 test('device channel distinguishes activation, terminal results and receipts', () => {

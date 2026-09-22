@@ -13,7 +13,7 @@ const manifest = read('contracts/hermes-zenbo/device-tools.json');
 const channel = read('contracts/hermes-zenbo/schemas/device-channel.schema.json');
 const pluginManifest = read('integrations/hermes-zenbo/device-tools.json');
 assert.deepEqual(pluginManifest, manifest, 'Packaged plugin tool definitions drifted from the shared contract');
-const allowlist = ['get_system_status', 'start_robot_following', 'stop_robot_following', 'look_at_user', 'show_emotion', 'go_to_sleep'];
+const allowlist = ['get_system_status', 'start_robot_following', 'stop_robot_following', 'look_at_user', 'show_emotion', 'go_to_sleep', 'move_robot', 'capture_camera'];
 
 assert.equal(api.openapi, '3.1.0');
 assert.equal(api.info.version, '2.0.0');
@@ -35,6 +35,9 @@ const expectedOperations = {
   '/conversation': ['get'], '/conversation/new-session': ['post'], '/conversation/turns': ['post'], '/conversation/cancel': ['post'],
   '/conversation/tool-calls/{callId}': ['put'], '/conversation/playback': ['post'],
   '/conversation/audio/{artifactId}': ['get'], '/events': ['get'],
+  '/device/status': ['get'], '/device/settings': ['put'], '/device/action': ['post'],
+  '/device/attention': ['put'], '/device/camera/frame': ['get'],
+  '/device/camera/capture': ['post'], '/device/camera/{artifactId}': ['get'], '/device/remote': ['put'],
 };
 assert.deepEqual(Object.keys(api.paths).sort(), Object.keys(expectedOperations).sort());
 for (const [path, methods] of Object.entries(expectedOperations)) {
@@ -117,11 +120,12 @@ const channelTool = channel.oneOf.find((entry) => entry.properties.type.const ==
 for (const tool of manifest.tools) {
   const validation = channelTool.allOf.find((entry) => entry.if.properties.toolName.const === tool.name);
   assert.deepEqual(validation.then.properties.arguments, tool.inputSchema);
+  assert.equal(validation.then.properties.timeoutMs.const, tool.timeoutMs);
 }
 assert.deepEqual(manifest.tools.map((tool) => tool.name), allowlist);
 for (const tool of manifest.tools) {
   assert.equal(tool.owner, ['show_emotion', 'go_to_sleep'].includes(tool.name) ? 'web' : 'native');
-  assert.equal(tool.timeoutMs, 5000);
+  assert.equal(tool.timeoutMs, { start_robot_following: 7500, move_robot: 6500 }[tool.name] || 5000);
   assert.equal(tool.version, '1.0.0');
   for (const kind of ['inputSchema', 'resultSchema']) {
     assert.equal(tool[kind].additionalProperties, false);
@@ -152,6 +156,12 @@ const mapping = {
   'local-new-session-response': [schemas.ConversationResponse, api],
   'local-text-turn': [schemas.TextTurnRequest, api],
   'local-cancel-turn': [schemas.CancelTurnRequest, api],
+  'local-device-status-response': [schemas.DeviceStatusResponse, api],
+  'local-device-settings-request': [schemas.DeviceSettingsRequest, api],
+  'local-device-action-request': [schemas.DeviceActionRequest, api],
+  'local-device-attention-request': [schemas.DeviceAttentionRequest, api],
+  'local-camera-capture-response': [schemas.CameraCaptureResponse, api],
+  'local-remote-control-request': [schemas.RemoteControlRequest, api],
 };
 let validCount = 0;
 let invalidCount = 0;
@@ -188,4 +198,4 @@ for (const group of ['valid', 'invalid']) {
   }
 }
 console.log(`Local Runtime 2.0: ${Object.keys(api.paths).length} paths; ${validCount} valid and ${invalidCount} rejected fixtures`);
-console.log('Hermes Zenbo: six strict device tools; plugin channel schema; no retired Gateway contracts');
+console.log('Hermes Zenbo: eight strict device tools; plugin channel schema; no retired Gateway contracts');

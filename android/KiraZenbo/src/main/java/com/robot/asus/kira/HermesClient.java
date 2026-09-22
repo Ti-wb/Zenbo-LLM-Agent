@@ -451,7 +451,13 @@ public final class HermesClient implements HermesTransport {
     static JSONObject runRequest(String sessionId, String text, String language, String robotName) {
         return json("input", text, "session_id", sessionId,
                 "instructions", "You are " + robotName + ", a Zenbo robot. Reply in " + language
-                        + ". Use the six Zenbo tools when a device action or expression is needed. "
+                        + ". Use the eight Zenbo tools when a device action or expression is needed. "
+                        + "Use capture_camera only when asked to see, send or describe the current view. "
+                        + "Only describe an image when image content is actually delivered; image_not_delivered_to_model means you cannot see it. "
+                        + "Use move_robot for one requested short step: forward/backward 0.15 metres or left/right 15 degrees. "
+                        + "look_at_user uses an explicit direction; never invent a doa value or claim it is a measured speaker direction. "
+                        + "Native automatic attention handles measured speaker direction separately. "
+                        + "Never chain movement steps unless explicitly requested. Use stop_robot_following to stop movement or following. "
                         + "For every spoken answer, proactively call show_emotion once to match the meaning, "
                         + "without waiting for the user to request an expression. Use HAPPY for warm greetings, "
                         + "EXCITED for positive celebrations, CURIOUS for questions or explanations, "

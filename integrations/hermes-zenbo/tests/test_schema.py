@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from test_camera import capture_output
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,21 +18,22 @@ class SchemaTests(unittest.TestCase):
         contract = json.loads((ROOT.parents[1] / "contracts/hermes-zenbo/device-tools.json").read_text())
         self.assertEqual(schema.MANIFEST, contract)
         self.assertEqual(set(schema.TOOLS), {"get_system_status", "start_robot_following",
-                         "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep"})
-        self.assertEqual(len(schema.MANIFEST["tools"]), 6)
+                         "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep", "move_robot", "capture_camera"})
+        self.assertEqual(len(schema.MANIFEST["tools"]), 8)
         self.assertEqual({name for name, tool in schema.TOOLS.items() if tool["owner"] == "web"},
                          {"show_emotion", "go_to_sleep"})
 
-    def test_all_six_inputs_and_results(self):
+    def test_all_eight_inputs_and_results(self):
         inputs = {"get_system_status": {}, "start_robot_following": {"enablePreview": False},
                   "stop_robot_following": {}, "look_at_user": {"doa": -15.5},
-                  "show_emotion": {"emotion": "HAPPY", "durationMs": 30000}, "go_to_sleep": {}}
+                  "show_emotion": {"emotion": "HAPPY", "durationMs": 30000}, "go_to_sleep": {}, "move_robot": {"direction": "forward"}, "capture_camera": {}}
         outputs = {"get_system_status": {"accepted": True, "robotReady": True, "moving": False,
                                         "androidSdk": 23, "robotModel": "Zenbo K"},
                    "start_robot_following": {"accepted": True}, "stop_robot_following": {"accepted": False},
                    "look_at_user": {"accepted": True},
                    "show_emotion": {"ok": True, "emotion": "HAPPY", "durationMs": 0},
-                   "go_to_sleep": {"ok": True, "sleeping": True}}
+                   "go_to_sleep": {"ok": True, "sleeping": True},
+                   "move_robot": {"accepted": True}, "capture_camera": capture_output()}
         for name, tool in schema.TOOLS.items():
             for value, key in ((inputs[name], "inputSchema"), (outputs[name], "resultSchema")):
                 with self.subTest(tool=name, schema=key):

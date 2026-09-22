@@ -19,6 +19,9 @@ import java.util.Date;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.*;
 
@@ -397,6 +400,78 @@ public class RemoteSessionCoordinatorTest {
         assertEquals("accepted", transport.toolUpdates.get(0).getString("status"));
     }
 
+    @Test public void followingDeadlineIncludesAttentionStopAvoidanceAndAcquisition() throws Exception {
+        assertScheduledToolDeadline("start_robot_following", object(), 2_000 + 1_500 + 3_000);
+    }
+
+    @Test public void moveDeadlineIncludesAttentionStopAvoidanceAndMovement() throws Exception {
+        assertScheduledToolDeadline("move_robot", object("direction", "forward"), 2_000 + 1_500 + 2_000);
+    }
+
+    private void assertScheduledToolDeadline(String name, JSONObject arguments, int nativeBudgetMs) throws Exception {
+        RecordingScheduler recording = useRecordingScheduler();
+        coordinator.setMotionEnabled(true);
+        startText();
+        robot.queue = true;
+        recording.delays.clear();
+        coordinator.onDeviceToolCall(tool(name, arguments));
+        assertEquals(1, robot.executions);
+        assertEquals(1, recording.delays.size());
+        long delay = recording.delays.get(0);
+        assertTrue("Full Native chain must fit within the tool deadline", delay > nativeBudgetMs);
+        assertTrue(delay <= ToolManifestSpec.timeoutMs(name));
+        assertEquals(nativeBudgetMs + 1_000, ToolManifestSpec.timeoutMs(name));
+    }
+
+    @Test public void toolDeadlineHonorsAnEarlierRemoteExpiry() throws Exception {
+        RecordingScheduler recording = useRecordingScheduler();
+        coordinator.setMotionEnabled(true);
+        startText();
+        robot.queue = true;
+        JSONObject call = tool("start_robot_following", object());
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        call.put("deadlineAt", format.format(new Date(System.currentTimeMillis() + 2_000)));
+        recording.delays.clear();
+        coordinator.onDeviceToolCall(call);
+        assertEquals(1, robot.executions);
+        assertEquals(1, recording.delays.size());
+        assertTrue(recording.delays.get(0) > 0);
+        assertTrue(recording.delays.get(0) <= 2_000);
+    }
+
+    @Test public void deviceToolRejectsTimeoutsDeclaredForAnotherTool() throws Exception {
+        coordinator.setMotionEnabled(true);
+        startText();
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", 5_000));
+        coordinator.onDeviceToolCall(tool("move_robot", object("direction", "forward")).put("timeoutMs", 7_500));
+        coordinator.onDeviceToolCall(tool("stop_robot_following", object()).put("timeoutMs", 6_500));
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", "7500"));
+        coordinator.onDeviceToolCall(tool("move_robot", object("direction", "forward")).put("timeoutMs", 6_500.5));
+        assertEquals(0, robot.executions);
+        assertEquals(5, transport.toolUpdates.size());
+        for (JSONObject update : transport.toolUpdates) assertEquals("rejected", update.getString("status"));
+    }
+
+    private RecordingScheduler useRecordingScheduler() {
+        scheduler.shutdownNow();
+        RecordingScheduler recording = new RecordingScheduler();
+        scheduler = recording;
+        coordinator = new RemoteSessionCoordinator(transport, robot, scheduler, new GatewaySettings(preferences));
+        coordinator.setLocalPublisher(events::add);
+        coordinator.onStateChanged("READY", "ready");
+        return recording;
+    }
+
+    private static final class RecordingScheduler extends ScheduledThreadPoolExecutor {
+        final List<Long> delays = new ArrayList<>();
+        RecordingScheduler() { super(1); }
+        @Override public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+            delays.add(unit.toMillis(delay));
+            return super.schedule(command, delay, unit);
+        }
+    }
+
     @Test public void webEmotionToolHasLocalTurnIdentityAndOneTerminalResult() throws Exception {
         String turn = startText();
         JSONObject call = tool("show_emotion", object("emotion", "HAPPY", "durationMs", 0));
@@ -460,9 +535,102 @@ public class RemoteSessionCoordinatorTest {
         assertNull(capture.code);
         assertNotNull(capture.result);
     }
+    @Test public void cameraOutputReachesHermesButOnlyMetadataReachesRendererAndSnapshot() throws Exception {
+        startText();
+        robot.nextOutput = object("accepted",true,"artifactId",UUID.randomUUID().toString(),"mimeType","image/jpeg",
+                "byteLength",3,"sha256", "a".repeat(64),"width",1,"height",1,"capturedAt",future(),"imageBase64","/9j/");
+        JSONObject call = tool("capture_camera",object());
+        coordinator.onDeviceToolCall(call);
+        assertEquals(1,count("camera.captured"));
+        assertFalse("ACK releases the transport image", robot.nextOutput.has("imageBase64"));
+        assertEquals("/9j/",transport.toolUpdates.get(transport.toolUpdates.size()-1).getJSONObject("output").getString("imageBase64"));
+        assertFalse(coordinator.getConversation().toString().contains("imageBase64"));
+        assertFalse(coordinator.getConversationSnapshot(0).toString().contains("imageBase64"));
+        assertEquals(1,coordinator.getConversationSnapshot(0).getJSONArray("cameraCaptures").length());
+        coordinator.onDeviceToolCall(call);
+        assertEquals(1,count("camera.captured"));
+    }
+    @Test public void onlyOneUnacknowledgedCameraPayloadMayBeRetained() throws Exception {
+        startText(); transport.deferToolTerminal = true;
+        robot.nextOutput = object("accepted",true,"artifactId",UUID.randomUUID().toString(),"imageBase64","/9j/");
+        coordinator.onDeviceToolCall(tool("capture_camera",object()));
+        assertEquals(1,robot.executions);
+        HermesTransport.ResultCallback firstDelivery = transport.toolTerminal;
+        coordinator.onDeviceToolCall(tool("capture_camera",object()));
+        assertEquals(1,robot.executions);
+        firstDelivery.onSuccess(object());
+        coordinator.onDeviceToolCall(tool("capture_camera",object()));
+        assertEquals(2,robot.executions);
+    }
+    @Test public void movementRequiresNativePermissionAndStrictDirectionAndManualControlWaitsForTurn() throws Exception {
+        assertTrue(coordinator.manualDeviceActionAllowed());
+        startText(); assertFalse(coordinator.manualDeviceActionAllowed());
+        coordinator.onDeviceToolCall(tool("move_robot",object("direction","forward")));
+        assertEquals(0,robot.physicalEffects);
+        coordinator.setMotionEnabled(true);
+        coordinator.onDeviceToolCall(tool("move_robot",object("direction","diagonal")));
+        assertEquals(0,robot.physicalEffects);
+        coordinator.onDeviceToolCall(tool("move_robot",object("direction","forward","distance",100)));
+        assertEquals(0,robot.physicalEffects);
+        coordinator.onDeviceToolCall(tool("move_robot",object("direction","forward")));
+        assertEquals(1,robot.physicalEffects);
+    }
+    @Test public void cancelledQueuedCaptureCannotPublishImageOrExecute() throws Exception {
+        startText(); robot.queue = true;
+        coordinator.onDeviceToolCall(tool("capture_camera",object()));
+        coordinator.cancelActiveTurn("","user_interaction",new Capture());
+        assertFalse(robot.pendingGuard.runIfAllowed(() -> fail("Cancelled camera may not execute")));
+        assertEquals(0,count("camera.captured"));
+    }
+
+    @Test public void headPressCancellationRevokesPassiveAttentionAndQueuedCameraAuthority() throws Exception {
+        FakeHardware lifecycle = new FakeHardware(); coordinator.setHardwareLifecycle(lifecycle);
+        startText(); robot.queue = true;
+        coordinator.onDeviceToolCall(tool("capture_camera", object()));
+        lifecycle.attending = true;
+        coordinator.publishRobotEvent("HeadPress", object());
+        assertFalse(lifecycle.attending);
+        assertEquals(1,lifecycle.stops);
+        assertFalse(robot.pendingGuard.runIfAllowed(() -> fail("A cancelled capture may not resume")));
+    }
+    @Test public void lastRendererLossCancelsTurnAndSuspendsCameraEvenWithoutActiveTurn() throws Exception {
+        FakeHardware lifecycle = new FakeHardware(); coordinator.setHardwareLifecycle(lifecycle);
+        String turn = startText();
+        coordinator.onRendererDisconnected();
+        assertFalse(lifecycle.cameraEnabled);
+        assertEquals(1,lifecycle.suspends);
+        assertEquals(1,count("turn.cancelled"));
+        coordinator.onRunEvent("run-remote","run.cancelled",object());
+        lifecycle.cameraEnabled = true; lifecycle.attending = true;
+        coordinator.onRendererDisconnected();
+        assertFalse(lifecycle.cameraEnabled);
+        assertFalse(lifecycle.attending);
+        assertEquals(2,lifecycle.suspends);
+        assertNull(coordinator.getActiveTurnId());
+    }
+    @Test public void rendererReplacementAndDuplicateCloseDoNotCauseFalseLastDisconnect() {
+        Set<String> connected = new HashSet<>(Arrays.asList("old","replacement"));
+        assertFalse(LocalRuntimeServer.removeLastRenderer(connected,"old"));
+        assertFalse(LocalRuntimeServer.removeLastRenderer(connected,"old"));
+        assertTrue(LocalRuntimeServer.removeLastRenderer(connected,"replacement"));
+        assertFalse(LocalRuntimeServer.removeLastRenderer(connected,"replacement"));
+    }
+    @Test public void nativeFailurePreservesActionableCameraCodeAndBoundsMessage() throws Exception {
+        JSONObject error = RemoteSessionCoordinator.nativeToolError(object("code","CAMERA_DISABLED","message","x".repeat(600)));
+        assertEquals("CAMERA_DISABLED",error.getString("code"));
+        assertEquals(512,error.getString("message").length());
+        assertEquals("EXECUTION_FAILED", RemoteSessionCoordinator.nativeToolError(object("code","not a code")).getString("code"));
+    }
+    private static final class FakeHardware implements RemoteSessionCoordinator.HardwareLifecycle {
+        boolean attending, cameraEnabled = true; int stops,suspends;
+        public void setMotionAllowed(boolean allowed) { }
+        public void stop() { stops++; attending = false; }
+        public void suspend() { suspends++; attending = false; cameraEnabled = false; }
+    }
+
     private JSONObject tool(String name, JSONObject arguments) {
         return object("callId", UUID.randomUUID().toString(), "runId", "run-remote", "toolName", name,
-                "toolVersion", "1.0.0", "arguments", arguments, "timeoutMs", 5_000, "deadlineAt", future());
+                "toolVersion", "1.0.0", "arguments", arguments, "timeoutMs", ToolManifestSpec.timeoutMs(name), "deadlineAt", future());
     }
     private int count(String type) {
         int count = 0;
@@ -539,7 +707,8 @@ public class RemoteSessionCoordinatorTest {
             if (!deferDownload) callback.onSuccess(downloadBytes, "audio/wav", "fixture", future());
         }
         public void reportToolResult(String id, JSONObject update, ResultCallback callback) {
-            toolUpdates.add(update);
+            try { toolUpdates.add(new JSONObject(update.toString())); }
+            catch (JSONException invalid) { throw new AssertionError(invalid); }
             if (deferToolTerminal && !"accepted".equals(update.optString("status"))) toolTerminal = callback;
             else callback.onSuccess(update);
         }
@@ -548,22 +717,23 @@ public class RemoteSessionCoordinatorTest {
     private static class FakeRobot implements RobotOperations {
         int stops; int executions; int physicalEffects; boolean queue; boolean moving;
         GuardedExecution.Guard pendingGuard;
+        JSONObject nextOutput = object("accepted",true);
         public boolean isReady() { return true; }
         public boolean isMoving() { return moving; }
         public boolean emergencyStop() { stops++; boolean stopped = moving; moving = false; return stopped; }
         public Set<String> getAllowedTools() { return new HashSet<>(Arrays.asList(
-                "get_system_status", "start_robot_following", "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep")); }
+                "get_system_status", "start_robot_following", "stop_robot_following", "look_at_user", "show_emotion", "go_to_sleep", "move_robot", "capture_camera")); }
         public boolean isNativeTool(String name) { return !"show_emotion".equals(name) && !"go_to_sleep".equals(name); }
         public boolean isPhysicalTool(String name) { return isNativeTool(name) && !"get_system_status".equals(name); }
         public void execute(String callId, String name, JSONObject arguments, GuardedExecution.Guard guard, ResultCallback callback) {
             executions++; pendingGuard = guard;
             if (queue) return;
             if (guard.runIfAllowed(() -> {
-                if ("look_at_user".equals(name) || "start_robot_following".equals(name)) {
+                if ("look_at_user".equals(name) || "start_robot_following".equals(name) || "move_robot".equals(name)) {
                     physicalEffects++;
                     moving = true;
                 } else if ("stop_robot_following".equals(name)) moving = false;
-            })) callback.onResult(object("status", "queued", "result", object("accepted", true)));
+            })) callback.onResult(object("status", "queued", "result", nextOutput));
         }
     }
 }

@@ -7,6 +7,7 @@ import time
 import uuid
 
 from .schema import TOOLS, validate
+from .camera import validate_capture
 
 TERMINAL = {"completed", "failed", "cancelled", "canceled"}
 
@@ -48,10 +49,11 @@ class Pending:
 
 
 class Broker:
-    def __init__(self, max_bindings=256, timeout=5.0):
+    def __init__(self, max_bindings=256, timeout=None):
         self.bindings = {}
         self.max_bindings = max_bindings
-        self.timeout = min(timeout, 5.0)
+        # An explicit timeout can shorten tests/administrative waits, never extend a tool's contract.
+        self.timeout = timeout
 
     def _terminal(self, binding):
         if not binding.run:
@@ -140,7 +142,11 @@ class Broker:
         if tool not in TOOLS or not validate(args, TOOLS[tool]["inputSchema"]):
             return {"error": {"code": "invalid_arguments", "message": "Device tool arguments are invalid"}}
         profile, session, run = identity
-        end = time.monotonic() + self.timeout
+        timeout_ms = TOOLS[tool]["timeoutMs"]
+        timeout = timeout_ms / 1000
+        if self.timeout is not None:
+            timeout = min(timeout, self.timeout)
+        end = time.monotonic() + timeout
         binding = self.bindings.get((profile, session))
         if not binding or not binding.connected:
             return {"error": {"code": "device_not_bound", "message": "No device is bound to this session"}}
@@ -173,7 +179,7 @@ class Broker:
             await asyncio.wait_for(binding.send({"type": "tool.call", "callId": call_id,
                                 "sessionId": session, "runId": run, "turnId": binding.turn,
                                 "toolName": tool, "toolVersion": TOOLS[tool]["version"],
-                                "arguments": args, "timeoutMs": 5000,
+                                "arguments": args, "timeoutMs": timeout_ms,
                                 "deadlineAt": iso_time(time.time() + max(0, end - time.monotonic()))}),
                                    timeout=max(0, end - time.monotonic()))
             while not future.done():
@@ -210,6 +216,11 @@ class Broker:
         elif status == "succeeded":
             if "error" in message or not validate(message.get("output"), TOOLS[pending.tool]["resultSchema"]):
                 raise Rejected("invalid_result")
+            if pending.tool == "capture_camera":
+                try:
+                    validate_capture(message["output"])
+                except ValueError:
+                    raise Rejected("invalid_camera_result") from None
             pending.future.set_result(message["output"])
         elif status in {"failed", "rejected"}:
             error = message.get("error")
