@@ -35,11 +35,18 @@ watchdog expires its lease after 1,750 ms without a heartbeat (nominal stop with
 1,850 ms); status polling and camera frames do not renew motion authority.
 Expiry/logout invalidates the session and stops app-owned movement. Actions must
 never be automatically retried. Enabling LAN control opens a pairing QR containing
-only a validated Native RFC1918 home-page URL and `#pair=<8 digits>`. The remote
-page synchronously removes this fragment with `history.replaceState` before
-sending exactly one POST `/remote/pair`; it never puts the code in a query,
-request URL, storage, logs or external QR service. Hermes credentials are never
-QR data. Failed/expired/consumed codes require a fresh QR;
+`http://<RFC1918 IPv4>:8788/remote-control.html#pair=<8 digits>`, derived from the
+validated Native home-page URL. Using the existing explicit page route navigates
+away from an older document already open at `/`; the root URL remains available
+for manual access and code entry. The bundled page uses the same fragment reader
+on initial load, `hashchange` and `pageshow`, and synchronously removes the
+fragment with `history.replaceState` before network requests. A hidden or
+prerendered document waits until visible before submitting the code. Pairing
+requests are serialized, retaining only the latest pending scan until the current
+request settles, so an earlier response cannot replace a later pairing cookie.
+Each attempted code is submitted once in the JSON body of POST `/remote/pair`;
+it never appears in a query, request URL, storage, logs or external QR service.
+Hermes credentials are never QR data. Failed/expired/consumed codes require a fresh QR;
 there is no automatic pairing retry or physical action. Manual code entry remains
 an optional fallback.
 

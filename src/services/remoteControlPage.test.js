@@ -23,7 +23,7 @@ function delayedResponse(response, delayMs, signal, ignoreAbort = false) {
   });
 }
 
-function createPage({ status: suppliedStatus, route, hash = '' } = {}) {
+function createPage({ status: suppliedStatus, route, hash = '', hidden = false, pathname = '/' } = {}) {
   const status = { robotReady: true, motionEnabled: true, cameraEnabled: false, following: false, ...suppliedStatus };
   const elements = new Map();
   const element = (id) => {
@@ -44,8 +44,8 @@ function createPage({ status: suppliedStatus, route, hash = '' } = {}) {
     const button = element(action); button.dataset.action = action; return button;
   });
   const events = [];
-  const location = { hash, pathname: '/', search: '' };
-  const history = { replaceState: vi.fn((_state, _title, url) => { events.push('clear-fragment'); location.hash = ''; expect(url).toBe('/'); }) };
+  const location = { hash, pathname, search: '' };
+  const history = { replaceState: vi.fn((_state, _title, url) => { events.push('clear-fragment'); location.hash = ''; expect(url).toBe(location.pathname + location.search); }) };
   const fetch = vi.fn((path, options) => {
     events.push(path);
     const customized = route?.(path, options);
@@ -56,15 +56,19 @@ function createPage({ status: suppliedStatus, route, hash = '' } = {}) {
     return Promise.resolve(jsonResponse({ accepted: true }));
   });
   const imageUrls = { createObjectURL: vi.fn(() => 'blob:synthetic-frame'), revokeObjectURL: vi.fn() };
+  const windowEvents = new Map(), documentEvents = new Map();
+  const document = { getElementById: element, querySelectorAll: (selector) => selector.includes(':not')
+    ? buttons.filter((button) => button.dataset.action !== 'stop') : buttons,
+    addEventListener: (name, handler) => documentEvents.set(name, handler), hidden };
   vm.runInNewContext(pageScript, {
-    document: { getElementById: element, querySelectorAll: (selector) => selector.includes(':not')
-      ? buttons.filter((button) => button.dataset.action !== 'stop') : buttons,
-    addEventListener() {}, hidden: false },
-    window: { addEventListener() {}, location, history }, fetch, AbortController, URL: imageUrls, Date, Blob,
-    setTimeout, clearTimeout, setInterval,
+    document, window: { addEventListener: (name, handler) => windowEvents.set(name, handler), location, history },
+    fetch, AbortController, URL: imageUrls, Date, Blob, setTimeout, clearTimeout, setInterval,
   });
   return {
     element, fetch, imageUrls, status, events, location, history,
+    event(name) { return windowEvents.get(name)?.(); },
+    scan(code) { location.hash = `#pair=${code}`; windowEvents.get('hashchange')?.(); },
+    visible(value) { document.hidden = !value; documentEvents.get('visibilitychange')?.(); },
     async pair() {
       element('code').value = '12345678';
       await element('pair-form').dispatch('submit', { preventDefault() {} });
@@ -102,6 +106,9 @@ describe('LAN remote control request deadlines', () => {
 
   it('clears malformed and rejected QR codes and requires a new scan without retrying', async () => {
     vi.useFakeTimers();
+    const missing = createPage({ pathname: '/remote-control.html' });
+    expect(missing.element('error').textContent).toContain('這個連結沒有配對資訊');
+    expect(missing.requests('/remote/pair')).toHaveLength(0);
     const invalid = createPage({ hash: '#pair=12345678&pin=123456' });
     expect(invalid.location.hash).toBe('');
     expect(invalid.requests('/remote/pair')).toHaveLength(0);
@@ -116,6 +123,81 @@ describe('LAN remote control request deadlines', () => {
     expect(rejected.element('error').textContent).toContain('重新產生配對 QR');
     expect(rejected.element('pair-button').disabled).toBe(false);
     expect(rejected.actions()).toEqual([]);
+  });
+
+  it('pairs a new same-document scan after rejection or connection and consumes each fragment before one POST', async () => {
+    vi.useFakeTimers();
+    let attempt = 0;
+    const page = createPage({ route: (path) => path === '/remote/pair' && ++attempt === 1
+      ? Promise.resolve({ ok: false, status: 429, json: async () => ({ ok: false,
+        error: { code: 'PAIRING_REJECTED', message: 'expired' } }) }) : undefined });
+    for (const code of ['11111111', '22222222', '33333333']) {
+      const start = page.events.length;
+      page.scan(code);
+      expect(page.location.hash).toBe('');
+      expect(page.events[start]).toBe('clear-fragment');
+      await vi.advanceTimersByTimeAsync(0);
+      page.event('hashchange'); page.event('pageshow');
+    }
+    expect(page.requests('/remote/pair').map((request) => JSON.parse(request.body).code)).toEqual(['11111111', '22222222', '33333333']);
+    expect(page.element('connection-status').textContent).toBe('已連接 Zenbo');
+    expect(page.actions()).toEqual(['stop']);
+    expect(page.requests('/remote/logout')).toHaveLength(0);
+  });
+
+  it('serializes the latest scan behind a pending pair, and never revives a hidden generation or replays it on pageshow', async () => {
+    vi.useFakeTimers();
+    let resolveOld, resolveLogout;
+    const page = createPage({ route: (path, options) => {
+      if (path === '/remote/pair' && JSON.parse(options.body).code === '11111111') return new Promise((resolve) => { resolveOld = resolve; });
+      if (path === '/remote/logout') return new Promise((resolve) => { resolveLogout = resolve; });
+      return undefined;
+    } });
+    page.scan('11111111');
+    page.scan('11111111'); // Duplicate in-flight navigation must not consume the code twice.
+    page.scan('22222222'); page.scan('33333333');
+    expect(page.requests('/remote/pair')).toHaveLength(1);
+    resolveOld(jsonResponse({ csrfToken: 'obsolete', status: page.status }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(page.requests('/remote/pair').map((request) => JSON.parse(request.body).code)).toEqual(['11111111', '33333333']);
+    expect(page.requests('/remote/heartbeat')).toHaveLength(1);
+    expect(page.actions()).toEqual([]);
+    page.event('pagehide'); page.event('pageshow');
+    expect(page.requests('/remote/pair')).toHaveLength(2);
+    expect(page.element('connection-status').textContent).toBe('連線已暫停');
+    page.event('pagehide'); page.scan('44444444');
+    expect(page.location.hash).toBe('');
+    expect(page.requests('/remote/pair')).toHaveLength(2);
+    page.event('pageshow'); await vi.advanceTimersByTimeAsync(0);
+    expect(page.requests('/remote/pair')).toHaveLength(3);
+    expect(page.element('connection-status').textContent).toBe('已連接 Zenbo');
+
+    const logout = page.element('logout').dispatch('click');
+    page.scan('88888888');
+    expect(page.requests('/remote/pair')).toHaveLength(3);
+    resolveLogout(jsonResponse({ accepted: true }));
+    await logout; await vi.advanceTimersByTimeAsync(0);
+    expect(page.requests('/remote/pair')).toHaveLength(4);
+    expect(page.element('connection-status').textContent).toBe('已連接 Zenbo');
+    expect(page.requests('/remote/heartbeat').at(-1).headers['X-CSRF-Token']).toBe('synthetic-csrf');
+
+    const background = createPage({ hash: '#pair=77777777', hidden: true });
+    expect(background.location.hash).toBe('');
+    background.event('pageshow'); background.visible(false);
+    expect(background.requests('/remote/pair')).toHaveLength(0);
+    background.visible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(background.requests('/remote/pair')).toHaveLength(1);
+    expect(background.element('connection-status').textContent).toBe('已連接 Zenbo');
+
+    let resolveHidden;
+    const hidden = createPage({ hash: '#pair=55555555', route: (path) => path === '/remote/pair'
+      ? new Promise((resolve) => { resolveHidden = resolve; }) : undefined });
+    hidden.scan('66666666'); hidden.event('pagehide');
+    resolveHidden(jsonResponse({ csrfToken: 'late', status: hidden.status }));
+    await vi.advanceTimersByTimeAsync(0); hidden.event('pageshow');
+    expect(hidden.requests('/remote/pair')).toHaveLength(1);
+    expect(hidden.requests('/remote/heartbeat')).toHaveLength(0);
+    expect(hidden.element('connection-status').textContent).toBe('連線已暫停');
   });
 
   it('blocks movement while power or USB is connected but retains stop and restores controls after disconnect', async () => {

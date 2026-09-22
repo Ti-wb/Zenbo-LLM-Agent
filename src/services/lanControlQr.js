@@ -15,8 +15,9 @@ export function isLanControlUrl(value) {
 
 export function createLanPairingUrl(url, pairingCode) {
   if (!isLanControlUrl(url) || typeof pairingCode !== 'string' || !/^[0-9]{8}$/.test(pairingCode)) return null;
-  // The fragment is consumed by the remote page; it never enters an HTTP URL.
-  return `${url}#pair=${pairingCode}`;
+  // The explicit page path also leaves an older, already-open root document on
+  // upgrade. The fragment never enters the HTTP request URL.
+  return `${url}remote-control.html#pair=${pairingCode}`;
 }
 
 export function createLanControlQr(url, pairingCode) {

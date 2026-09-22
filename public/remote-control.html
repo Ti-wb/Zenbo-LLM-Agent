@@ -33,14 +33,14 @@
   'use strict';
   // Consume only the one-use pairing code. Remove the fragment synchronously,
   // before network requests; never retain it in history, storage, or a request URL.
-  let initialPairingCode = (() => {
+  function consumePairingFragment() {
     const fragment = window.location.hash;
     if (!fragment) return '';
     try { window.history.replaceState(null, '', window.location.pathname + window.location.search); }
     catch { return null; } // If clearing fails, require a fresh scan rather than use the code.
     const match = /^#pair=([0-9]{8})$/.exec(fragment);
     return match ? match[1] : null;
-  })();
+  }
   const el = (id) => document.getElementById(id);
   let csrf = '';
   let connected = false;
@@ -50,6 +50,10 @@
   let lastFrameAt = 0;
   let actionPending = false;
   let pairingPending = false;
+  let logoutPending = false;
+  let pairingCodeInFlight = '';
+  let nextPairingCode = ''; // One latest scan, only until the current bounded request settles.
+  let pageActive = true;
   let framePending = false;
   let heartbeatTimer, statusTimer, frameTimer;
   const controllers = new Set();
@@ -131,7 +135,7 @@
       headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify({action:'stop'}) }).catch(() => {});
   }
   function disconnect(message) {
-    generation += 1; connected = false;
+    generation += 1; connected = false; actionPending = false; framePending = false;
     clearTimeout(heartbeatTimer); clearTimeout(statusTimer); clearTimeout(frameTimer);
     controllers.forEach((controller) => controller.abort());
     el('connection-status').textContent = '連線已暫停'; el('connection-status').classList.remove('live');
@@ -163,7 +167,9 @@
         el('frame-time').textContent = '收到畫面 ' + new Date(lastFrameAt).toLocaleTimeString('zh-TW');
       }
     } catch (error) { if (current === generation) clearFrame(error.name === 'AbortError' ? '影像逾時，等待新畫面' : errorMessage(error)); }
-    finally { framePending = false; if (connected && current === generation) frameTimer = setTimeout(() => pollFrame(current), 500); }
+    finally {
+      if (current === generation) { framePending = false; if (connected) frameTimer = setTimeout(() => pollFrame(current), 500); }
+    }
   }
   async function connect(value) {
     const current = ++generation; connected = true;
@@ -183,32 +189,53 @@
       if (current === generation) el('action-status').textContent = action === 'stop' ? '已送出停止' : '指令已送出';
     } catch (error) {
       if (current === generation) { el('action-status').textContent = errorMessage(error); if (!error.nativeRejection) { bestEffortStop(); disconnect('動作結果未確認，請重新連線'); } }
-    } finally { actionPending = false; updateControls(); }
+    } finally { if (current === generation) { actionPending = false; updateControls(); } }
   }
   async function pair(code) {
-    if (pairingPending || connected) return;
-    if (!/^[0-9]{8}$/.test(code)) { showError('請掃描 Zenbo 的配對 QR，或輸入 8 位數備用配對碼。'); return; }
     const current = generation;
+    pairingCodeInFlight = code;
     pairingPending = true; el('pair-button').disabled = true; el('code').disabled = true;
     el('pair-progress').hidden = false; el('connection-status').textContent = '正在配對…'; showError('');
     try {
       const result = await request('/remote/pair', {code});
-      if (current !== generation) return;
+      if (current !== generation || nextPairingCode) return;
       if (!result || typeof result.csrfToken !== 'string' || !result.csrfToken || !result.status) throw new Error('配對回應格式無效');
       csrf = result.csrfToken; await connect(result.status);
     } catch (error) {
-      if (current !== generation) return;
+      if (current !== generation || nextPairingCode) return;
       el('connection-status').textContent = '尚未配對';
       showError(error.name === 'AbortError' ? '配對逾時。請確認 Wi-Fi，並在 Zenbo 重新產生配對 QR 後再掃描。' : errorMessage(error));
     } finally {
-      code = ''; pairingPending = false; el('pair-progress').hidden = true;
+      code = ''; pairingCodeInFlight = ''; pairingPending = false; el('pair-progress').hidden = true;
       el('pair-button').disabled = false; el('code').disabled = false;
+      drainPairing();
     }
+  }
+  function drainPairing() {
+    if (!nextPairingCode || pairingPending || logoutPending || !pageActive || document.hidden || document.prerendering) return;
+    const code = nextPairingCode; nextPairingCode = '';
+    // A regenerated QR revokes the previous controller. Stop its local activity,
+    // then replace it without an old logout response clearing the new cookie.
+    bestEffortStop(); disconnect(); csrf = ''; status = null;
+    el('remote-section').hidden = true; el('logout').hidden = true;
+    el('pair-section').hidden = false; el('reconnect').hidden = true;
+    return pair(code);
+  }
+  function queuePairing(code) {
+    if (!/^[0-9]{8}$/.test(code)) { showError('請掃描 Zenbo 的配對 QR，或輸入 8 位數備用配對碼。'); return; }
+    if (code === pairingCodeInFlight || code === nextPairingCode) return;
+    nextPairingCode = code;
+    return drainPairing();
+  }
+  function readPairingFragment() {
+    const code = consumePairingFragment();
+    if (code) void queuePairing(code);
+    else if (code === null) showError('配對 QR 無效，請在 Zenbo 重新產生配對 QR，再掃描一次。');
   }
   el('pair-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const code = el('code').value.trim(); el('code').value = '';
-    await pair(code);
+    await queuePairing(code);
   });
   document.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('keydown', (event) => { if (event.repeat) event.preventDefault(); });
@@ -216,22 +243,37 @@
   });
   el('follow').addEventListener('click', () => { void sendAction(status && status.following ? 'stop' : 'follow'); });
   el('reconnect').addEventListener('click', async () => {
+    const current = generation;
     el('reconnect').disabled = true;
-    try { const value = await request('/remote/status'); await connect(value); }
-    catch (error) { showError(errorMessage(error)); }
+    try { const value = await request('/remote/status'); if (current === generation) await connect(value); }
+    catch (error) { if (current === generation) showError(errorMessage(error)); }
     finally { el('reconnect').disabled = false; }
   });
   el('logout').addEventListener('click', async () => {
-    bestEffortStop(); disconnect('已結束遙控');
+    if (logoutPending) return;
+    logoutPending = true;
+    nextPairingCode = ''; bestEffortStop(); disconnect('已結束遙控');
+    const current = generation;
     try { await request('/remote/logout', {}); } catch { /* Native lease still expires without heartbeat. */ }
-    csrf = ''; status = null; showError(''); el('remote-section').hidden = true; el('logout').hidden = true; el('pair-section').hidden = false;
-    el('connection-status').textContent = '尚未配對'; el('code').focus();
+    logoutPending = false;
+    if (current === generation) {
+      csrf = ''; status = null; showError(''); el('remote-section').hidden = true; el('logout').hidden = true; el('pair-section').hidden = false;
+      el('connection-status').textContent = '尚未配對'; el('code').focus();
+    }
+    drainPairing();
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && csrf) { bestEffortStop(); disconnect('頁面已暫停，請重新連線'); } });
-  window.addEventListener('pagehide', () => { bestEffortStop(); disconnect(); });
-  if (initialPairingCode) void pair(initialPairingCode);
-  else if (initialPairingCode === null) showError('配對 QR 無效，請在 Zenbo 重新產生配對 QR，再掃描一次。');
-  initialPairingCode = '';
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { bestEffortStop(); disconnect('頁面已暫停，請重新連線'); }
+    else { readPairingFragment(); drainPairing(); }
+  });
+  document.addEventListener('prerenderingchange', () => { readPairingFragment(); drainPairing(); });
+  window.addEventListener('pagehide', () => { pageActive = false; nextPairingCode = ''; bestEffortStop(); disconnect(); });
+  window.addEventListener('hashchange', readPairingFragment);
+  window.addEventListener('pageshow', () => { pageActive = true; readPairingFragment(); drainPairing(); });
+  if (window.location.pathname === '/remote-control.html' && !window.location.hash) {
+    showError('這個連結沒有配對資訊，請在 Zenbo 重新產生配對 QR，再掃描一次。');
+  }
+  readPairingFragment();
   setInterval(() => { if (lastFrameAt && Date.now() - lastFrameAt > 2000) clearFrame('畫面已過期，等待新影像'); }, 250);
 })();
 </script>
