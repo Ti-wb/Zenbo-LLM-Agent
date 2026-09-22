@@ -63,10 +63,10 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         return {"type": "tool.result", **{key: call[key] for key in
                 ("callId", "sessionId", "runId", "turnId")}, "status": status, **fields}
 
-    async def test_declared_deadlines_cover_the_full_native_chain_without_a_five_second_cap(self):
+    async def test_declared_deadlines_cover_the_full_native_chain_without_a_shared_action_cap(self):
         for cap in (None, 60):
             for tool, args, native_seconds, declared_ms in (
-                    ("start_robot_following", {}, 2 + 1.5 + 3, 7500),
+                    ("start_robot_following", {}, 2 + 1.5 + 5 + 3, 12500),
                     ("move_robot", {"direction": "forward"}, 2 + 1.5 + 2, 6500),
                     ("stop_robot_following", {}, 2, 5000)):
                 with self.subTest(tool=tool, cap=cap):
@@ -361,3 +361,27 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
             "code": "private-code", "message": "private device information"}))
         self.assertEqual(await task, {"error": {"code": "device_failed",
                                                "message": "Device rejected or failed the tool"}})
+
+    async def test_known_device_reasons_preserve_codes_with_fixed_safe_messages(self):
+        self.activate()
+        reasons = {
+            "MOTION_POWER_CONNECTED": "charging cable",
+            "MOTION_USB_CONNECTED": "USB data cable",
+            "FOLLOW_START_TIMEOUT": "initialization deadline",
+            "FOLLOW_TARGET_NOT_FOUND": "search deadline",
+            "FOLLOW_ENDED_BEFORE_TARGET": "before confirming the user",
+            "SDK_COORDINATOR_APP_CANCELED": "robot SDK",
+        }
+        for code, explanation in reasons.items():
+            with self.subTest(code=code):
+                task, call = await self.start_call()
+                self.broker.result(self.binding, self.result(call, "failed", error={
+                    "code": code, "message": "untrusted device text and model arguments"}))
+                failure = (await task)["error"]
+                self.assertEqual(failure["code"], code)
+                self.assertIn(explanation, failure["message"])
+                self.assertNotIn("untrusted", failure["message"])
+        task, call = await self.start_call()
+        self.broker.result(self.binding, self.result(call, "failed", error={
+            "code": "SDK_private-content", "message": "untrusted device text"}))
+        self.assertEqual((await task)["error"]["code"], "device_failed")

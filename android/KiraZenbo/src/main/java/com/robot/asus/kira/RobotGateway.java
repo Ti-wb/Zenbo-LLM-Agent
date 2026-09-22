@@ -4,8 +4,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import com.asus.robotframework.API.RobotAPI;
 import com.asus.robotframework.API.RobotCmdState;
+import com.asus.robotframework.API.RobotErrorCode;
 import com.asus.robotframework.API.MotionControl;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -28,6 +30,7 @@ public final class RobotGateway implements RobotOperations {
     private volatile RobotAPI robotAPI;
     private volatile DeviceHardware hardware;
     private volatile boolean moving, following, attention, motionAllowed, foreground;
+    private volatile Boolean powerConnected, usbConnected;
     private volatile String attentionState = "idle";
     private volatile long epoch;
     private final HeadMotionTracker headMotion = new HeadMotionTracker();
@@ -48,18 +51,24 @@ public final class RobotGateway implements RobotOperations {
         final CommandProgress progress;
         final ResultCallback callback;
         final Runnable timeout;
+        final boolean phasedFollow;
         Pending(String callId, String name, int serial, boolean follow, long deadline, ResultCallback callback) {
             this.callId = callId; this.name = name; this.callback = callback;
-            progress = new CommandProgress(serial, follow);
+            progress = new CommandProgress(serial, follow, SystemClock.elapsedRealtime());
+            phasedFollow = follow && "start_robot_following".equals(name);
             timeout = () -> {
                 if (pending.remove(serial) != this) return;
                 RobotAPI api = robotAPI;
                 if (api != null) { cancelSdk(api, serial); stopSdkMotion(api); }
                 if (Integer.valueOf(serial).equals(attentionSerial)) attentionState = "stop_unconfirmed";
-                callback.onResult(error(callId, name, "TIMEOUT", "SDK did not confirm the command before its deadline"));
+                String code = phasedFollow ? progress.followTimeoutCode() : "TIMEOUT";
+                callback.onResult(error(callId, name, code, "FOLLOW_TARGET_NOT_FOUND".equals(code)
+                        ? "No person was found in front of Zenbo before the search deadline"
+                        : "FOLLOW_START_TIMEOUT".equals(code) ? "The SDK did not start face detection before its deadline"
+                        : "SDK did not confirm the command before its deadline"));
                 // Keep ownership until the SDK reports terminal: a timed-out physical action must not be replayed.
             };
-            mainHandler.postDelayed(timeout, deadline);
+            mainHandler.postDelayed(timeout, phasedFollow ? progress.followRemainingMillis(SystemClock.elapsedRealtime()) : deadline);
         }
     }
     static boolean terminal(RobotCmdState state) {
@@ -83,6 +92,22 @@ public final class RobotGateway implements RobotOperations {
     boolean isAttentionActive() { return attention; }
     String attentionState() { return attentionState; }
     boolean busyExceptAttention() { return isMoving() && !attention; }
+    Boolean powerConnected() { return powerConnected; }
+    Boolean usbConnected() { return usbConnected; }
+    String motionBlockedReason() { return motionBlockedReason(powerConnected, usbConnected); }
+    static String motionBlockedReason(Boolean power, Boolean usb) {
+        return Boolean.TRUE.equals(power) ? "POWER_CONNECTED" : Boolean.TRUE.equals(usb) ? "USB_CONNECTED" : "";
+    }
+    void updatePowerConnection(Boolean power) {
+        boolean newlyConnected = Boolean.TRUE.equals(power) && !Boolean.TRUE.equals(powerConnected);
+        powerConnected = power;
+        if (newlyConnected) emergencyStop();
+    }
+    void updateUsbConnection(Boolean usb) {
+        boolean newlyConnected = Boolean.TRUE.equals(usb) && !Boolean.TRUE.equals(usbConnected);
+        usbConnected = usb;
+        if (newlyConnected) emergencyStop();
+    }
     public Set<String> getAllowedTools() { return ALLOWED_TOOLS; }
     public boolean isNativeTool(String name) { return NATIVE_TOOLS.contains(name); }
     public boolean isPhysicalTool(String name) {
@@ -98,12 +123,24 @@ public final class RobotGateway implements RobotOperations {
         if (Looper.myLooper() == Looper.getMainLooper()) stop.run(); else mainHandler.post(stop);
         return wasMoving;
     }
-    public void onCommandStateChanged(int serial, RobotCmdState state) {
+    public void onCommandStateChanged(int serial, RobotCmdState state, RobotErrorCode errorCode) {
         headMotion.onStateChanged(serial, state);
         Pending request = pending.get(serial);
+        if (request != null && request.phasedFollow && request.progress.followRemainingMillis(SystemClock.elapsedRealtime()) == 0) {
+            request.timeout.run(); request = null;
+        }
         if (request != null) {
-            Boolean result = request.progress.state(serial, state.name());
-            if (result != null) finish(request, result, "SDK_" + state.name());
+            String sdkError = errorCode == null ? "UNKNOWN" : errorCode.name();
+            Boolean result = request.progress.state(serial, state.name(), sdkError);
+            if (result != null) {
+                String failure = Boolean.FALSE.equals(result) && request.progress.follow && state == RobotCmdState.SUCCEED
+                        && "NO_ERROR".equals(sdkError) ? "FOLLOW_TARGET_NOT_FOUND"
+                        : "SDK_" + ("NO_ERROR".equals(sdkError) ? state.name() : sdkError);
+                finish(request, result, failure);
+            }
+            if (Boolean.FALSE.equals(result) && !terminal(state) && robotAPI != null) {
+                cancelSdk(robotAPI, serial); stopSdkMotion(robotAPI);
+            }
         }
         if (terminal(state)) {
             owned.remove(serial);
@@ -111,10 +148,22 @@ public final class RobotGateway implements RobotOperations {
             if (Integer.valueOf(serial).equals(attentionSerial)) { attentionSerial = null; attention = false; attentionState = "idle"; }
             moving = !owned.isEmpty();
             ResultCallback waiter = stopWaiters.remove(serial);
+            // Cancellation can end the original command with SUCCEED + APP_CANCELED.
+            // It is not action success, but its terminal state still confirms that command stopped.
             if (waiter != null) waiter.onResult(success("local", "stop", accepted()));
         }
     }
-    void onCommandResult(int serial, Bundle result) {
+    void onCommandResult(int serial, RobotErrorCode errorCode, Bundle result) {
+        Pending request = pending.get(serial);
+        if (request != null && request.phasedFollow && request.progress.followRemainingMillis(SystemClock.elapsedRealtime()) == 0) {
+            request.timeout.run(); request = null;
+        }
+        if (request != null && errorCode != RobotErrorCode.NO_ERROR) {
+            finish(request, false, "SDK_" + (errorCode == null ? "UNKNOWN" : errorCode.name()));
+            RobotAPI api = robotAPI;
+            if (api != null) { cancelSdk(api, serial); stopSdkMotion(api); }
+            return;
+        }
         if (result == null) return;
         boolean found = false;
         for (String key : result.keySet()) {
@@ -122,7 +171,13 @@ public final class RobotGateway implements RobotOperations {
             if (value instanceof String && (((String) value).contains("FOLLOW_FACE_FOUND_USER")
                     || ((String) value).contains("TRACK_FACE_FOUND_USER"))) found = true;
         }
-        Pending request = pending.get(serial);
+        String milestone = result.getString("RESULT");
+        if (request != null && request.phasedFollow
+                && ("FOLLOW_FACE_START_FIND_USER".equals(milestone) || "TRACK_FACE_START_FIND_USER".equals(milestone))
+                && request.progress.searchStarted(serial, SystemClock.elapsedRealtime())) {
+            mainHandler.removeCallbacks(request.timeout);
+            mainHandler.postDelayed(request.timeout, request.progress.followRemainingMillis(SystemClock.elapsedRealtime()));
+        }
         if (request != null && found) {
             Boolean complete = request.progress.found(serial);
             if (complete != null) finish(request, complete, "SDK_FAILED");
@@ -177,6 +232,7 @@ public final class RobotGateway implements RobotOperations {
         if (api == null) { callback.onResult(error(callId, name, "ROBOT_UNAVAILABLE", "RobotAPI has not initialized")); return; }
         if ("stop_robot_following".equals(name)) { ++epoch; stopOwned(callId, name, callback, false); return; }
         if (!motionAllowed || !foreground) { callback.onResult(error(callId, name, "MOTION_DISABLED", "Robot movement is disabled")); return; }
+        if (rejectTetheredMotion(callId, name, callback)) return;
         if (attention) {
             final long token = epoch;
             stopOwned(callId, name, stopped -> {
@@ -214,11 +270,12 @@ public final class RobotGateway implements RobotOperations {
             if (actionEpoch != epoch || !motionAllowed || !foreground || robotAPI != api) {
                 callback.onResult(error(callId, name, "TURN_CANCELLED", "Action authority was revoked")); return;
             }
+            if (rejectTetheredMotion(callId, name, callback)) return;
             boolean allowed;
             try { allowed = GuardedExecution.runIfAllowed(guard, () -> {
                 if ("start_robot_following".equals(name)) {
                     int serial = api.utility.followFace(false, false); followSerial = serial;
-                    track(callId, name, serial, true, 3_000, callback);
+                    track(callId, name, serial, true, 8_000, callback);
                 } else {
                     String direction = args.optString("direction");
                     float x = "forward".equals(direction) ? 0.15f : "backward".equals(direction) ? -0.15f : 0f;
@@ -231,10 +288,18 @@ public final class RobotGateway implements RobotOperations {
             if (!allowed) callback.onResult(error(callId, name, "TURN_CANCELLED", "Action authority was revoked"));
         });
     }
+    private boolean rejectTetheredMotion(String callId, String name, ResultCallback callback) {
+        String reason = motionBlockedReason();
+        if (reason.isEmpty()) return false;
+        callback.onResult(error(callId, name, "MOTION_" + reason,
+                "USB_CONNECTED".equals(reason) ? "Disconnect the USB cable before moving or following"
+                        : "Disconnect the charging cable before moving or following"));
+        return true;
+    }
     void attend(double doa, boolean faceFallback) {
         final long token = epoch;
         mainHandler.post(() -> {
-            if (token != epoch || !motionAllowed || !foreground || robotAPI == null || isMoving()
+            if (token != epoch || !motionAllowed || !foreground || !motionBlockedReason().isEmpty() || robotAPI == null || isMoving()
                     || hardware != null && !hardware.wantsAttention()) return;
             int serial;
             try { serial = faceFallback ? robotAPI.utility.trackFace(false, false) : robotAPI.utility.lookAtUser((float) doa); }

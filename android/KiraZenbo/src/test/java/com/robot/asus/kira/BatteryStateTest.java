@@ -18,6 +18,22 @@ public class BatteryStateTest {
                 BatteryManager.BATTERY_STATUS_FULL, true).charging);
     }
 
+    @Test public void tetherStateUsesCableReadingsEvenWhenBatteryIsFullOrNotCharging() {
+        assertEquals(Boolean.TRUE, BatteryState.fromReading(100, 100,
+                BatteryManager.BATTERY_STATUS_FULL, true, BatteryManager.BATTERY_PLUGGED_AC).powerConnected);
+        assertEquals(Boolean.TRUE, BatteryState.fromReading(100, 100,
+                BatteryManager.BATTERY_STATUS_NOT_CHARGING, true, BatteryManager.BATTERY_PLUGGED_USB).powerConnected);
+        assertEquals(Boolean.FALSE, BatteryState.fromReading(100, 100,
+                BatteryManager.BATTERY_STATUS_FULL, true, 0).powerConnected);
+        assertEquals(Boolean.TRUE, BatteryState.fromReading(-1, -1,
+                BatteryManager.BATTERY_STATUS_UNKNOWN, false, BatteryManager.BATTERY_PLUGGED_AC).powerConnected);
+        assertNull(BatteryState.UNKNOWN.powerConnected);
+        assertEquals("POWER_CONNECTED", RobotGateway.motionBlockedReason(true, true));
+        assertEquals("USB_CONNECTED", RobotGateway.motionBlockedReason(false, true));
+        assertEquals("", RobotGateway.motionBlockedReason(false, false));
+        assertEquals("", RobotGateway.motionBlockedReason(null, null));
+    }
+
     @Test public void unavailableOrInvalidReadingsStayUnknown() {
         assertTrue(BatteryState.UNKNOWN.toJson().isNull("percentage"));
         assertTrue(BatteryState.UNKNOWN.toJson().isNull("charging"));

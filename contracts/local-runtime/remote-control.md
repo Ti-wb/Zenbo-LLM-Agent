@@ -34,13 +34,25 @@ from 1 to 30 seconds. The controller sends a heartbeat every 500 ms. A 100 ms
 watchdog expires its lease after 1,750 ms without a heartbeat (nominal stop within
 1,850 ms); status polling and camera frames do not renew motion authority.
 Expiry/logout invalidates the session and stops app-owned movement. Actions must
-never be automatically retried. The App must disable/re-enable LAN control to
-produce a new pairing code after expiry/logout.
+never be automatically retried. Enabling LAN control opens a pairing QR containing
+only a validated Native RFC1918 home-page URL and `#pair=<8 digits>`. The remote
+page synchronously removes this fragment with `history.replaceState` before
+sending exactly one POST `/remote/pair`; it never puts the code in a query,
+request URL, storage, logs or external QR service. The admin PIN and Hermes
+credentials are never QR data. Failed/expired/consumed codes require a fresh QR;
+there is no automatic pairing retry or physical action. Manual code entry remains
+an optional fallback.
+
+The App's explicit “regenerate pairing QR” operation unlocks with the admin PIN
+and reuses PUT `/api/v2/device/remote` with `enabled:true`. It stops app-owned motion
+and revokes the previous controller before creating a fresh 120-second code.
+Ordinary status polling never rotates codes or disconnects a paired controller.
 
 Client action deadlines cover the complete Native SDK chain: stopping existing
 attention may take 2,000 ms, avoidance setup 1,500 ms, then follow acquisition
-3,000 ms or a bounded move 2,000 ms. Both the loopback renderer and LAN page allow
-7,500 ms for `follow`, 6,500 ms for each move, and 3,000 ms for `stop`, including
+8,000 ms (up to 5,000 ms initialization and 3,000 ms face acquisition) or a
+bounded move 2,000 ms. Both the loopback renderer and LAN page allow
+12,500 ms for `follow`, 6,500 ms for each move, and 3,000 ms for `stop`, including
 1,000 ms beyond each Native maximum for scheduling and the HTTP response. Stop
 can be sent immediately while another action is awaiting its result.
 

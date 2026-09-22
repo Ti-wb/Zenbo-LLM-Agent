@@ -23,7 +23,7 @@ function delayedResponse(response, delayMs, signal, ignoreAbort = false) {
   });
 }
 
-function createPage({ status: suppliedStatus, route } = {}) {
+function createPage({ status: suppliedStatus, route, hash = '' } = {}) {
   const status = { robotReady: true, motionEnabled: true, cameraEnabled: false, following: false, ...suppliedStatus };
   const elements = new Map();
   const element = (id) => {
@@ -43,7 +43,11 @@ function createPage({ status: suppliedStatus, route } = {}) {
   const buttons = ['forward', 'backward', 'left', 'right', 'stop'].map((action) => {
     const button = element(action); button.dataset.action = action; return button;
   });
+  const events = [];
+  const location = { hash, pathname: '/', search: '' };
+  const history = { replaceState: vi.fn((_state, _title, url) => { events.push('clear-fragment'); location.hash = ''; expect(url).toBe('/'); }) };
   const fetch = vi.fn((path, options) => {
+    events.push(path);
     const customized = route?.(path, options);
     if (customized !== undefined) return customized;
     if (path === '/remote/pair') return Promise.resolve(jsonResponse({ csrfToken: 'synthetic-csrf', status }));
@@ -56,11 +60,11 @@ function createPage({ status: suppliedStatus, route } = {}) {
     document: { getElementById: element, querySelectorAll: (selector) => selector.includes(':not')
       ? buttons.filter((button) => button.dataset.action !== 'stop') : buttons,
     addEventListener() {}, hidden: false },
-    window: { addEventListener() {} }, fetch, AbortController, URL: imageUrls, Date, Blob,
+    window: { addEventListener() {}, location, history }, fetch, AbortController, URL: imageUrls, Date, Blob,
     setTimeout, clearTimeout, setInterval,
   });
   return {
-    element, fetch, imageUrls, status,
+    element, fetch, imageUrls, status, events, location, history,
     async pair() {
       element('code').value = '12345678';
       await element('pair-form').dispatch('submit', { preventDefault() {} });
@@ -78,7 +82,60 @@ function createPage({ status: suppliedStatus, route } = {}) {
 describe('LAN remote control request deadlines', () => {
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
-  it.each([['follow', 6500], ['forward', 5500], ['stop', 2000]])(
+  it('consumes a scanned fragment before its single pairing POST, without manual input or physical actions', async () => {
+    vi.useFakeTimers();
+    const page = createPage({ hash: '#pair=12345678' });
+    expect(page.events.slice(0, 2)).toEqual(['clear-fragment', '/remote/pair']);
+    expect(page.element('pair-progress').hidden).toBe(false);
+    await page.element('pair-form').dispatch('submit', { preventDefault() {} });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(page.location.hash).toBe('');
+    expect(page.requests('/remote/pair')).toHaveLength(1);
+    expect(JSON.parse(page.requests('/remote/pair')[0].body)).toEqual({ code: '12345678' });
+    expect(page.element('code').value).toBe('');
+    expect(page.element('connection-status').textContent).toBe('已連接 Zenbo');
+    expect(page.element('pair-section').hidden).toBe(true);
+    expect(page.actions()).toEqual([]);
+    const reload = createPage({ hash: page.location.hash });
+    expect(reload.requests('/remote/pair')).toHaveLength(0);
+  });
+
+  it('clears malformed and rejected QR codes and requires a new scan without retrying', async () => {
+    vi.useFakeTimers();
+    const invalid = createPage({ hash: '#pair=12345678&pin=123456' });
+    expect(invalid.location.hash).toBe('');
+    expect(invalid.requests('/remote/pair')).toHaveLength(0);
+    expect(invalid.element('error').textContent).toContain('重新產生配對 QR');
+    const rejected = createPage({ hash: '#pair=12345678', route: (path) => path === '/remote/pair'
+      ? Promise.resolve({ ok: false, status: 429, json: async () => ({ ok: false,
+        error: { code: 'PAIRING_REJECTED', message: 'Pairing rejected' } }) }) : undefined });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rejected.location.hash).toBe('');
+    expect(rejected.requests('/remote/pair')).toHaveLength(1);
+    expect(rejected.element('error').textContent).toContain('已過期、已使用');
+    expect(rejected.element('error').textContent).toContain('重新產生配對 QR');
+    expect(rejected.element('pair-button').disabled).toBe(false);
+    expect(rejected.actions()).toEqual([]);
+  });
+
+  it('blocks movement while power or USB is connected but retains stop and restores controls after disconnect', async () => {
+    vi.useFakeTimers();
+    const page = createPage({ status: { motionBlockedReason: 'POWER_CONNECTED' } });
+    await page.pair();
+    expect(page.element('forward').disabled).toBe(true);
+    expect(page.element('follow').disabled).toBe(true);
+    expect(page.element('stop').disabled).toBe(false);
+    expect(page.element('motion-hint').textContent).toContain('充電線');
+    page.status.motionBlockedReason = 'USB_CONNECTED';
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(page.element('motion-hint').textContent).toContain('USB');
+    page.status.motionBlockedReason = '';
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(page.element('forward').disabled).toBe(false);
+    expect(page.element('follow').disabled).toBe(false);
+  });
+
+  it.each([['follow', 11500], ['forward', 5500], ['stop', 2000]])(
     'keeps heartbeat active while %s completes within the full Native budget', async (action, nativeBudgetMs) => {
       vi.useFakeTimers();
       const page = createPage({ route: (path, options) => path === '/remote/action'
@@ -94,7 +151,7 @@ describe('LAN remote control request deadlines', () => {
     },
   );
 
-  it.each([['follow', 7500], ['forward', 6500], ['stop', 3000]])(
+  it.each([['follow', 12500], ['forward', 6500], ['stop', 3000]])(
     'stops and disconnects when %s actually exceeds its deadline without replay', async (action, deadlineMs) => {
       vi.useFakeTimers();
       const page = createPage({ route: (path, options) => path === '/remote/action' && !options.keepalive
@@ -122,7 +179,7 @@ describe('LAN remote control request deadlines', () => {
     const page = createPage({ route: (path, options) => {
       if (path !== '/remote/action') return undefined;
       const action = JSON.parse(options.body).action;
-      return delayedResponse(jsonResponse({ accepted: true }), action === 'follow' ? 6500 : 2000, options.signal);
+      return delayedResponse(jsonResponse({ accepted: true }), action === 'follow' ? 11500 : 2000, options.signal);
     } });
     await page.pair();
     await page.action('follow');

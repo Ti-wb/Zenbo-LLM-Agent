@@ -257,7 +257,7 @@ public class RuntimeValidatorTest {
             assertEquals(webOwned ? "web" : "native", tool.owner);
             assertEquals(webOwned ? "ui" : ("get_system_status".equals(name) || "capture_camera".equals(name)) ? "none" : "physical",
                     tool.sideEffect);
-            assertEquals("start_robot_following".equals(name) ? 7_500 : "move_robot".equals(name) ? 6_500 : 5_000,
+            assertEquals("start_robot_following".equals(name) ? 12_500 : "move_robot".equals(name) ? 6_500 : 5_000,
                     tool.timeoutMs);
             assertEquals(tool.timeoutMs, ToolManifestSpec.timeoutMs(name));
             assertEquals(!Arrays.asList("start_robot_following", "move_robot", "capture_camera").contains(name), tool.idempotent);

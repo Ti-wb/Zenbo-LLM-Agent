@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { createLanControlQr, isLanControlUrl } from './lanControlQr';
+import { createLanControlQr, createLanPairingUrl, isLanControlUrl } from './lanControlQr';
 
 describe('LAN QR payload boundary', () => {
   it('encodes Native home-page addresses across all private IPv4 ranges', () => {
     for (const address of ['192.168.1.23', '10.1.2.3', '172.16.0.1', '172.31.255.254']) {
       const url = `http://${address}:8788/`;
       expect(isLanControlUrl(url), url).toBe(true);
-      expect(createLanControlQr(url), url).toMatchObject({ path: expect.stringContaining('M') });
+      expect(createLanPairingUrl(url, '12345678')).toBe(`${url}#pair=12345678`);
+      expect(createLanControlQr(url, '12345678'), url).toMatchObject({ path: expect.stringContaining('M') });
+    }
+    for (const code of [undefined, '123456', '123456789', '12345678\n', '12345678&pin=123456']) {
+      expect(createLanControlQr('http://192.168.1.23:8788/', code)).toBeNull();
     }
   });
 

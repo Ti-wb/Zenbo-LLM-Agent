@@ -214,13 +214,13 @@ public class RobotApiService extends Service {
             @Override
             public void onResult(int cmd, int serial, RobotErrorCode err_code, Bundle result) {
                 super.onResult(cmd, serial, err_code, result);
-                displayHandler.post(() -> robotGateway.onCommandResult(serial, result));
+                displayHandler.post(() -> robotGateway.onCommandResult(serial, err_code, result));
                 JSONObject obj = new JSONObject();
                 try {
                     obj.put("cmd", cmd);
                     obj.put("serial", serial);
                     obj.put("err_code", err_code.toString());
-                    obj.put("result", result.toString());
+                    obj.put("result", result == null ? JSONObject.NULL : result.toString());
                 } catch (JSONException e) {
                     Log.e(TAG, "onResult: JSONException", e);
                 }
@@ -242,7 +242,7 @@ public class RobotApiService extends Service {
                 // Match SDK dispatch on the main thread so a fast completion cannot
                 // arrive before lookAtUser has returned its serial to RobotGateway.
                 displayHandler.post(() -> {
-                    robotGateway.onCommandStateChanged(serial, state);
+                    robotGateway.onCommandStateChanged(serial, state, err_code);
                     sendEvent("onStateChange", obj);
                 });
             }
@@ -390,18 +390,28 @@ public class RobotApiService extends Service {
     }
 
     private void registerBatteryReceiver() {
+        final String usbStateAction = "android.hardware.usb.action.USB_STATE";
         batteryReceiver = new BroadcastReceiver() {
             @Override public void onReceive(Context context, Intent intent) {
+                if (usbStateAction.equals(intent.getAction())) {
+                    if (intent.hasExtra("connected")) robotGateway.updateUsbConnection(intent.getBooleanExtra("connected", false));
+                    return;
+                }
                 if (sessionCoordinator == null || !Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) return;
-                sessionCoordinator.updateBattery(BatteryState.fromReading(
+                BatteryState reading = BatteryState.fromReading(
                         intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1),
                         intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1),
                         intent.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN),
-                        intent.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)));
+                        intent.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true),
+                        intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1));
+                robotGateway.updatePowerConnection(reading.powerConnected);
+                sessionCoordinator.updateBattery(reading);
             }
         };
         // The sticky initial broadcast provides the first reading; later changes use the same receiver.
-        registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        filter.addAction(usbStateAction);
+        registerReceiver(batteryReceiver, filter);
     }
 
     private void createNotificationChannel() {

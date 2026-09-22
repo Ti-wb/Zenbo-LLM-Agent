@@ -33,11 +33,14 @@ public final class DeviceHardware {
     public JSONObject status() {
         JSONObject result = new JSONObject();
         String attentionState = !attentionEnabled ? "disabled" : cameraOwnsResource() ? "paused_for_camera"
-                : gateway.isFollowing() ? "paused_for_following" : !foreground || !motionAllowed ? "motion_disabled"
+                : gateway.isFollowing() ? "paused_for_following" : !foreground || !motionAllowed || !gateway.motionBlockedReason().isEmpty() ? "motion_disabled"
                 : "idle".equals(phase) ? "idle" : gateway.isAttentionActive() || "unavailable".equals(gateway.attentionState()) ? gateway.attentionState()
                 : Double.isNaN(direction.fresh(SystemClock.elapsedRealtime())) ? "waiting_for_face" : "waiting_for_direction";
         try {
             result.put("robotReady", gateway.isReady()).put("moving", gateway.isMoving()).put("following", gateway.isFollowing())
+                    .put("powerConnected", gateway.powerConnected() == null ? JSONObject.NULL : gateway.powerConnected())
+                    .put("usbConnected", gateway.usbConnected() == null ? JSONObject.NULL : gateway.usbConnected())
+                    .put("motionBlockedReason", gateway.motionBlockedReason())
                     .put("attentionEnabled", attentionEnabled).put("attentionState", attentionState)
                     .put("attentionSource", Double.isNaN(direction.fresh(SystemClock.elapsedRealtime())) ? "face_tracking" : "sdk_doa")
                     .put("cameraEnabled", camera.isEnabled()).put("cameraState", permissionPending ? "permission_pending" : camera.state())
@@ -68,7 +71,8 @@ public final class DeviceHardware {
             gateway.stopAttention(result -> { if (!"error".equals(result.optString("status"))) updateAttention(); });
         } else updateAttention();
     }
-    boolean wantsAttention() { return foreground && motionAllowed && attentionEnabled && !"idle".equals(phase) && !cameraOwnsResource(); }
+    boolean wantsAttention() { return foreground && motionAllowed && gateway.motionBlockedReason().isEmpty()
+            && attentionEnabled && !"idle".equals(phase) && !cameraOwnsResource(); }
     private void updateAttention() {
         main.post(() -> {
             if (!wantsAttention() || gateway.isMoving() || SystemClock.elapsedRealtime() - lastAttention < 1_000) return;

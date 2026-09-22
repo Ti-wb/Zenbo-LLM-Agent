@@ -59,18 +59,18 @@ test('all eight tools accept only their strict existing input shape', () => {
 
 test('tool deadlines cover the complete SDK chain and reject another tool deadline', () => {
   for (const [name, args, nativeBudgetMs] of [
-    ['start_robot_following', {}, 2000 + 1500 + 3000],
+    ['start_robot_following', {}, 2000 + 1500 + 5000 + 3000],
     ['move_robot', { direction: 'forward' }, 2000 + 1500 + 2000],
   ]) {
     const message = call(name, args);
     assert.equal(message.timeoutMs, nativeBudgetMs + 1000);
     assert.deepEqual(valid(message, channel), []);
-    for (const timeoutMs of [5000, 6500, 7500].filter((value) => value !== message.timeoutMs)) {
+    for (const timeoutMs of [5000, 6500, 7500, 12500].filter((value) => value !== message.timeoutMs)) {
       assert(valid({ ...message, timeoutMs }, channel).length > 0, `${name}: ${timeoutMs}`);
     }
   }
   assert.equal(call('stop_robot_following', {}).timeoutMs, 5000);
-  assert(valid({ ...call('stop_robot_following', {}), timeoutMs: 7500 }, channel).length > 0);
+  assert(valid({ ...call('stop_robot_following', {}), timeoutMs: 12500 }, channel).length > 0);
 });
 
 test('device channel distinguishes activation, terminal results and receipts', () => {

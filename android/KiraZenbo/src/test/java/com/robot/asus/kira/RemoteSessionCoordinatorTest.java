@@ -401,7 +401,7 @@ public class RemoteSessionCoordinatorTest {
     }
 
     @Test public void followingDeadlineIncludesAttentionStopAvoidanceAndAcquisition() throws Exception {
-        assertScheduledToolDeadline("start_robot_following", object(), 2_000 + 1_500 + 3_000);
+        assertScheduledToolDeadline("start_robot_following", object(), 2_000 + 1_500 + 5_000 + 3_000);
     }
 
     @Test public void moveDeadlineIncludesAttentionStopAvoidanceAndMovement() throws Exception {
@@ -443,10 +443,10 @@ public class RemoteSessionCoordinatorTest {
     @Test public void deviceToolRejectsTimeoutsDeclaredForAnotherTool() throws Exception {
         coordinator.setMotionEnabled(true);
         startText();
-        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", 5_000));
-        coordinator.onDeviceToolCall(tool("move_robot", object("direction", "forward")).put("timeoutMs", 7_500));
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", 7_500));
+        coordinator.onDeviceToolCall(tool("move_robot", object("direction", "forward")).put("timeoutMs", 12_500));
         coordinator.onDeviceToolCall(tool("stop_robot_following", object()).put("timeoutMs", 6_500));
-        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", "7500"));
+        coordinator.onDeviceToolCall(tool("start_robot_following", object()).put("timeoutMs", "12500"));
         coordinator.onDeviceToolCall(tool("move_robot", object("direction", "forward")).put("timeoutMs", 6_500.5));
         assertEquals(0, robot.executions);
         assertEquals(5, transport.toolUpdates.size());

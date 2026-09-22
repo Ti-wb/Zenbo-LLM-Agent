@@ -64,10 +64,13 @@ Transport liveness uses WebSocket ping/pong, without an application heartbeat.
 6. Native sends `run.deactivate` with the three IDs and a reason, receiving
    `run.inactive`. Deactivation fails all pending calls and revokes authority.
 
-`start_robot_following` has a 7,500 ms deadline and `move_robot` has 6,500 ms.
+`start_robot_following` has a 12,500 ms deadline and `move_robot` has 6,500 ms.
 These include the possible 2,000 ms attention stop, 1,500 ms avoidance setup,
-3,000 ms follow acquisition or 2,000 ms move, and 1,000 ms scheduling/transport
-margin. Other tools retain 5,000 ms, including `stop_robot_following`. The plugin
+up to 8,000 ms staged follow acquisition or 2,000 ms move, and 1,000 ms scheduling/transport
+margin. Following permits up to 5,000 ms for initialization, then at most 3,000 ms
+after `START_FIND_USER` for finding the user, with a hard 8,000 ms SDK total.
+Only `ACTIVE` together with `FOUND_USER` succeeds. Other tools retain 5,000 ms,
+including `stop_robot_following`. The plugin
 uses each manifest deadline for its full activation/send/result wait; Native
 checks the same tool-specific value and honors an earlier `deadlineAt` without
 extending it. Acceptance never restarts the deadline.
@@ -91,11 +94,13 @@ Web-owned `show_emotion` and `go_to_sleep` still pass through Native mediation.
 
 ## Camera and short movement extension
 
-Plugin package 1.1.0 / manifest `hermes-zenbo-2` adds `move_robot` and
+Plugin package 1.1.1 / manifest `hermes-zenbo-2` includes `move_robot` and
 `capture_camera`; the channel framing remains version 1.0. This App requires all
 eight tools at discovery and rejects the older six-tool plugin as incompatible.
 Update the plugin on Hermes and restart its existing gateway before using this
-App version. The model and STT/TTS configuration remain owned by the profile.
+App version. This package and matching App require the exact 12,500 ms following
+deadline; versions still declaring 7,500 ms are incompatible for that tool and
+must be updated together. The model and STT/TTS configuration remain owned by the profile.
 
 `move_robot` accepts only `direction: forward|backward|left|right`. Native executes
 one low-speed 0.15 m translation or 15 degree turn, with motion permission and SDK

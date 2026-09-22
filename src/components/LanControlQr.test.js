@@ -16,10 +16,10 @@ const LanControlQr = new Function('Vue', 'qrHelpers', clientComponent)(Vue, qrHe
 const { createLanControlQr } = qrHelpers;
 
 const apps = [];
-afterEach(() => apps.splice(0).forEach((app) => app.unmount()));
+afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); vi.useRealTimers(); });
 
 function mount(input = {}) {
-  const props = reactive({ active: true, enabled: true, urls: ['http://192.168.1.23:8788/'], ...input });
+  const props = reactive({ active: true, enabled: true, connected: false, pairingCode: '12345678', pairingExpiresAt: new Date(Date.now() + 120000).toISOString(), urls: ['http://192.168.1.23:8788/'], ...input });
   const node = (tag, text = '') => ({ tag, text, props: {}, children: [], parent: null });
   const root = node('root');
   const renderer = createRenderer({
@@ -44,42 +44,56 @@ function mount(input = {}) {
   function all(element = root) { return [element, ...element.children.flatMap((child) => all(child))]; }
   const get = (tag) => all().find((element) => element.tag === tag);
   const button = (text) => all().find((element) => element.tag === 'button' && element.text === text);
-  async function show() { button('顯示 QR code').props.onClick(); await nextTick(); }
+  async function show() { button('顯示配對 QR').props.onClick(); await nextTick(); }
   return { props, get, button, show, stop };
 }
 
 describe('LAN QR display lifecycle', () => {
-  it('keeps QR visible across identical status polls, clears it on address or authority changes, and preserves stop', async () => {
+  it('opens a fresh QR automatically, preserves collapse across polls, and removes consumed or closed authority', async () => {
     const page = mount();
-    await page.show();
     const originalPath = page.get('path').props.d;
+    expect(originalPath).toBe(createLanControlQr(page.props.urls[0], '12345678').path);
     page.props.urls = [...page.props.urls];
     await nextTick();
     expect(page.get('path').props.d).toBe(originalPath);
-    expect(page.button('收起 QR code')).toBeDefined();
     page.button('■ 停止移動').props.onClick();
     expect(page.stop).toHaveBeenCalledOnce();
-
-    page.props.urls = ['http://10.0.0.2:8788/'];
-    await nextTick();
+    page.button('收起配對 QR').props.onClick(); await nextTick();
+    page.props.urls = [...page.props.urls]; await nextTick();
     expect(page.get('svg')).toBeUndefined();
     await page.show();
-    expect(page.get('path').props.d).toBe(createLanControlQr(page.props.urls[0]).path);
+
+    page.props.urls = ['http://10.0.0.2:8788/']; await nextTick();
+    expect(page.get('path').props.d).toBe(createLanControlQr(page.props.urls[0], '12345678').path);
     expect(page.get('path').props.d).not.toBe(originalPath);
+    page.props.connected = true; page.props.pairingCode = ''; await nextTick();
+    expect(page.get('svg')).toBeUndefined();
+    page.props.connected = false; page.props.pairingCode = '87654321'; await nextTick();
+    expect(page.get('path').props.d).toBe(createLanControlQr(page.props.urls[0], '87654321').path);
     for (const field of ['enabled', 'active']) {
       page.props[field] = false; await nextTick();
       expect(page.get('svg')).toBeUndefined();
       page.props[field] = true; await nextTick();
-      expect(page.get('svg')).toBeUndefined();
-      await page.show();
+      expect(page.get('svg')).toBeDefined();
     }
-    page.button('收起 QR code').props.onClick(); await nextTick();
+  });
+
+  it('withdraws an expired QR without waiting for a status poll and opens a newly issued code', async () => {
+    vi.useFakeTimers();
+    const page = mount({ pairingExpiresAt: new Date(Date.now() + 2000).toISOString() });
+    expect(page.get('svg')).toBeDefined();
+    await vi.advanceTimersByTimeAsync(2000);
     expect(page.get('svg')).toBeUndefined();
+    expect(page.button('顯示配對 QR').props.disabled).toBe(true);
+    page.props.pairingCode = '87654321';
+    page.props.pairingExpiresAt = new Date(Date.now() + 120000).toISOString();
+    await nextTick();
+    expect(page.get('svg')).toBeDefined();
   });
 
   it('does not offer a code without a valid LAN address', async () => {
     const page = mount({ urls: ['http://192.168.1.23:8788/?token=secret'] });
-    expect(page.button('顯示 QR code').props.disabled).toBe(true);
+    expect(page.button('顯示配對 QR').props.disabled).toBe(true);
     await page.show();
     expect(page.get('svg')).toBeUndefined();
   });

@@ -79,7 +79,7 @@
       "sideEffect": "physical",
       "idempotent": false,
       "requiresConfirmation": false,
-      "timeoutMs": 7500
+      "timeoutMs": 12500
     },
     {
       "name": "stop_robot_following",

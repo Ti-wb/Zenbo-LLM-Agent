@@ -7,12 +7,34 @@ final class CommandProgress {
     private boolean active;
     private boolean found;
     private boolean complete;
+    private final long startedAt;
+    private long searchStartedAt = -1;
 
-    CommandProgress(int serial, boolean follow) { this.serial = serial; this.follow = follow; }
+    CommandProgress(int serial, boolean follow) { this(serial, follow, 0); }
+    CommandProgress(int serial, boolean follow, long startedAt) {
+        this.serial = serial; this.follow = follow; this.startedAt = startedAt;
+    }
+
+    boolean searchStarted(int receivedSerial, long now) {
+        if (complete || !follow || serial != receivedSerial || searchStartedAt >= 0 || now >= startedAt + 5_000) return false;
+        searchStartedAt = now;
+        return true;
+    }
+
+    long followRemainingMillis(long now) {
+        long deadline = searchStartedAt < 0 ? startedAt + 5_000 : Math.min(startedAt + 8_000, searchStartedAt + 3_000);
+        return Math.max(0, deadline - now);
+    }
+
+    String followTimeoutCode() { return searchStartedAt < 0 ? "FOLLOW_START_TIMEOUT" : "FOLLOW_TARGET_NOT_FOUND"; }
 
     Boolean state(int receivedSerial, String state) {
+        return state(receivedSerial, state, "NO_ERROR");
+    }
+
+    Boolean state(int receivedSerial, String state, String errorCode) {
         if (complete || serial != receivedSerial) return null;
-        if ("REJECTED".equals(state) || "FAILED".equals(state) || "PREEMPTED".equals(state)) {
+        if (!"NO_ERROR".equals(errorCode) || "REJECTED".equals(state) || "FAILED".equals(state) || "PREEMPTED".equals(state)) {
             complete = true;
             return false;
         }

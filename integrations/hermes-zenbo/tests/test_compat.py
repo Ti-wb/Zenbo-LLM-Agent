@@ -119,7 +119,7 @@ class PluginTests(unittest.TestCase):
             plugin.shared().runtime = old
 
     def test_handler_does_not_cancel_a_broker_result_within_each_full_native_budget(self):
-        for name, native_seconds in (("start_robot_following", 6.5), ("move_robot", 5.5)):
+        for name, native_seconds in (("start_robot_following", 11.5), ("move_robot", 5.5)):
             with self.subTest(tool=name):
                 clock = [100.0]
                 attempts = []
@@ -137,7 +137,7 @@ class PluginTests(unittest.TestCase):
                 self.assertEqual(attempts, [0.05, 0.05])
 
     def test_handler_cancels_a_stalled_broker_after_manifest_budget_plus_handoff_margin(self):
-        for name, handler_seconds in (("start_robot_following", 8.0), ("move_robot", 7.0), ("stop_robot_following", 5.5)):
+        for name, handler_seconds in (("start_robot_following", 13.0), ("move_robot", 7.0), ("stop_robot_following", 5.5)):
             with self.subTest(tool=name):
                 clock = [100.0]
 

@@ -17,6 +17,8 @@ export function useRobotControls(open, options = {}) {
   const imageError = ref('');
   let generation = 0;
   let statusRevision = 0;
+  let operationId = 0;
+  let remoteRevision = 0;
   let statusTimer;
   let frameTimer;
   let frameAbort;
@@ -24,7 +26,7 @@ export function useRobotControls(open, options = {}) {
   let disposed = false;
 
   const canMove = computed(() => online.value && status.value?.robotReady === true
-    && status.value?.motionEnabled === true && !pending.value);
+    && status.value?.motionEnabled === true && !status.value?.motionBlockedReason && !pending.value);
   const canFollow = computed(() => canMove.value && !status.value?.cameraEnabled
     && status.value?.cameraState !== 'releasing' && status.value?.cameraError !== 'CAMERA_RELEASE_FAILED');
 
@@ -102,20 +104,21 @@ export function useRobotControls(open, options = {}) {
   async function perform(name, operation) {
     if (pending.value && !['stop', 'remote-disable'].includes(name)) return false;
     const current = generation;
+    const operationToken = ++operationId;
     statusRevision += 1;
     pending.value = name;
     actionError.value = '';
     try {
-      await operation();
-      if (disposed || current !== generation) return false;
+      const completed = await operation();
+      if (completed === false || disposed || current !== generation || operationToken !== operationId) return false;
       statusRevision += 1;
       await refresh();
       return true;
     } catch (cause) {
-      if (!disposed && current === generation) actionError.value = deviceMessage(cause);
+      if (!disposed && current === generation && operationToken === operationId) actionError.value = deviceMessage(cause);
       return false;
     } finally {
-      if (pending.value === name) pending.value = '';
+      if (operationToken === operationId) pending.value = '';
     }
   }
 
@@ -130,10 +133,18 @@ export function useRobotControls(open, options = {}) {
   }
 
   function remote(enabled, pin) {
+    if (enabled && pending.value) return Promise.resolve(false);
+    const revision = ++remoteRevision;
+    const current = generation;
     return perform(enabled ? 'remote' : 'remote-disable', async () => {
-      if (enabled) await transport.unlockRuntimeSettings({ pin });
+      if (enabled) {
+        await transport.unlockRuntimeSettings({ pin });
+        // Disable and closing the panel revoke an enable still waiting on PIN.
+        // A successful old unlock must never dispatch a new LAN authority.
+        if (disposed || !open.value || current !== generation || revision !== remoteRevision) return false;
+      }
       await transport.setRemoteEnabled(enabled);
-      if (!enabled && status.value) status.value = { ...status.value, remote: { enabled: false, connected: false, urls: [] } };
+      if (!enabled && current === generation && revision === remoteRevision && status.value) status.value = { ...status.value, remote: { enabled: false, connected: false, urls: [] } };
     });
   }
 
@@ -158,6 +169,8 @@ export function useRobotControls(open, options = {}) {
 
   watch(open, (visible) => {
     generation += 1;
+    operationId += 1;
+    pending.value = '';
     clearTimeout(statusTimer);
     if (visible) {
       actionError.value = '';
@@ -174,6 +187,8 @@ export function useRobotControls(open, options = {}) {
   onBeforeUnmount(() => {
     disposed = true;
     generation += 1;
+    operationId += 1;
+    pending.value = '';
     clearTimeout(statusTimer);
     stopPreview();
   });

@@ -17,9 +17,11 @@ const { status, error, pending, online, canMove, canFollow, previewEnabled, imag
 const dialog = ref(null);
 const closeButton = ref(null);
 const pin = ref('');
+const renewingPairing = ref(false);
 let previousFocus;
 const attentionLabel = computed(() => {
   if (!status.value?.attentionEnabled) return '已關閉';
+  if (status.value?.motionBlockedReason) return '接線時暫停看人，拔除後可恢復';
   const state = String(status.value?.attentionState || '').toLowerCase();
   if (state.includes('unavailable') || state.includes('unsupported')) return '目前無法取得說話方向';
   if (state === 'looking_at_speaker') return '看向聲音來源';
@@ -28,6 +30,9 @@ const attentionLabel = computed(() => {
   if (state === 'waiting_for_direction') return '等待聲音方向或人臉';
   return '已啟用，等待互動';
 });
+const motionHint = computed(() => status.value?.motionBlockedReason
+  ? (status.value.motionBlockedReason === 'POWER_CONNECTED' ? 'Zenbo 接著充電線，拔除後才可移動與跟隨。' : 'Zenbo 接著 USB，拔除後才可移動與跟隨。')
+  : status.value?.motionEnabled ? '每次最多前後移動 15 公分，或轉向 15°。' : '請先在主畫面開啟「動作」。');
 const cameraReleasing = computed(() => status.value?.cameraState === 'releasing');
 const cameraReleaseFailed = computed(() => status.value?.cameraError === 'CAMERA_RELEASE_FAILED');
 const cameraBlocksFollowing = computed(() => status.value?.cameraEnabled || cameraReleasing.value || cameraReleaseFailed.value);
@@ -52,7 +57,14 @@ const pairingExpiry = computed(() => {
 async function setRemote() {
   const entered = pin.value;
   pin.value = '';
-  await remote(!status.value?.remote?.enabled, entered);
+  const enabled = !status.value?.remote?.enabled || renewingPairing.value;
+  if (await remote(enabled, entered)) renewingPairing.value = false;
+}
+
+function disableRemote() {
+  pin.value = '';
+  renewingPairing.value = false;
+  void remote(false, '');
 }
 
 function releaseFocus() {
@@ -63,16 +75,20 @@ function releaseFocus() {
 }
 
 function onFocusIn(event) {
-  if (dialog.value && !dialog.value.contains(event.target)) closeButton.value?.focus();
+  const scope = dialog.value?.querySelector('#lan-qr-panel') || dialog.value;
+  if (scope && !scope.contains(event.target)) (scope.querySelector('button') || closeButton.value)?.focus();
 }
 
 function onKeydown(event) {
   if (!dialog.value || event.isComposing) return;
   if (event.key === 'Escape') {
     event.preventDefault();
-    emit('close');
+    const qrClose = dialog.value.querySelector('[data-qr-close]');
+    if (qrClose) qrClose.click();
+    else emit('close');
   } else if (event.key === 'Tab') {
-    const elements = [...dialog.value.querySelectorAll('button,input,select,a[href]')]
+    const scope = dialog.value.querySelector('#lan-qr-panel') || dialog.value;
+    const elements = [...scope.querySelectorAll('button,input,select,a[href]')]
       .filter((element) => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
     const index = elements.indexOf(document.activeElement);
     if (index < 0 || (event.shiftKey ? index === 0 : index === elements.length - 1)) {
@@ -84,6 +100,7 @@ function onKeydown(event) {
 
 watch(() => props.open, async (visible, _, onCleanup) => {
   pin.value = '';
+  renewingPairing.value = false;
   if (!visible) return releaseFocus();
   previousFocus = document.activeElement;
   let cancelled = false;
@@ -109,7 +126,7 @@ onBeforeUnmount(releaseFocus);
       <div class="controls-layout">
         <section class="control-section movement-section" aria-labelledby="movement-title">
           <div class="section-heading"><h2 id="movement-title">移動與跟隨</h2><span>{{ status?.motionEnabled ? '動作 開' : '動作 關' }}</span></div>
-          <p class="hint">{{ status?.motionEnabled ? '每次最多前後移動 15 公分，或轉向 15°。' : '請先在主畫面開啟「動作」。' }}</p>
+          <p class="hint">{{ motionHint }}</p>
           <div class="direction-pad">
             <button class="forward" type="button" :disabled="!canMove" @click="action('forward')"><span aria-hidden="true">↑</span>前進</button>
             <button class="left" type="button" :disabled="!canMove" @click="action('left')"><span aria-hidden="true">↶</span>左轉</button>
@@ -149,14 +166,20 @@ onBeforeUnmount(releaseFocus);
       <section class="remote-section" aria-labelledby="remote-title">
         <div class="section-heading"><h2 id="remote-title">同一個 Wi-Fi 遙控</h2><span :class="{ connected: status?.remote?.connected }">{{ status?.remote?.connected ? '遙控已連線' : status?.remote?.enabled ? '等待配對' : '已關閉' }}</span></div>
         <div v-if="status?.remote?.enabled" class="pairing-details">
-          <div class="remote-address"><span>在手機或電腦開啟</span><a v-for="url in status.remote.urls || []" :key="url" :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a><p v-if="!status.remote.urls?.length">尚未取得區網位址，請確認 Wi-Fi。</p></div>
-          <div v-if="status.remote.pairingCode" class="pairing-code"><span>一次性配對碼</span><strong>{{ status.remote.pairingCode }}</strong><small v-if="pairingExpiry">有效至 {{ pairingExpiry }}</small></div>
+          <div class="remote-address"><span>也可手動開啟</span><a v-for="url in status.remote.urls || []" :key="url" :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a><p v-if="!status.remote.urls?.length">尚未取得區網位址，請確認 Wi-Fi。</p></div>
+          <div v-if="status.remote.pairingCode" class="pairing-code"><span>手動配對備用碼</span><strong>{{ status.remote.pairingCode }}</strong><small v-if="pairingExpiry">有效至 {{ pairingExpiry }}</small></div>
         </div>
-        <LanControlQr :active="open" :enabled="status?.remote?.enabled === true" :urls="status?.remote?.urls || []" @stop="action('stop')" />
-        <form class="remote-form" @submit.prevent="setRemote">
-          <label v-if="!status?.remote?.enabled"><span>管理 PIN</span><input v-model="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" minlength="6" maxlength="12" required placeholder="輸入後立即清除" :disabled="!online || Boolean(pending)" /></label>
-          <button type="submit" :disabled="['remote', 'remote-disable'].includes(pending) || (!status?.remote?.enabled && (!online || Boolean(pending) || pin.length < 6))">{{ ['remote', 'remote-disable'].includes(pending) ? '設定中…' : status?.remote?.enabled ? '關閉區網遙控' : '啟用區網遙控' }}</button>
+        <LanControlQr :active="open" :enabled="status?.remote?.enabled === true" :connected="status?.remote?.connected === true" :pairing-code="status?.remote?.pairingCode || ''" :pairing-expires-at="status?.remote?.pairingExpiresAt || ''" :urls="status?.remote?.urls || []" @stop="action('stop')" />
+        <p v-if="renewingPairing" class="hint">重新產生會停止動作並中斷目前的遙控連線，請輸入管理 PIN。</p>
+        <form v-if="!status?.remote?.enabled || renewingPairing" class="remote-form" @submit.prevent="setRemote">
+          <label><span>管理 PIN</span><input v-model="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" minlength="6" maxlength="12" required placeholder="輸入後立即清除" :disabled="!online || Boolean(pending)" /></label>
+          <button type="submit" :disabled="!online || Boolean(pending) || pin.length < 6">{{ pending === 'remote' ? '準備配對 QR…' : renewingPairing ? '重新產生並顯示 QR' : '啟用並顯示配對 QR' }}</button>
+          <button v-if="renewingPairing" type="button" @click="renewingPairing = false; pin = ''">取消</button>
         </form>
+        <div v-if="status?.remote?.enabled" class="remote-form remote-actions">
+          <button v-if="!renewingPairing" type="button" :disabled="!online || Boolean(pending)" @click="renewingPairing = true">重新產生配對 QR</button>
+          <button type="button" :disabled="pending === 'remote-disable'" @click="disableRemote">{{ pending === 'remote-disable' ? '關閉中…' : '關閉區網遙控' }}</button>
+        </div>
         <p class="hint">開啟後可配對觀看影像、跟隨與短距離遙控；關閉會撤銷配對並停止移動。</p>
       </section>
     </section>
@@ -203,6 +226,7 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: #94d8bf; flex-
 .pairing-details { display: flex; align-items: flex-start; gap: 24px; padding: 15px; border-radius: 10px; background: #08161e; margin-bottom: 14px; }
 .remote-address { flex: 1; min-width: 0; }.remote-address > span, .pairing-code > span { color: #94b4bd; font-size: 11px; }.remote-address a { display: block; margin-top: 8px; font-size: 14px; color: #b0e8d7; overflow-wrap: anywhere; }.remote-address p { font-size: 12px; margin: 8px 0 0; }
 .pairing-code strong { display: block; color: #e5faed; font-size: 25px; letter-spacing: .14em; margin-top: 3px; font-variant-numeric: tabular-nums; }.pairing-code small { color: #95acb7; font-size: 10px; }
+.remote-actions { margin-top: 10px; }
 .remote-form { display: flex; align-items: flex-end; gap: 10px; }.remote-form label { flex: 1; }.remote-form label span { display: block; font-size: 11px; color: #a8c1c7; margin-bottom: 6px; }.remote-form input { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid #34505a; border-radius: 9px; background: #05141d; color: #e4f4f6; }.remote-form button { padding: 0 18px; font-size: 13px; }
 .notice { padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }.error { color: #ffd2c4; background: #3c2426; }
 @media (max-width: 620px) { .robot-overlay { padding: 12px; }.robot-card { padding: 18px; }.controls-layout { grid-template-columns: 1fr; gap: 26px; }.connection { font-size: 10px; }.panel-heading { gap: 9px; }.pairing-details { flex-direction: column; gap: 15px; }.camera-view { max-height: 280px; }.remote-form { flex-wrap: wrap; }.remote-form label { min-width: 140px; } }

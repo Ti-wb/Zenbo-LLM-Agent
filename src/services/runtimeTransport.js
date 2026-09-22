@@ -5,9 +5,10 @@ const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_VOICE_BYTES = 2 * 1024 * 1024;
 const MAX_VOICE_DURATION_MS = 30000;
 // Native may stop attention (2 s), enable avoidance (1.5 s), then acquire
-// follow (3 s) or complete a move (2 s). Leave 1 s for scheduling/HTTP.
+// follow (5 s initialization + 3 s search) or complete a move (2 s).
+// Leave 1 s for scheduling/HTTP.
 const DEVICE_ACTION_TIMEOUT_MS = Object.freeze({
-  follow: 7500,
+  follow: 12500,
   forward: 6500,
   backward: 6500,
   left: 6500,

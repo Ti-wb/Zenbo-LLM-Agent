@@ -11,6 +11,28 @@ public class CommandProgressTest {
         assertNull(command.state(42, "ACTIVE"));
         assertEquals(Boolean.TRUE, command.state(42, "SUCCEED"));
         assertNull(command.state(42, "FAILED"));
+        for (String sdkError : new String[]{"COORDINATOR_APP_CANCELED", "MOTION_FAILED", "UNKNOWN"}) {
+            CommandProgress rejected = new CommandProgress(43, false);
+            assertEquals(Boolean.FALSE, rejected.state(43, "SUCCEED", sdkError));
+            assertNull(rejected.state(43, "SUCCEED", "NO_ERROR"));
+        }
+    }
+    @Test public void coldStartAndFaceSearchHaveSeparateBoundedDeadlines() {
+        CommandProgress command = new CommandProgress(37, true, 1_000);
+        assertNull(command.state(37, "ACTIVE"));
+        assertEquals(1_720, command.followRemainingMillis(4_280)); // Device SDK began search 3.28 s after ACTIVE.
+        assertTrue(command.searchStarted(37, 4_280));
+        assertEquals("FOLLOW_TARGET_NOT_FOUND", command.followTimeoutCode());
+        assertEquals(3_000, command.followRemainingMillis(4_280));
+        assertFalse(command.searchStarted(37, 5_000)); // Repeated milestones cannot extend authority.
+        assertEquals(0, command.followRemainingMillis(7_280));
+        CommandProgress cold = new CommandProgress(38, true, 1_000);
+        assertEquals("FOLLOW_START_TIMEOUT", cold.followTimeoutCode());
+        assertFalse(cold.searchStarted(38, 6_000));
+        assertEquals(0, cold.followRemainingMillis(6_000));
+        CommandProgress latest = new CommandProgress(39, true, 1_000);
+        assertTrue(latest.searchStarted(39, 5_999));
+        assertEquals(0, latest.followRemainingMillis(9_000));
     }
     @Test public void followMustBeActiveAndFindUserInEitherCallbackOrder() {
         CommandProgress first = new CommandProgress(7, true);

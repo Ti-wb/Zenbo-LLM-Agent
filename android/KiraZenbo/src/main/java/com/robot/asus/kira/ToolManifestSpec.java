@@ -81,8 +81,8 @@ final class ToolManifestSpec {
                     properties(ACCEPTED, property("robotReady", "boolean"), property("moving", "boolean"),
                             property("androidSdk", "integer"), property("robotModel", "string")),
                     names("accepted", "robotReady", "moving", "androidSdk", "robotModel")),
-            // Attention stop (2 s) + avoidance (1.5 s) + follow (3 s) + transport margin (1 s).
-            definition("start_robot_following", "native", "physical", false, 7_500,
+            // Attention stop (2 s) + avoidance (1.5 s) + follow init/search (5 s + 3 s) + transport margin (1 s).
+            definition("start_robot_following", "native", "physical", false, 12_500,
                     properties(property("enablePreview", "boolean"), property("largePreview", "boolean")), names(),
                     properties(ACCEPTED), names("accepted")),
             definition("stop_robot_following", "native", "physical", true,

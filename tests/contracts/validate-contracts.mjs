@@ -125,7 +125,7 @@ for (const tool of manifest.tools) {
 assert.deepEqual(manifest.tools.map((tool) => tool.name), allowlist);
 for (const tool of manifest.tools) {
   assert.equal(tool.owner, ['show_emotion', 'go_to_sleep'].includes(tool.name) ? 'web' : 'native');
-  assert.equal(tool.timeoutMs, { start_robot_following: 7500, move_robot: 6500 }[tool.name] || 5000);
+  assert.equal(tool.timeoutMs, { start_robot_following: 12500, move_robot: 6500 }[tool.name] || 5000);
   assert.equal(tool.version, '1.0.0');
   for (const kind of ['inputSchema', 'resultSchema']) {
     assert.equal(tool[kind].additionalProperties, false);

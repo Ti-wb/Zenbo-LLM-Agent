@@ -131,6 +131,24 @@ describe('robot controls lifecycle', () => {
     expect(transport.sendDeviceAction.mock.calls.map(([action]) => action)).toEqual(['stop', 'follow']);
   });
 
+  it('withholds chassis actions while cabled and restores them after unplugging, keeping stop available', async () => {
+    const { controls, transport, currentStatus } = await mount();
+    currentStatus.cameraEnabled = false;
+    for (const reason of ['POWER_CONNECTED', 'USB_CONNECTED']) {
+      currentStatus.motionBlockedReason = reason;
+      await controls.refresh();
+      expect(controls.canMove.value).toBe(false);
+      expect(await controls.action('forward')).toBe(false);
+      expect(await controls.action('follow')).toBe(false);
+      expect(await controls.action('stop')).toBe(true);
+    }
+    currentStatus.motionBlockedReason = '';
+    await controls.refresh();
+    expect(controls.canMove.value).toBe(true);
+    expect(controls.canFollow.value).toBe(true);
+    expect(transport.sendDeviceAction.mock.calls).toEqual([['stop'], ['stop']]);
+  });
+
   it('allows bounded manual actions while the camera is enabled, without retrying a failure', async () => {
     const { controls, transport } = await mount();
     transport.sendDeviceAction.mockRejectedValueOnce(Object.assign(new Error('vendor detail'), { code: 'ROBOT_BUSY' }));
@@ -152,13 +170,38 @@ describe('robot controls lifecycle', () => {
     finish({ accepted: true }); await move;
   });
 
-  it('requires an unlock only when enabling LAN control', async () => {
+  it('requires an unlock for LAN enabling and explicit QR regeneration, never for disabling', async () => {
     const { controls, transport } = await mount();
     await controls.remote(true, '123456');
     expect(transport.unlockRuntimeSettings).toHaveBeenCalledExactlyOnceWith({ pin: '123456' });
+    await controls.remote(true, '234567'); // Explicit renewal uses the existing authenticated enable route.
     await controls.remote(false, '');
-    expect(transport.unlockRuntimeSettings).toHaveBeenCalledTimes(1);
-    expect(transport.setRemoteEnabled.mock.calls).toEqual([[true], [false]]);
+    expect(transport.unlockRuntimeSettings).toHaveBeenCalledTimes(2);
+    expect(transport.setRemoteEnabled.mock.calls).toEqual([[true], [true], [false]]);
+  });
+
+  it('revokes pending PIN enables on disable or close without a late request clearing newer pending work', async () => {
+    const { controls, transport, open, currentStatus } = await mount();
+    currentStatus.remote = { enabled: true, connected: true };
+    let unlockOld, unlockNew;
+    transport.unlockRuntimeSettings
+      .mockImplementationOnce(() => new Promise((resolve) => { unlockOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { unlockNew = resolve; }));
+    transport.setRemoteEnabled.mockImplementation(async (enabled) => { currentStatus.remote = { enabled, connected: false }; });
+    const oldRenewal = controls.remote(true, '123456');
+    expect(await controls.remote(false, '')).toBe(true);
+    expect(controls.status.value.remote.enabled).toBe(false);
+    const newEnable = controls.remote(true, '234567');
+    unlockOld({ unlocked: true });
+    expect(await oldRenewal).toBe(false);
+    expect(controls.pending.value).toBe('remote');
+    expect(transport.setRemoteEnabled.mock.calls).toEqual([[false]]);
+    open.value = false; await nextTick();
+    unlockNew({ unlocked: true });
+    expect(await newEnable).toBe(false);
+    expect(transport.setRemoteEnabled.mock.calls).toEqual([[false]]);
+    expect(controls.pending.value).toBe('');
+    expect(controls.status.value).toBeNull();
   });
 
   it('can revoke LAN access while a capture is pending', async () => {

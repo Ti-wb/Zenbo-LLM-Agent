@@ -13,10 +13,17 @@ export function isLanControlUrl(value) {
     || (bytes[0] === 192 && bytes[1] === 168);
 }
 
-export function createLanControlQr(url) {
-  if (!isLanControlUrl(url)) return null;
+export function createLanPairingUrl(url, pairingCode) {
+  if (!isLanControlUrl(url) || typeof pairingCode !== 'string' || !/^[0-9]{8}$/.test(pairingCode)) return null;
+  // The fragment is consumed by the remote page; it never enters an HTTP URL.
+  return `${url}#pair=${pairingCode}`;
+}
+
+export function createLanControlQr(url, pairingCode) {
+  const payload = createLanPairingUrl(url, pairingCode);
+  if (!payload) return null;
   const code = qrcode(0, 'M');
-  code.addData(url, 'Byte');
+  code.addData(payload, 'Byte');
   code.make();
   const count = code.getModuleCount();
   const quietZone = 4;

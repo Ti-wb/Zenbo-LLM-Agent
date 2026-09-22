@@ -2559,6 +2559,29 @@
           "cameraError": {
             "type": "string",
             "maxLength": 512
+          },
+          "powerConnected": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Native external power cable reading; null when unavailable."
+          },
+          "usbConnected": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Native USB device cable reading; independent of battery charging."
+          },
+          "motionBlockedReason": {
+            "type": "string",
+            "enum": [
+              "",
+              "POWER_CONNECTED",
+              "USB_CONNECTED"
+            ],
+            "description": "Tethered motion precondition; stopping, camera and audio remain available."
           }
         },
         "required": [

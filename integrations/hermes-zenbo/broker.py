@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import re
 import time
 import uuid
 
@@ -10,6 +11,13 @@ from .schema import TOOLS, validate
 from .camera import validate_capture
 
 TERMINAL = {"completed", "failed", "cancelled", "canceled"}
+DEVICE_FAILURE_MESSAGES = {
+    "MOTION_POWER_CONNECTED": "Disconnect the charging cable before moving or following.",
+    "MOTION_USB_CONNECTED": "Disconnect the USB data cable before moving or following.",
+    "FOLLOW_START_TIMEOUT": "The robot SDK did not start finding a user before the initialization deadline.",
+    "FOLLOW_TARGET_NOT_FOUND": "The robot SDK did not find the user within the search deadline.",
+    "FOLLOW_ENDED_BEFORE_TARGET": "The robot SDK ended following before confirming the user.",
+}
 
 
 def iso_time(timestamp=None):
@@ -228,8 +236,13 @@ class Broker:
                     or not isinstance(error["code"], str) or not 0 < len(error["code"]) <= 64
                     or not isinstance(error["message"], str) or not 0 < len(error["message"]) <= 512):
                 raise Rejected("invalid_result")
-            # Native error text is untrusted; do not echo it into model/provider logs.
-            pending.future.set_result({"error": {"code": "device_" + status, "message": "Device rejected or failed the tool"}})
+            # Preserve actionable reasons without echoing arbitrary Native text into model/provider logs.
+            code = error["code"]
+            safe_message = DEVICE_FAILURE_MESSAGES.get(code)
+            if safe_message is None and re.fullmatch(r"SDK_[A-Z0-9_]{1,60}", code):
+                safe_message = "The robot SDK rejected, cancelled, or failed the requested action."
+            pending.future.set_result({"error": {"code": code if safe_message else "device_" + status,
+                                                 "message": safe_message or "Device rejected or failed the tool"}})
         else:
             raise Rejected("invalid_result")
         return {"type": "tool.ack", "callId": message["callId"], "status": status}

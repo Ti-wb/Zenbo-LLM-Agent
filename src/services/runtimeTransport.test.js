@@ -50,7 +50,7 @@ describe('RuntimeTransport', () => {
   afterEach(() => vi.useRealTimers());
 
   it.each([
-    ['follow', 6500],
+    ['follow', 11500],
     ['forward', 5500],
     ['stop', 2000],
   ])('waits for the complete Native %s chain before its HTTP deadline', async (action, nativeBudgetMs) => {
@@ -68,7 +68,7 @@ describe('RuntimeTransport', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each([['follow', 7500], ['forward', 6500], ['stop', 3000]])(
+  it.each([['follow', 12500], ['forward', 6500], ['stop', 3000]])(
     'aborts an unconfirmed %s at its bounded deadline without replay', async (action, deadlineMs) => {
       vi.useFakeTimers();
       const fetchImpl = vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {

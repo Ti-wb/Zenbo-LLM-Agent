@@ -37,10 +37,13 @@ upgrading Hermes. Reference: official
 and [run execution](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/api_server_runs.py).
 Public `main` is a reference, not proof of the installed revision.
 
-The current package is 1.1.0 with the eight-tool `hermes-zenbo-2` manifest.
+The current package is 1.1.1 with the eight-tool `hermes-zenbo-2` manifest.
 The matching App rejects a six-tool plugin during discovery; upgrade this plugin
 and restart the existing Hermes gateway together with the App update. The device
-channel wire version remains 1.0.
+channel wire version remains 1.0. Package 1.1.1 raises the exact following deadline
+to 12,500 ms for the matching App's staged SDK initialization and user search.
+Upgrade both together: an older App rejects that tool deadline, while an older
+plugin's 7,500 ms deadline is rejected by the updated App.
 
 `capture_camera` receives one bounded JPEG from the authenticated Native device.
 The plugin checks its base64, digest and JPEG dimensions/framing in memory, then
@@ -103,10 +106,15 @@ broker. Each device/session has one active run. Cancellation or disconnect
 revokes authority and fails pending calls. The next run waits for authoritative
 terminal status and pending-call cleanup. Tools never replay. `accepted` is a
 receipt; the handler waits for a valid terminal result within the manifest's
-total deadline, including activation and transport time: 7,500 ms for following,
+total deadline, including activation and transport time: 12,500 ms for following,
 6,500 ms for moving, and 5,000 ms for all other tools, including stopping.
 Native activation wakes waiting tool calls immediately; a bounded interrupt
 check remains while waiting, within the same original deadline.
+
+Tool failures preserve the known charging/USB connection and following-stage
+error codes with fixed safe explanations. Symbolic `SDK_` error codes also remain
+available with a fixed SDK failure message. Arbitrary device error messages and
+unknown codes are not forwarded to the model.
 
 If a run has already completed before its first activation, `run.active` only
 acknowledges speech correlation; device tools remain disabled. Failed, cancelled,

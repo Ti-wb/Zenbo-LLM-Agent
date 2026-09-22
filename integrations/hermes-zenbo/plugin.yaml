@@ -1,5 +1,5 @@
 name: zenbo
-version: 1.1.0
+version: 1.1.1
 description: Profile-scoped Zenbo device tools and speech on the existing Hermes API server
 provides_tools:
   - get_system_status

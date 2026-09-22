@@ -14,8 +14,9 @@
   <header><div><p class="eyebrow">ZENBO · LOCAL CONNECTION</p><h1>區網遙控</h1></div><span id="connection-status" class="status" role="status">尚未配對</span><button id="logout" class="secondary" type="button" hidden>結束遙控</button></header>
   <p id="error" class="notice" role="alert" hidden></p>
   <section id="pair-section" aria-labelledby="pair-title">
-    <h2 id="pair-title">連接你的 Zenbo</h2><p class="intro">在 Zenbo 的「機器控制」啟用區網遙控，再輸入畫面上的一次性配對碼。</p>
-    <form id="pair-form"><label for="code">一次性配對碼</label><input id="code" inputmode="numeric" autocomplete="off" maxlength="12" required pattern="[0-9]{6,12}" aria-describedby="pair-hint" placeholder="配對碼" /><button id="pair-button" type="submit">配對並開啟畫面</button></form>
+    <h2 id="pair-title">連接你的 Zenbo</h2><p class="intro">在 Zenbo 的「機器控制」選擇「啟用並顯示配對 QR」，用手機相機掃描即可連接，不必輸入配對碼。</p>
+    <p class="hint" id="pair-progress" role="status" hidden>正在配對 Zenbo…</p>
+    <details id="manual-pair"><summary>無法掃碼？手動輸入配對碼</summary><form id="pair-form"><label for="code">一次性配對碼</label><input id="code" inputmode="numeric" autocomplete="off" maxlength="8" required pattern="[0-9]{8}" aria-describedby="pair-hint" placeholder="配對碼" /><button id="pair-button" type="submit">配對並開啟畫面</button></form></details>
     <p class="hint" id="pair-hint">手機或電腦需與 Zenbo 連接同一個 Wi-Fi。</p>
   </section>
   <section id="remote-section" hidden>
@@ -30,6 +31,16 @@
 <script>
 (() => {
   'use strict';
+  // Consume only the one-use pairing code. Remove the fragment synchronously,
+  // before network requests; never retain it in history, storage, or a request URL.
+  let initialPairingCode = (() => {
+    const fragment = window.location.hash;
+    if (!fragment) return '';
+    try { window.history.replaceState(null, '', window.location.pathname + window.location.search); }
+    catch { return null; } // If clearing fails, require a fresh scan rather than use the code.
+    const match = /^#pair=([0-9]{8})$/.exec(fragment);
+    return match ? match[1] : null;
+  })();
   const el = (id) => document.getElementById(id);
   let csrf = '';
   let connected = false;
@@ -38,12 +49,13 @@
   let imageUrl = '';
   let lastFrameAt = 0;
   let actionPending = false;
+  let pairingPending = false;
   let framePending = false;
   let heartbeatTimer, statusTimer, frameTimer;
   const controllers = new Set();
-  // Native: attention stop (2 s) + avoidance (1.5 s) + follow (3 s) / move (2 s),
+  // Native: attention stop (2 s) + avoidance (1.5 s) + follow (8 s) / move (2 s),
   // plus 1 s for scheduling/HTTP. Heartbeat/status/frame keep the short deadline.
-  const actionTimeoutMs = { follow:7500, forward:6500, backward:6500, left:6500, right:6500, stop:3000 };
+  const actionTimeoutMs = { follow:12500, forward:6500, backward:6500, left:6500, right:6500, stop:3000 };
   const motionButtons = [...document.querySelectorAll('[data-action]:not([data-action="stop"])')];
 
   function errorMessage(error) {
@@ -51,8 +63,11 @@
       CAMERA_BUSY:'相機正由其他功能使用，請先停止跟隨後再試。', CAMERA_DISABLED:'請在 Zenbo 開啟相機。',
       CAMERA_PERMISSION_REQUIRED:'請在 Zenbo 允許相機權限。', CAMERA_PERMISSION_DENIED:'請在 Zenbo 允許相機權限。',
       MOTION_DISABLED:'請在 Zenbo 主畫面開啟「動作」。', ROBOT_BUSY:'機器正在執行其他動作，請先停止或稍後再試。',
-      ROBOT_UNAVAILABLE:'機器控制尚未就緒，請確認 Zenbo App 已開啟。', PAIRING_EXPIRED:'配對碼已過期，請在 Zenbo 重新開啟區網遙控。',
+      ROBOT_UNAVAILABLE:'機器控制尚未就緒，請確認 Zenbo App 已開啟。', PAIRING_EXPIRED:'配對 QR 已過期，請在 Zenbo 重新產生配對 QR，再掃描一次。',
+      PAIRING_REJECTED:'配對 QR 已過期、已使用或配對碼不正確。請在 Zenbo 重新產生配對 QR，再掃描一次。',
+      MOTION_POWER_CONNECTED:'Zenbo 接著充電線，請拔除後再啟動移動或跟隨。', MOTION_USB_CONNECTED:'Zenbo 接著 USB，請拔除後再啟動移動或跟隨。',
       UNAUTHORIZED:'配對已失效，請結束遙控後重新配對。', INVALID_PAIRING_CODE:'配對碼不正確或已過期，請確認 Zenbo 畫面。',
+      FOLLOW_START_TIMEOUT:'跟隨功能尚未完成準備，請稍後再試。', FOLLOW_TARGET_NOT_FOUND:'目前找不到可跟隨的人，請站在 Zenbo 正前方再試。',
       RATE_LIMITED:'操作太頻繁，請稍後再試。',
     };
     return messages[error && error.code] || (error && error.name === 'AbortError' ? '連線逾時，請確認 Wi-Fi 與 Zenbo。' : '操作未完成，請確認 Zenbo 狀態後再試。');
@@ -67,7 +82,7 @@
     el('frame-time').textContent = '目前沒有即時影像';
   }
   function updateControls() {
-    const enabled = connected && !actionPending && status && status.robotReady && status.motionEnabled;
+    const enabled = connected && !actionPending && status && status.robotReady && status.motionEnabled && !status.motionBlockedReason;
     const cameraReleasing = status && (status.cameraState === 'releasing' || status.cameraError === 'CAMERA_RELEASE_FAILED');
     const cameraBlocksFollow = status && (status.cameraEnabled || cameraReleasing);
     motionButtons.forEach((button) => { button.disabled = !enabled; });
@@ -76,7 +91,7 @@
     el('follow-hint').textContent = cameraReleasing ? '相機尚未釋放，暫時無法開始跟隨。' : '跟隨需先在 Zenbo 關閉相機。';
     el('follow').textContent = status && status.following ? '停止跟隨' : '開始跟隨';
     el('follow').setAttribute('aria-pressed', String(Boolean(status && status.following)));
-    el('motion-hint').textContent = status && !status.motionEnabled ? '請先在 Zenbo 主畫面開啟「動作」。' : '每次最多前後移動 15 公分，或轉向 15°。';
+    el('motion-hint').textContent = status && status.motionBlockedReason ? (status.motionBlockedReason === 'POWER_CONNECTED' ? 'Zenbo 接著充電線，拔除後才可移動與跟隨。' : 'Zenbo 接著 USB，拔除後才可移動與跟隨。') : status && !status.motionEnabled ? '請先在 Zenbo 主畫面開啟「動作」。' : '每次最多前後移動 15 公分，或轉向 15°。';
   }
   function applyStatus(value) {
     status = value;
@@ -170,12 +185,30 @@
       if (current === generation) { el('action-status').textContent = errorMessage(error); if (!error.nativeRejection) { bestEffortStop(); disconnect('動作結果未確認，請重新連線'); } }
     } finally { actionPending = false; updateControls(); }
   }
+  async function pair(code) {
+    if (pairingPending || connected) return;
+    if (!/^[0-9]{8}$/.test(code)) { showError('請掃描 Zenbo 的配對 QR，或輸入 8 位數備用配對碼。'); return; }
+    const current = generation;
+    pairingPending = true; el('pair-button').disabled = true; el('code').disabled = true;
+    el('pair-progress').hidden = false; el('connection-status').textContent = '正在配對…'; showError('');
+    try {
+      const result = await request('/remote/pair', {code});
+      if (current !== generation) return;
+      if (!result || typeof result.csrfToken !== 'string' || !result.csrfToken || !result.status) throw new Error('配對回應格式無效');
+      csrf = result.csrfToken; await connect(result.status);
+    } catch (error) {
+      if (current !== generation) return;
+      el('connection-status').textContent = '尚未配對';
+      showError(error.name === 'AbortError' ? '配對逾時。請確認 Wi-Fi，並在 Zenbo 重新產生配對 QR 後再掃描。' : errorMessage(error));
+    } finally {
+      code = ''; pairingPending = false; el('pair-progress').hidden = true;
+      el('pair-button').disabled = false; el('code').disabled = false;
+    }
+  }
   el('pair-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const code = el('code').value.trim(); el('code').value = ''; el('pair-button').disabled = true; showError('');
-    try { const result = await request('/remote/pair', {code}); csrf = result.csrfToken; await connect(result.status); }
-    catch (error) { showError(error.name === 'AbortError' ? '配對逾時，請確認 Zenbo 的區網遙控已啟用。' : errorMessage(error)); }
-    finally { el('pair-button').disabled = false; }
+    const code = el('code').value.trim(); el('code').value = '';
+    await pair(code);
   });
   document.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('keydown', (event) => { if (event.repeat) event.preventDefault(); });
@@ -196,6 +229,9 @@
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden && csrf) { bestEffortStop(); disconnect('頁面已暫停，請重新連線'); } });
   window.addEventListener('pagehide', () => { bestEffortStop(); disconnect(); });
+  if (initialPairingCode) void pair(initialPairingCode);
+  else if (initialPairingCode === null) showError('配對 QR 無效，請在 Zenbo 重新產生配對 QR，再掃描一次。');
+  initialPairingCode = '';
   setInterval(() => { if (lastFrameAt && Date.now() - lastFrameAt > 2000) clearFrame('畫面已過期，等待新影像'); }, 250);
 })();
 </script>

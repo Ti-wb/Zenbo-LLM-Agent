@@ -19,7 +19,10 @@
       "pairingCode": null,
       "pairingExpiresAt": null,
       "connected": false
-    }
+    },
+    "powerConnected": true,
+    "usbConnected": true,
+    "motionBlockedReason": "POWER_CONNECTED"
   },
   "error": null
 }
