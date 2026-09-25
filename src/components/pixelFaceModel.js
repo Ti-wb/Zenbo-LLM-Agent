@@ -95,7 +95,7 @@ function worriedEye(centerX, side) {
   });
 }
 
-function starEye(centerX, centerY) {
+export function starEye(centerX, centerY) {
   const pixels = [
     '......##......', '......##......', '.....####.....', '.....####.....',
     '##############', '.############.', '..##########..', '...########...',

@@ -1,4 +1,5 @@
 // Independent eye-only visual study, drawn on a native 160 × 100 canvas.
+import { starEye } from '../../src/components/pixelFaceModel.js';
 export const FACE_WIDTH = 160;
 export const FACE_HEIGHT = 100;
 
@@ -87,8 +88,11 @@ function drawEyes(ctx, emotion, span, foreground, background, blink) {
       roundedEye(ctx, right, 45, width - 2, height - 4, 12, foreground, background);
       break;
     case 'EXCITED':
-      roundedEye(ctx, left, 43, width + 4, height + 2, -4, foreground, background);
-      roundedEye(ctx, right, 43, width + 4, height + 2, 4, foreground, background);
+      for (const center of [left, right]) {
+        for (const rectangle of starEye(center, 42)) {
+          block(ctx, rectangle.x, rectangle.y, rectangle.width, rectangle.height, foreground);
+        }
+      }
       break;
     default:
       roundedEye(ctx, left, 43, width, height, 0, foreground, background);

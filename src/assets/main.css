@@ -52,6 +52,11 @@ context {
   height: 100%;
 }
 
+.face-shell.eye-face-active {
+  --face-stage-top: var(--face-safe-top);
+  --face-copy-reserve: 112px;
+}
+
 .top-bar {
   position: absolute;
   z-index: 2;
@@ -153,7 +158,8 @@ context {
   padding: var(--face-stage-top) 16px var(--face-stage-bottom);
 }
 
-.face-shell .face-stage > .face-control > .pixel-face {
+.face-shell .face-stage > .face-control > .pixel-face,
+.face-shell .face-stage > .face-control > .eye-face {
   width: auto;
   height:
     min(
