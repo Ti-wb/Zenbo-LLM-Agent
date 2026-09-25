@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-Hant" class="dark-stage">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f5ef" />
+    <title>Zenbo 臉部風格樣稿</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="site-header">
+        <div class="brand" aria-label="Zenbo Face Study">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
+          <span>ZENBO <span class="brand-divider">/</span> FACE STUDY</span>
+        </div>
+        <span class="header-note"><span class="status-dot" aria-hidden="true"></span> LOCAL VISUAL PROTOTYPE <span class="header-index">01 / 01</span></span>
+      </header>
+
+      <main>
+        <div class="intro">
+          <div>
+            <p class="eyebrow">TWO EYES, A BIGGER PRESENCE</p>
+            <h1>讓 Zenbo 的表情，<br /><em>更有個性。</em></h1>
+          </div>
+          <p class="intro-copy">沿用 Zenbo 的近黑螢幕，拿掉臉部外框，只用兩隻亮色像素眼睛表達情緒。眼睛延伸到 160 × 100 畫面的上緣附近，先比較方向，再決定 App 的正式版本。</p>
+        </div>
+
+        <div class="workbench">
+          <section class="preview-panel" aria-labelledby="preview-title">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">01 / LIVE PREVIEW</p>
+                <h2 id="preview-title">即時預覽</h2>
+              </div>
+              <span class="prototype-badge">VISUAL TEST ONLY</span>
+            </div>
+
+            <div class="preview-stage">
+              <canvas id="hero-face" width="160" height="100" role="img" aria-label="Zenbo 像素臉：中性"></canvas>
+            </div>
+
+            <div class="composition-control" role="group" aria-label="畫面配置比較">
+              <span><strong>畫面配置</strong><small>8:5 Zenbo 螢幕示意</small></span>
+              <div class="composition-options">
+                <button type="button" data-layout="full" aria-pressed="true">延伸到上緣</button>
+                <button type="button" data-layout="reserved" aria-pressed="false">保留上方</button>
+              </div>
+            </div>
+
+            <div class="preview-footer">
+              <div class="current-face">
+                <span class="current-face-index">SELECTED EXPRESSION</span>
+                <div><strong id="current-name">中性</strong><span id="current-code">NEUTRAL</span></div>
+              </div>
+              <div class="native-preview">
+                <div class="native-copy"><strong>原生尺寸</strong><span>160 × 100 px</span></div>
+                <canvas id="native-face" width="160" height="100" role="img" aria-label="原生尺寸 Zenbo 像素臉：中性"></canvas>
+              </div>
+            </div>
+          </section>
+
+          <aside class="control-panel" aria-labelledby="expression-title">
+            <div class="panel-heading expression-heading">
+              <div>
+                <p class="section-kicker">02 / EXPRESSION SET</p>
+                <h2 id="expression-title">表情比較</h2>
+              </div>
+              <span class="counter">05 + 01</span>
+            </div>
+
+            <p class="control-intro">五種既有表情；睡眠是獨立的顯示狀態。</p>
+            <div class="expression-grid" role="group" aria-label="選擇表情">
+              <button type="button" class="expression-card is-selected" data-emotion="NEUTRAL" aria-pressed="true">
+                <canvas width="160" height="100" aria-hidden="true"></canvas>
+                <span class="card-caption"><strong>中性</strong><span>NEUTRAL</span></span>
+              </button>
+              <button type="button" class="expression-card" data-emotion="HAPPY" aria-pressed="false">
+                <canvas width="160" height="100" aria-hidden="true"></canvas>
+                <span class="card-caption"><strong>開心</strong><span>HAPPY</span></span>
+              </button>
+              <button type="button" class="expression-card" data-emotion="CURIOUS" aria-pressed="false">
+                <canvas width="160" height="100" aria-hidden="true"></canvas>
+                <span class="card-caption"><strong>好奇</strong><span>CURIOUS</span></span>
+              </button>
+              <button type="button" class="expression-card" data-emotion="CONCERNED" aria-pressed="false">
+                <canvas width="160" height="100" aria-hidden="true"></canvas>
+                <span class="card-caption"><strong>擔心</strong><span>CONCERNED</span></span>
+              </button>
+              <button type="button" class="expression-card" data-emotion="EXCITED" aria-pressed="false">
+                <canvas width="160" height="100" aria-hidden="true"></canvas>
+                <span class="card-caption"><strong>興奮</strong><span>EXCITED</span></span>
+              </button>
+            </div>
+
+            <div class="sleep-divider"><span>DISPLAY STATE</span></div>
+            <button type="button" class="sleep-control" id="sleep-control" aria-pressed="false">
+              <span class="sleep-icon" aria-hidden="true">z<span>z</span></span>
+              <span><strong>睡眠狀態</strong><small>SLEEPING · 獨立於五種表情</small></span>
+              <span class="switch-track" aria-hidden="true"><span></span></span>
+            </button>
+          </aside>
+        </div>
+
+        <section class="tuning-panel" aria-labelledby="tuning-title">
+          <div class="tuning-heading">
+            <div>
+              <p class="section-kicker">03 / LOCAL TEST CONTROLS</p>
+              <h2 id="tuning-title">調整與動態測試</h2>
+            </div>
+            <p>這裡的說話幅度是手動／模擬值，尚未接入實際音訊。</p>
+          </div>
+          <div class="tuning-grid">
+            <div class="tuning-item size-item">
+              <div class="input-heading"><label for="face-size">眼睛跨度</label><output id="face-size-value" for="face-size">112 px</output></div>
+              <input id="face-size" type="range" min="100" max="128" value="112" step="4" />
+              <div class="range-ends"><span>100</span><span>128</span></div>
+            </div>
+            <div class="tuning-item mouth-item">
+              <div class="input-heading"><label for="mouth-level">說話幅度 <small>手動測試</small></label><output id="mouth-level-value" for="mouth-level">0 / 4</output></div>
+              <input id="mouth-level" type="range" min="0" max="4" value="0" step="1" />
+              <div class="range-ends"><span>閉合</span><span>張開</span></div>
+            </div>
+            <div class="tuning-item button-item">
+              <span class="input-heading">舞台與動態</span>
+              <div class="button-group">
+                <button type="button" id="theme-toggle" class="small-control" aria-pressed="false">淺色比較</button>
+                <button type="button" id="motion-toggle" class="small-control" aria-pressed="true">眨眼：開</button>
+                <button type="button" id="speech-toggle" class="small-control speech-control" aria-pressed="false">模擬說話</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <p class="selection-status sr-only" id="selection-status" aria-live="polite">目前表情：中性</p>
+      </main>
+      <footer class="site-footer"><span>PIXEL SHAPE × SOFT PRESENCE</span><span>本機視覺樣稿 · 未改動正式 App</span></footer>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
