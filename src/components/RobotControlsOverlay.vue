@@ -10,8 +10,9 @@ const props = defineProps({
   cameraRequestPending: Boolean,
   cameraRequestMessage: { type: String, default: '' },
   latestCapture: { type: Object, default: null },
+  faceVariant: { type: String, default: 'eyes' },
 });
-const emit = defineEmits(['close', 'ask-camera']);
+const emit = defineEmits(['close', 'ask-camera', 'face-variant-change']);
 const { status, error, pending, online, canMove, canFollow, previewEnabled, imageUrl, imageLabel,
   imageError, action, settings, remote, capture } = useRobotControls(toRef(props, 'open'));
 const dialog = ref(null);
@@ -106,6 +107,14 @@ onBeforeUnmount(releaseFocus);
         <button ref="closeButton" type="button" class="close-button" aria-label="關閉機器控制" @click="emit('close')">×</button>
       </header>
       <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+      <section class="face-style-section" aria-labelledby="face-style-title">
+        <h2 id="face-style-title">臉部風格</h2>
+        <div class="face-style-options" role="group" aria-labelledby="face-style-title">
+          <button type="button" :aria-pressed="faceVariant === 'eyes'" @click="emit('face-variant-change', 'eyes')">雙眼像素臉</button>
+          <button type="button" :aria-pressed="faceVariant === 'classic'" @click="emit('face-variant-change', 'classic')">原版 PixelFace</button>
+        </div>
+        <p class="hint">立即套用並保存在本機。</p>
+      </section>
       <div class="controls-layout">
         <section class="control-section movement-section" aria-labelledby="movement-title">
           <div class="section-heading"><h2 id="movement-title">移動與跟隨</h2><span>{{ status?.motionEnabled ? '動作 開' : '動作 關' }}</span></div>
@@ -178,6 +187,12 @@ button { min-height: 44px; border: 1px solid #34505a; border-radius: 10px; backg
 button:disabled { opacity: .42; cursor: default; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid #93dfca; outline-offset: 3px; }
 .close-button { flex-shrink: 0; width: 44px; font-size: 26px; background: transparent; }
+.face-style-section { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 22px; padding: 12px 14px; border: 1px solid #29414a; border-radius: 10px; background: #08161e; }
+.face-style-section h2 { margin: 0; font-size: 13px; }
+.face-style-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.face-style-options button { padding: 0 14px; font-size: 13px; }
+.face-style-options button[aria-pressed="true"] { border-color: #94d8bf; background: #254236; color: #e5faed; }
+.face-style-section .hint { margin: 0 0 0 auto; }
 .controls-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .section-heading { justify-content: space-between; margin-bottom: 12px; }
 .section-heading > span { font-size: 12px; color: #a7c0c5; }

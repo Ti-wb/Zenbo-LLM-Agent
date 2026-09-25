@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import PixelFace from './components/PixelFace.vue';
+import FaceDisplay from './components/FaceDisplay.vue';
 import SettingsOverlay from './components/SettingsOverlay.vue';
 import RobotControlsOverlay from './components/RobotControlsOverlay.vue';
+import { FACE_VARIANTS, readFaceVariant, saveFaceVariant } from './components/faceVariants.js';
 import { useIdleExpression } from './composables/useIdleExpression';
 import { useRuntimeController } from './composables/useRuntimeController';
 import { createListeningCue } from './services/listeningCue';
@@ -40,6 +41,7 @@ const settingsHolding = ref(false);
 const errorVisible = ref(false);
 const robotControlsOpen = ref(false);
 const cameraNotice = ref(false);
+const faceVariant = ref(readFaceVariant());
 const latestCapture = computed(() => runtime.cameraCaptures[runtime.cameraCaptures.length - 1] || null);
 let clockTimer;
 let settingsHoldTimer;
@@ -132,6 +134,10 @@ function handleSettingsKeyUp(event) {
   if (event.key === 'Enter' || event.key === ' ') cancelSettingsHold();
 }
 
+function changeFaceVariant(value) {
+  faceVariant.value = saveFaceVariant(value);
+}
+
 onBeforeUnmount(() => {
   window.clearInterval(clockTimer);
   window.clearTimeout(cameraNoticeTimer);
@@ -141,7 +147,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="face-shell" :class="{ 'listening-ready': listeningReady }" :style="listeningStyle">
+  <main class="face-shell" :class="{ 'listening-ready': listeningReady, 'eye-face-active': faceVariant === FACE_VARIANTS.EYES }" :style="listeningStyle">
     <header class="top-bar">
       <div class="device-indicators">
         <span class="clock">{{ clock }}</span>
@@ -225,7 +231,8 @@ onBeforeUnmount(() => {
         :aria-pressed="isListening"
         @click="toggleListening"
       >
-        <PixelFace
+        <FaceDisplay
+          :variant="faceVariant"
           :emotion="displayedEmotion"
           :mouth-level="runtime.mouthLevel"
           :sleeping="runtime.sleeping"
@@ -274,11 +281,13 @@ onBeforeUnmount(() => {
     />
     <RobotControlsOverlay
       :open="robotControlsOpen"
+      :face-variant="faceVariant"
       :can-ask-camera="canAskCamera"
       :camera-request-pending="cameraRequestPending"
       :camera-request-message="cameraRequestMessage"
       :latest-capture="latestCapture"
       @close="robotControlsOpen = false"
+      @face-variant-change="changeFaceVariant"
       @ask-camera="requestCameraView?.()"
     />
   </main>
