@@ -134,6 +134,7 @@ public class JSONException extends Exception { public JSONException(String messa
     'org/json/JSONObject.java': '''package org.json;
 import java.util.HashMap;
 public class JSONObject {
+    public static final Object NULL = new Object();
     private final HashMap<String, Object> values = new HashMap<>();
     public JSONObject put(String key, Object value) throws JSONException { values.put(key, value); return this; }
     public Object opt(String key) { return values.get(key); }
@@ -151,6 +152,8 @@ public class RobotGateway {
     public boolean deferAttention; public RobotOperations.ResultCallback attentionCallback;
     public void setHardware(DeviceHardware hardware) {} public boolean isFollowing() { return false; }
     public boolean isReady() { return true; } public boolean isMoving() { return false; }
+    public Boolean powerConnected() { return null; } public Boolean usbConnected() { return null; }
+    public String motionBlockedReason() { return ""; }
     public boolean isAttentionActive() { return false; } public String attentionState() { return "idle"; }
     public void setMotionAllowed(boolean allowed) {} public void setForeground(boolean foreground) {}
     public boolean busyExceptAttention() { return false; }
