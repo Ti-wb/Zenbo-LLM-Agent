@@ -64,8 +64,10 @@ public class HermesClientTest {
         assertEquals("你好", request.getString("input"));
         JSONObject modelOptions = request.getJSONObject("model_options");
         assertEquals("low", modelOptions.getString("reasoning_effort"));
-        assertEquals(1, modelOptions.length());
+        assertEquals("priority", modelOptions.getString("service_tier"));
+        assertEquals(2, modelOptions.length());
         assertFalse(request.has("reasoning_effort"));
+        assertFalse(request.has("service_tier"));
         assertFalse(request.has("metadata"));
         assertFalse(request.has("messages"));
     }

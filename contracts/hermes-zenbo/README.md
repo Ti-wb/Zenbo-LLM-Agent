@@ -163,9 +163,11 @@ are local Native state only; no remote playback endpoint is defined.
 ## Native Hermes API use
 
 Session creation returns `{object:"hermes.session",session:{id,...}}`.
-Run creation sends `{input,session_id,instructions,model_options:{reasoning_effort:"low"}}`
-without a `model` field and returns `{run_id,status}`. The low reasoning effort
-applies to each Zenbo run; the selected profile still owns the model and STT/TTS.
+Run creation sends
+`{input,session_id,instructions,model_options:{reasoning_effort:"low",service_tier:"priority"}}`
+without a `model` field and returns `{run_id,status}`. Low reasoning effort and
+priority service tier apply to each Zenbo run; the selected profile still owns
+the model and STT/TTS.
 Native persists the exact request body before submission and reuses it with the
 same idempotency key if an uncertain submission must be reconciled. Progress uses
 the run SSE endpoint and Hermes events such as

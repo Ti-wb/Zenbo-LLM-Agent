@@ -450,7 +450,7 @@ public final class HermesClient implements HermesTransport {
 
     static JSONObject runRequest(String sessionId, String text, String language, String robotName) {
         return json("input", text, "session_id", sessionId,
-                "model_options", json("reasoning_effort", "low"),
+                "model_options", json("reasoning_effort", "low", "service_tier", "priority"),
                 "instructions", "You are " + robotName + ", a Zenbo robot. Reply in " + language
                         + ". Use the eight Zenbo tools when a device action or expression is needed. "
                         + "Use capture_camera only when asked to see, send or describe the current view. "
