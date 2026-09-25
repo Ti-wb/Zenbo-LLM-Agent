@@ -5,7 +5,6 @@ import { settingsReadiness } from '../services/runtimeSettings';
 const props = defineProps({
   open: { type: Boolean, default: false },
   settings: { type: Object, required: true },
-  faceVariant: { type: String, default: 'eyes' },
   connectionState: { type: String, default: 'offline' },
   error: { type: String, default: '' },
   saving: { type: Boolean, default: false },
@@ -13,7 +12,7 @@ const props = defineProps({
   testResult: { type: Object, default: null },
 });
 
-const emit = defineEmits(['close', 'save', 'test', 'face-variant-change']);
+const emit = defineEmits(['close', 'save', 'test']);
 const draft = reactive({});
 const validationError = ref('');
 const readiness = computed(() => settingsReadiness(props.testResult));
@@ -253,15 +252,6 @@ function testHermes() {
           </select>
         </label>
       </div>
-
-      <label>
-        <span>臉部風格</span>
-        <select :value="faceVariant" @change="emit('face-variant-change', $event.target.value)">
-          <option value="eyes">雙眼像素臉</option>
-          <option value="classic">原版 PixelFace</option>
-        </select>
-        <small>立即套用並保存在本機，不需重新連線。</small>
-      </label>
 
       <div v-if="testResult" class="test-result" aria-live="polite">
         TLS：{{ testResult.subject || '憑證可用' }}<br />

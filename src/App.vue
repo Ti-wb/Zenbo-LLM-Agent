@@ -270,7 +270,6 @@ onBeforeUnmount(() => {
     <SettingsOverlay
       :open="runtime.settingsOpen"
       :settings="runtime.settings"
-      :face-variant="faceVariant"
       :connection-state="runtime.connectionState"
       :error="runtime.error"
       :saving="savingSettings"
@@ -279,15 +278,16 @@ onBeforeUnmount(() => {
       @close="runtime.settingsOpen = false"
       @save="saveSettings"
       @test="testSettings"
-      @face-variant-change="changeFaceVariant"
     />
     <RobotControlsOverlay
       :open="robotControlsOpen"
+      :face-variant="faceVariant"
       :can-ask-camera="canAskCamera"
       :camera-request-pending="cameraRequestPending"
       :camera-request-message="cameraRequestMessage"
       :latest-capture="latestCapture"
       @close="robotControlsOpen = false"
+      @face-variant-change="changeFaceVariant"
       @ask-camera="requestCameraView?.()"
     />
   </main>
