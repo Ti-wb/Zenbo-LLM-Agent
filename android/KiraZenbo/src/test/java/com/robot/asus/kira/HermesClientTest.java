@@ -62,6 +62,10 @@ public class HermesClientTest {
         assertEquals("zenbo_session", request.getString("session_id"));
         assertFalse(request.has("model"));
         assertEquals("你好", request.getString("input"));
+        JSONObject modelOptions = request.getJSONObject("model_options");
+        assertEquals("low", modelOptions.getString("reasoning_effort"));
+        assertEquals(1, modelOptions.length());
+        assertFalse(request.has("reasoning_effort"));
         assertFalse(request.has("metadata"));
         assertFalse(request.has("messages"));
     }
@@ -86,9 +90,22 @@ public class HermesClientTest {
         assertTrue(instructions.contains("Avoid repeated show_emotion calls within a turn"));
         assertTrue(instructions.contains("Never invoke physical tools just to animate an expression"));
         assertTrue(instructions.contains("Never claim a physical action succeeded without its tool result"));
-        assertTrue(instructions.contains("Keep spoken replies concise"));
-        assertEquals(3, request.length());
+        assertEquals(4, request.length());
         assertFalse(request.has("model"));
+    }
+
+    @Test public void spokenAnswersDefaultToDirectBriefRepliesWithoutSuppressingRequestedOrSafetyDetail() throws Exception {
+        JSONObject request = HermesClient.runRequest("zenbo_session", "今天有什麼新鮮事？", "zh-TW", "Zenbo K");
+        String instructions = request.getString("instructions");
+        assertTrue(instructions.contains("Wait for terminal results from any required device tools before speaking"));
+        assertTrue(instructions.contains("Then answer promptly and directly"));
+        assertTrue(instructions.contains("in one or two short spoken sentences by default"));
+        assertTrue(instructions.contains("Skip preambles, repetition, and details the user did not request"));
+        assertTrue(instructions.contains("Give more detail when explicitly requested or needed to explain a safety concern"));
+        assertTrue(instructions.indexOf("Never claim a physical action succeeded without its tool result")
+                < instructions.indexOf("Wait for terminal results"));
+        assertTrue(instructions.indexOf("Wait for terminal results")
+                < instructions.indexOf("Then answer promptly"));
     }
 
     @Test public void parsesHermesEventFieldAndMultilineSseWithoutTreatingCommentsAsEvents() throws Exception {

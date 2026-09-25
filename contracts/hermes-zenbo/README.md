@@ -163,8 +163,12 @@ are local Native state only; no remote playback endpoint is defined.
 ## Native Hermes API use
 
 Session creation returns `{object:"hermes.session",session:{id,...}}`.
-Run creation sends `{input,session_id,instructions}` (no `model` field) and returns
-`{run_id,status}`. Progress uses the run SSE endpoint and Hermes events such as
+Run creation sends `{input,session_id,instructions,model_options:{reasoning_effort:"low"}}`
+without a `model` field and returns `{run_id,status}`. The low reasoning effort
+applies to each Zenbo run; the selected profile still owns the model and STT/TTS.
+Native persists the exact request body before submission and reuses it with the
+same idempotency key if an uncertain submission must be reconciled. Progress uses
+the run SSE endpoint and Hermes events such as
 `message.delta`, `run.completed`, `run.failed`, and `run.cancelled`. Polling a
 run's authoritative status handles SSE loss; SSE disconnect alone is not a
 terminal result. Native uses the stop endpoint for cancellation and blocks a

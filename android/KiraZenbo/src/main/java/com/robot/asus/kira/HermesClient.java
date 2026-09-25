@@ -450,6 +450,7 @@ public final class HermesClient implements HermesTransport {
 
     static JSONObject runRequest(String sessionId, String text, String language, String robotName) {
         return json("input", text, "session_id", sessionId,
+                "model_options", json("reasoning_effort", "low"),
                 "instructions", "You are " + robotName + ", a Zenbo robot. Reply in " + language
                         + ". Use the eight Zenbo tools when a device action or expression is needed. "
                         + "Use capture_camera only when asked to see, send or describe the current view. "
@@ -467,7 +468,11 @@ public final class HermesClient implements HermesTransport {
                         + "when sleep is requested, do not add an automatic expression. "
                         + "Do not use go_to_sleep for ordinary standby or merely to end a reply; respect an explicit sleep request. "
                         + "Avoid repeated show_emotion calls within a turn. Never invoke physical tools just to animate an expression. "
-                        + "Never claim a physical action succeeded without its tool result. Keep spoken replies concise.");
+                        + "Never claim a physical action succeeded without its tool result. "
+                        + "Wait for terminal results from any required device tools before speaking. "
+                        + "Then answer promptly and directly in one or two short spoken sentences by default. "
+                        + "Skip preambles, repetition, and details the user did not request. "
+                        + "Give more detail when explicitly requested or needed to explain a safety concern.");
     }
 
     private void openEvents(String runId, int epoch) {
